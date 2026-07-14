@@ -19,7 +19,7 @@
     The username to export. Used when running elevated to preserve original user context.
 
 .NOTES
-    Version: 0.2
+    Version: 0.6
     Author: STO IT
     Run as: The user being transferred (IT admin logged in as user)
 #>
@@ -32,7 +32,10 @@ param(
     [string]$TargetAppDataRoaming = "",
     [string]$TargetAppDataLocal = "",
     [ValidateSet("", "Local", "Online")]
-    [string]$TransferMode = ""
+    [string]$TransferMode = "",
+    # Parent folder for the transfer package. When omitted, Windows displays a
+    # folder picker after the transfer mode is selected.
+    [string]$DestinationPath = ""
 )
 
 # ============================================================================
@@ -267,6 +270,7 @@ if (-not $Script:IsAdmin) {
         # Pass the current user's profile info to the elevated script
         $elevatedArgs = "-ExecutionPolicy Bypass -File `"$scriptPath`" -TargetUserProfile `"$env:USERPROFILE`" -TargetUserName `"$env:USERNAME`" -TargetAppDataRoaming `"$env:APPDATA`" -TargetAppDataLocal `"$env:LOCALAPPDATA`""
         if ($TransferMode) { $elevatedArgs += " -TransferMode `"$TransferMode`"" }
+        if ($DestinationPath) { $elevatedArgs += " -DestinationPath `"$DestinationPath`"" }
         
         try {
             $process = Start-Process PowerShell -Verb RunAs -ArgumentList $elevatedArgs -PassThru -ErrorAction Stop
@@ -291,7 +295,7 @@ if (-not $Script:IsAdmin) {
 # ============================================================================
 
 $Script:Config = @{
-    Version = "0.5"
+    Version = "0.6"
     TransferFolderName = "LaptopTransfer_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 
     # Printer driver binaries in the PrintBRM package. Network printers now use
@@ -568,10 +572,77 @@ function Add-ManualTask {
 }
 
 # ============================================================================
-# DRIVE SELECTION
+# DESTINATION SELECTION
 # ============================================================================
 
+function Test-DestinationIsWithinSourceProfile {
+    param([string]$Path)
+
+    try {
+        $destination = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+        $profile = [System.IO.Path]::GetFullPath($Script:OriginalUserProfile).TrimEnd('\')
+        return $destination.Equals($profile, [System.StringComparison]::OrdinalIgnoreCase) -or
+               $destination.StartsWith("$profile\", [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Select-TargetDrive {
+    Write-StoLogo
+    Write-Banner -Title "Laptop Transfer  -  Export Tool" -Subtitle "v$($Script:Config.Version)"
+    Write-KeyValue "Transferring" $Script:OriginalUserName
+    Write-KeyValue "Computer" $env:COMPUTERNAME
+    Write-KeyValue "Transfer" $Script:Config.TransferMode
+    Write-Section "Select external or secondary drive"
+
+    # Local mode keeps the existing drive selector rather than opening the
+    # Windows folder picker. C: is deliberately excluded.
+    $drives = @(Get-WmiObject Win32_LogicalDisk | Where-Object {
+        $_.DriveType -in @(2, 3) -and $_.DeviceID -ne $env:SystemDrive -and $_.Size -gt 0
+    } | ForEach-Object {
+        $freeGB = [math]::Round($_.FreeSpace / 1GB, 2)
+        $totalGB = [math]::Round($_.Size / 1GB, 2)
+        $type = if ($_.DriveType -eq 2) { "Removable" } else { "Fixed" }
+        [PSCustomObject]@{
+            Letter = $_.DeviceID
+            Type = $type
+            Display = "$($_.DeviceID) [$($_.VolumeName)] - $type - $freeGB GB free of $totalGB GB"
+        }
+    })
+
+    if (-not $drives) {
+        Write-Host "`nNo external or secondary drives found." -ForegroundColor Red
+        Write-Host "Connect an external drive and try again." -ForegroundColor Yellow
+        return $null
+    }
+
+    Write-Host ""
+    for ($i = 0; $i -lt $drives.Count; $i++) {
+        $color = if ($drives[$i].Type -eq "Removable") { "Cyan" } else { "White" }
+        Write-Host "  [$($i + 1)] $($drives[$i].Display)" -ForegroundColor $color
+    }
+    Write-Host "`n  [0] Cancel`n" -ForegroundColor Gray
+
+    do {
+        $selection = Read-Host "Select target drive (1-$($drives.Count))"
+        if ($selection -eq "0") { return $null }
+
+        $index = 0
+        if ([int]::TryParse($selection, [ref]$index)) {
+            $index--
+            if ($index -ge 0 -and $index -lt $drives.Count) {
+                $selectedDrive = $drives[$index]
+                $confirm = Read-Host "Proceed with $($selectedDrive.Display)? (Y/N)"
+                if ($confirm -match "^[Yy]") { return $selectedDrive.Letter }
+            }
+        }
+        Write-Host "Invalid selection. Please try again." -ForegroundColor Red
+    } while ($true)
+}
+
+function Select-TargetDestination {
     Write-StoLogo
     Write-Banner -Title "Laptop Transfer  -  Export Tool" -Subtitle "v$($Script:Config.Version)"
     Write-KeyValue "Transferring" $Script:OriginalUserName
@@ -585,71 +656,53 @@ function Select-TargetDrive {
     if ($Script:IsAdmin -and $Script:OriginalUserName -ne $env:USERNAME) {
         Write-KeyValue "Running as" "$env:USERNAME (elevated)"
     }
-    
-    Write-Section "Scanning for available drives"
-    
-    # Get removable and fixed drives (excluding C:)
-    # Wrap in @() to ensure it's always an array even with single result
-    $drives = @(Get-WmiObject Win32_LogicalDisk | Where-Object {
-        $_.DriveType -in @(2, 3) -and  # 2=Removable, 3=Fixed
-        $_.DeviceID -ne "C:" -and
-        $_.Size -gt 0
-    } | ForEach-Object {
-        $freeGB = [math]::Round($_.FreeSpace / 1GB, 2)
-        $totalGB = [math]::Round($_.Size / 1GB, 2)
-        $type = if ($_.DriveType -eq 2) { "Removable" } else { "Fixed" }
-        
-        [PSCustomObject]@{
-            Letter = $_.DeviceID
-            Label = if ($_.VolumeName) { $_.VolumeName } else { "No Label" }
-            Type = $type
-            FreeGB = $freeGB
-            TotalGB = $totalGB
-            Display = "$($_.DeviceID) [$($_.VolumeName)] - $type - $freeGB GB free of $totalGB GB"
+
+    Write-Section "Choose export destination"
+    Write-Host "Select a network share, cloud-synced folder, or local folder for the zipped export." -ForegroundColor Gray
+
+    $selectedPath = $DestinationPath
+    if (-not $selectedPath) {
+        try {
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+            $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+            $dialog.Description = "Choose the folder that will receive the laptop transfer package"
+            $dialog.ShowNewFolderButton = $true
+            if (Test-Path $env:USERPROFILE) { $dialog.SelectedPath = $env:USERPROFILE }
+
+            if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+                Write-Host "Operation cancelled." -ForegroundColor Yellow
+                return $null
+            }
+            $selectedPath = $dialog.SelectedPath
         }
-    })
-    
-    if (-not $drives) {
-        Write-Host "`nNo suitable drives found!" -ForegroundColor Red
-        Write-Host "Please connect an external drive and try again." -ForegroundColor Yellow
+        catch {
+            # FolderBrowserDialog should be available on supported Windows builds,
+            # but keep a console fallback for constrained PowerShell hosts.
+            Write-Host "Could not open the Windows folder picker: $_" -ForegroundColor Yellow
+            $selectedPath = Read-Host "Enter destination folder path (blank to cancel)"
+            if (-not $selectedPath) { return $null }
+        }
+    }
+
+    try {
+        if (-not (Test-Path -LiteralPath $selectedPath -PathType Container)) {
+            New-Item -ItemType Directory -Path $selectedPath -Force -ErrorAction Stop | Out-Null
+        }
+        $selectedPath = (Resolve-Path -LiteralPath $selectedPath -ErrorAction Stop).Path
+    }
+    catch {
+        Write-Host "Unable to use destination folder '$selectedPath': $_" -ForegroundColor Red
         return $null
     }
-    
-    Write-Host "`nAvailable Drives:`n" -ForegroundColor Green
-    
-    $i = 1
-    foreach ($drive in $drives) {
-        $color = if ($drive.Type -eq "Removable") { "Cyan" } else { "White" }
-        Write-Host "  [$i] $($drive.Display)" -ForegroundColor $color
-        $i++
+
+    if (Test-DestinationIsWithinSourceProfile -Path $selectedPath) {
+        Write-Host "The destination cannot be inside the profile being exported." -ForegroundColor Red
+        Write-Host "Choose a different folder to avoid copying the export into itself." -ForegroundColor Yellow
+        return $null
     }
-    
-    Write-Host "`n  [0] Cancel`n" -ForegroundColor Gray
-    
-    do {
-        $selection = Read-Host "Select target drive (1-$($drives.Count))"
-        
-        if ($selection -eq "0") {
-            Write-Host "Operation cancelled." -ForegroundColor Yellow
-            return $null
-        }
-        
-        $index = [int]$selection - 1
-        if ($index -ge 0 -and $index -lt $drives.Count) {
-            $selectedDrive = $drives[$index]
-            
-            # Confirm selection
-            Write-Host "`nYou selected: $($selectedDrive.Display)" -ForegroundColor Yellow
-            $confirm = Read-Host "Proceed with this drive? (Y/N)"
-            
-            if ($confirm -eq "Y" -or $confirm -eq "y") {
-                return $selectedDrive.Letter
-            }
-        }
-        else {
-            Write-Host "Invalid selection. Please try again." -ForegroundColor Red
-        }
-    } while ($true)
+
+    Write-KeyValue "Destination" $selectedPath
+    return $selectedPath
 }
 
 # ============================================================================
@@ -664,6 +717,59 @@ function Get-FolderSizeBytes {
         Measure-Object -Property Length -Sum).Sum
     if ($null -eq $sum) { return 0 }
     return [long]$sum
+}
+
+function Get-DestinationFreeSpaceBytes {
+    param([string]$Path)
+
+    # PSDrive exposes capacity for local, mapped, and most UNC destinations.
+    # It is intentionally best-effort because some cloud providers do not report it.
+    $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if ($item.PSDrive -and $null -ne $item.PSDrive.Free) {
+        return [long]$item.PSDrive.Free
+    }
+
+    $root = [System.IO.Path]::GetPathRoot($item.FullName)
+    if ($root) {
+        return [long]([System.IO.DriveInfo]::new($root).AvailableFreeSpace)
+    }
+
+    return $null
+}
+
+function New-TransferArchive {
+    param([string]$TransferBase)
+
+    $parentFolder = Split-Path -Path $TransferBase -Parent
+    $archiveName = "$(Split-Path -Path $TransferBase -Leaf).zip"
+    $archivePath = Join-Path $parentFolder $archiveName
+
+    if (Test-Path -LiteralPath $archivePath) {
+        Write-Log "ZIP archive already exists: $archivePath" -Level Warning
+        Write-Host "A ZIP archive already exists: $archivePath" -ForegroundColor Yellow
+        return $null
+    }
+
+    try {
+        Write-Host "`n  Creating ZIP archive..." -ForegroundColor Cyan
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+        [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            $TransferBase,
+            $archivePath,
+            [System.IO.Compression.CompressionLevel]::Optimal,
+            $true
+        )
+
+        Write-Log "ZIP archive created: $archivePath" -Level Success
+        Add-Result -Category "Package" -Item $archiveName -Status "Success" -Details "Compressed transfer package"
+        return $archivePath
+    }
+    catch {
+        Write-Log "Could not create ZIP archive: $_" -Level Error
+        Add-Result -Category "Package" -Item $archiveName -Status "Error" -Details "ZIP creation failed: $_"
+        Write-Host "ZIP creation failed: $_" -ForegroundColor Red
+        return $null
+    }
 }
 
 function Resolve-TransferMode {
@@ -3585,9 +3691,15 @@ function Start-LaptopExport {
         Resolve-TransferMode
     }
 
-    # Select target drive
-    $targetDrive = Select-TargetDrive
-    if (-not $targetDrive) {
+    # Online exports use the Windows folder picker. Local exports retain the
+    # external/secondary-drive selector and do not open the picker.
+    if ($Script:Config.TransferMode -eq "Local") {
+        $destinationFolder = Select-TargetDrive
+    }
+    else {
+        $destinationFolder = Select-TargetDestination
+    }
+    if (-not $destinationFolder) {
         return
     }
 
@@ -3607,23 +3719,27 @@ function Start-LaptopExport {
     Write-KeyValue "Estimated size" (Format-FileSize $estBytes)
 
     try {
-        $freeBytes = (Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='$targetDrive'").FreeSpace
-        Write-KeyValue "Free on $targetDrive" (Format-FileSize $freeBytes)
-        # Require ~15% headroom over the estimate (robocopy overhead, other captures)
-        if ($freeBytes -gt 0 -and $freeBytes -lt ($estBytes * 1.15)) {
+        $freeBytes = Get-DestinationFreeSpaceBytes -Path $destinationFolder
+        if ($null -ne $freeBytes) {
+            Write-KeyValue "Free at destination" (Format-FileSize $freeBytes)
+        }
+        # The uncompressed package remains in place while its ZIP is created,
+        # so reserve room for both plus headroom for settings and metadata.
+        $requiredFreeBytes = [math]::Ceiling($estBytes * 2.15)
+        if ($freeBytes -gt 0 -and $freeBytes -lt $requiredFreeBytes) {
             Write-Host ""
             Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
-            Write-Host "Target drive may not have enough free space for this transfer." -ForegroundColor White
+            Write-Host "Destination may not have enough free space for the package and its ZIP archive." -ForegroundColor White
             $go = Read-Host "    Continue anyway? (Y/N)"
             if ($go -notmatch "^[Yy]") { Write-Host "  Cancelled." -ForegroundColor Yellow; return }
         }
     }
     catch {
-        Write-Log "Could not read free space on $targetDrive (continuing)" -Level Info
+        Write-Log "Could not read free space at $destinationFolder (continuing)" -Level Info
     }
 
     # Create transfer folder structure
-    $transferBase = Join-Path $targetDrive $Script:Config.TransferFolderName
+    $transferBase = Join-Path $destinationFolder $Script:Config.TransferFolderName
     
     Write-KeyValue "Transfer folder" $transferBase
     
@@ -3671,6 +3787,10 @@ function Start-LaptopExport {
     # Save log
     $logPath = Join-Path $transferBase "Logs\ExportLog.txt"
     $Script:Log | Out-File $logPath -Encoding UTF8
+
+    # Keep the folder for immediate report viewing and produce a portable ZIP
+    # beside it for online transfer or removable-media handoff.
+    $archivePath = New-TransferArchive -TransferBase $transferBase
     
     # Summary
     $Script:Results.EndTime = Get-Date
@@ -3684,6 +3804,7 @@ function Start-LaptopExport {
     Write-SummaryCard -Success $sc -Warning $wc -Errors $ec -Skipped $kc -Duration "$([math]::Round($dur.TotalMinutes, 1)) min"
 
     Write-KeyValue "Package" $transferBase
+    if ($archivePath) { Write-KeyValue "ZIP archive" $archivePath }
     Write-Section "Package contents"
     Write-Status "UserData"               "INFO" "Documents, Desktop, loose files"
     Write-Status "AppData"                "INFO" "Bluebeam, signatures, Quick Access"
@@ -3693,6 +3814,9 @@ function Start-LaptopExport {
     Write-Status "Import-LaptopData.ps1"  "OK"   "run on new machine"
     Write-Status "QuickImport.bat"        "OK"   "double-click (self-elevates)"
     Write-Status "TransferReport.html"    "OK"   "full report"
+    if ($archivePath) {
+        Write-Status "$(Split-Path -Path $archivePath -Leaf)" "OK" "portable compressed package"
+    }
 
     # Open report
     Write-Host ""

@@ -1,8 +1,8 @@
 # Laptop Export
 
-**STO Building Group – Laptop Transfer / Export Tool** (`Export-LaptopData.ps1`, v0.5)
+**STO Building Group – Laptop Transfer / Export Tool** (`Export-LaptopData.ps1`, v0.6)
 
-A single-file PowerShell tool that automates the **data-collection phase** of a laptop refresh. An IT technician runs it on the **old** laptop (logged in as, or on behalf of, the user being transferred). It copies the user's data and settings into a self-contained transfer package on an external drive, then generates a matching **Import** script, a **QuickImport.bat**, and an **HTML report** to run on the new machine.
+A single-file PowerShell tool that automates the **data-collection phase** of a laptop refresh. An IT technician runs it on the **old** laptop (logged in as, or on behalf of, the user being transferred). It creates a self-contained transfer package, ZIPs it for handoff, and generates a matching **Import** script, a **QuickImport.bat**, and an **HTML report** to run on the new machine.
 
 ## Deploy / Run
 
@@ -16,14 +16,17 @@ The script is interactive. It will prompt you to:
 
 1. **Elevate to Administrator** (Y/N/Skip) — recommended. Accepting re-launches via UAC, preserving the original user's profile context.
 2. **Choose a transfer mode** — `Local` or `Online` (see below).
-3. **Select a target drive** — any removable or fixed drive except `C:`. It estimates the transfer size and warns if free space looks tight (~15% headroom required).
+3. **Choose a destination**:
+   - **Local:** Select an external or secondary drive from the console; the Windows folder picker is not opened.
+   - **Online:** A Windows folder picker opens. Choose a network share, cloud-synced folder, or any local folder.
 
-It then runs the export, saves everything to the drive, and opens the HTML report when finished.
+It then runs the export, creates `LaptopTransfer_<timestamp>.zip` beside the package folder, and opens the HTML report when finished.
 
 ## Requirements
 
 - **Windows PowerShell 5.1+** (`#Requires -Version 5.1`)
-- An **external/USB drive** (or second fixed drive) with enough free space
+- An **external/USB drive** (or second fixed drive) with enough free space for **Local** transfers
+- For **Online** transfers, a writable destination folder (network share, cloud-synced folder, or local folder); no external drive is required
 - **Administrator rights** — *optional but recommended*. Needed only for the power scheme and printer export; without admin, those items are added to the manual checklist instead. The script offers to self-elevate.
 
 ## Transfer modes
@@ -45,7 +48,7 @@ It then runs the export, saves everything to the drive, and opens the HTML repor
 
 ## Output package
 
-Written to the target drive under `LaptopTransfer_<yyyyMMdd_HHmmss>\`:
+Written to the chosen destination as a package folder plus a ZIP archive:
 
 ```
 LaptopTransfer_<timestamp>\
@@ -58,11 +61,13 @@ LaptopTransfer_<timestamp>\
 ├── Import-LaptopData.ps1  # run on the NEW machine to restore
 ├── QuickImport.bat        # double-click launcher (self-elevates)
 └── TransferReport.html    # full report of everything captured
+
+LaptopTransfer_<timestamp>.zip  # portable copy of the package above
 ```
 
 ## On the new machine
 
-Copy the transfer folder to the new laptop and restore with **either**:
+Copy the transfer folder to the new laptop, or extract `LaptopTransfer_<timestamp>.zip`, then restore with **either**:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\Import-LaptopData.ps1"
@@ -77,4 +82,5 @@ Normally you don't pass any — the script prompts for everything. These exist m
 | Parameter | Purpose |
 |-----------|---------|
 | `-TransferMode Local\|Online` | Skip the mode prompt. |
+| `-DestinationPath <path>` | Skip the Online folder picker and write the package below this folder. |
 | `-TargetUserProfile`, `-TargetUserName`, `-TargetAppDataRoaming`, `-TargetAppDataLocal` | Preserve the original user's context when running elevated. Set automatically during self-elevation. |
