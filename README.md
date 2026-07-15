@@ -27,7 +27,7 @@ It then runs the export, creates `LaptopTransfer_<timestamp>.zip` beside the pac
 - **Windows PowerShell 5.1+** (`#Requires -Version 5.1`)
 - An **external/USB drive** (or second fixed drive) with enough free space for **Local** transfers
 - For **Online** transfers, a writable destination folder (network share, cloud-synced folder, or local folder); no external drive is required
-- **Administrator rights** — *optional but recommended*. Needed only for the power scheme and printer export; without admin, those items are added to the manual checklist instead. The script offers to self-elevate.
+- **Administrator rights** — *optional but recommended*. The script always attempts the printer export, but Windows can require elevation for a full PrintBRM package. The script offers to self-elevate and logs the precise PrintBRM result.
 
 ## Transfer modes
 
@@ -42,7 +42,7 @@ It then runs the export, creates `LaptopTransfer_<timestamp>.zip` beside the pac
 - **AppData** — Bluebeam, Outlook email signatures, Quick Access pins, Lotus Notes
 - **System settings** — power scheme, lid-close actions (AC/DC), mapped network drives, personalization (colors, dark mode, taskbar), wallpaper
 - **Installed programs** — documented to a list
-- **Printers** — PrintBRM package (network printers restore driverless / non-admin)
+- **Printers** — a `Printers.printerExport` PrintBRM migration file is attempted for every run, plus a driverless network-connection list. Windows may require elevation to create a full PrintBRM package; the package log records the exact result.
 - **Browser data** — Chrome & Edge bookmarks (HTML), Firefox reminder
 - **OneDrive** — sync-state handling
 

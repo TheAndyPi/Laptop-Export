@@ -258,8 +258,8 @@ else {
 
 if (-not $Script:IsAdmin) {
     Write-Banner -Title "Administrator Privileges Recommended"
-    Write-Host "  Some features (power scheme + printer export/restore) require admin rights." -ForegroundColor Gray
-    Write-Host "  If you skip, those items are added to the manual checklist.`n" -ForegroundColor DarkGray
+    Write-Host "  Some features (power scheme and a full PrintBRM package) require admin rights." -ForegroundColor Gray
+    Write-Host "  PrintBRM is still attempted if you skip; its result is recorded in the package.`n" -ForegroundColor DarkGray
     
     $choice = Read-Host "  Run as Administrator? (Y/N, or S to skip)"
     
@@ -298,10 +298,10 @@ $Script:Config = @{
     Version = "0.6"
     TransferFolderName = "LaptopTransfer_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 
-    # Printer driver binaries in the PrintBRM package. Network printers now use
-    # a driverless, non-admin connection restore; this flag only affects the
-    # admin-only fallback that captures LOCAL/direct-IP printers. TRUE bundles
-    # drivers (safer for offline restore); FALSE (-NOBIN) makes a smaller package.
+    # Printer driver binaries in the PrintBRM package. Network printers also
+    # have a driverless, non-admin connection restore. TRUE bundles drivers
+    # when PrintBRM is permitted to create the package; FALSE (-NOBIN) makes a
+    # smaller package.
     IncludePrinterDrivers = $true
     
     # User profile folders to copy (relative to user profile)
@@ -1550,9 +1550,17 @@ function Backup-Printers {
 
     $printerFolder = Join-Path $DestinationBase "Printers"
     $connectionsJson = Join-Path $printerFolder "PrinterConnections.json"
-    $printBrmPath  = "$env:WINDIR\System32\spool\tools\PrintBrm.exe"
     $exportFile    = Join-Path $printerFolder "Printers.printerExport"
     $brmLog        = Join-Path $DestinationBase "Logs\printbrm_backup.log"
+
+    # A 32-bit PowerShell host is redirected from System32 to SysWOW64.  Use
+    # Sysnative first in that case so we always call the native PrintBRM tool.
+    $printBrmCandidates = @()
+    if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+        $printBrmCandidates += (Join-Path $env:WINDIR "Sysnative\spool\tools\PrintBrm.exe")
+    }
+    $printBrmCandidates += (Join-Path $env:WINDIR "System32\spool\tools\PrintBrm.exe")
+    $printBrmPath = $printBrmCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 
     foreach ($p in @($printerFolder, (Split-Path $brmLog))) {
         if (-not (Test-Path $p)) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
@@ -1604,58 +1612,55 @@ function Backup-Printers {
         Write-KeyValue "Default printer" $defaultPrinter
     }
 
-    # ---- FALLBACK (admin only): local / direct-IP printers via PrintBRM ----
-    # Local printers carry their own drivers and genuinely need admin to restore.
-    # Only bother with PrintBRM if such printers actually exist.
+    # ---- PrintBRM package ----
+    # PrintBRM is the only source of a real .printerExport migration file.  Do
+    # not limit it to local printers: a package can also contain network queues,
+    # and users expect this artifact even when the JSON connection list is enough
+    # for a driverless restore.  Windows may reject the backup from a non-elevated
+    # session; we still attempt it and retain the tool output in the log.
     $localPrinters = @($allPrinters | Where-Object {
         $_.Type -eq 'Local' -and $_.Name -notlike '\\*' -and
         ($virtualPrinters -notcontains $_.Name)
     })
 
-    if ($localPrinters.Count -eq 0) {
-        Write-Log "No local/direct-IP printers to capture (connections cover everything)" -Level Info
+    if ($localPrinters.Count -gt 0) {
+        Write-Host "    $($Script:Theme.Glyphs.INFO) " -ForegroundColor Cyan -NoNewline
+        Write-Host "$($localPrinters.Count) local/direct-IP printer(s) detected" -ForegroundColor White
+    }
+
+    if (-not $printBrmPath) {
+        Write-Status "Printer migration file" "SKIP" "PrintBRM.exe not present"
+        Add-Result -Category "Printers" -Item "Printer Migration File" -Status "Skipped" -Details "PrintBRM.exe not found"
         return
     }
 
-    Write-Host "    $($Script:Theme.Glyphs.INFO) " -ForegroundColor Cyan -NoNewline
-    Write-Host "$($localPrinters.Count) local/direct-IP printer(s) detected" -ForegroundColor White
-
-    if (-not $Script:IsAdmin) {
-        # Non-admin: can't capture drivers. Surface as a manual task rather than fail.
-        Write-Log "Local printers need admin to capture drivers - noting as manual task" -Level Warning
-        Write-Status "Local printers" "SKIP" "$($localPrinters.Count) need admin (drivers)"
-        Add-Result -Category "Printers" -Item "Local Printers" -Status "Manual" -Details "$($localPrinters.Count) local printer(s) need admin to migrate drivers"
-        Add-ManualTask -Task "Re-add local/direct-IP printers" -Reason "$($localPrinters.Count) local printer(s) carry their own drivers; capturing them needs admin" -Instructions @"
-These local printers were not captured (network connections were):
-  $($localPrinters.Name -join "`n  ")
-On the new machine, re-add them via Settings > Printers, or re-run this tool as
-Administrator on the old machine to capture them (with drivers) automatically.
-"@
-        return
-    }
-
-    # Admin: use PrintBRM to grab local printers + their drivers.
-    if (-not (Test-Path $printBrmPath)) {
-        Write-Status "Local printers" "SKIP" "PrintBRM.exe not present"
-        Add-Result -Category "Printers" -Item "Local Printers" -Status "Skipped" -Details "PrintBRM.exe not found"
-        return
-    }
     try {
-        $brmArgs = @("-B", "-F", $exportFile, "-O", "FORCE")
+        # Do not let a stale file be mistaken for the result of this run.
+        if (Test-Path -LiteralPath $exportFile) {
+            Remove-Item -LiteralPath $exportFile -Force -ErrorAction Stop
+        }
+
+        $brmArgs = @("-B", "-F", $exportFile)
         if (-not $Script:Config.IncludePrinterDrivers) { $brmArgs += "-NOBIN" }
-        Write-Host "    $($Script:Theme.Glyphs.INFO) Capturing local printers + drivers (PrintBRM)" -ForegroundColor DarkGray
+        $accessMode = if ($Script:IsAdmin) { "elevated" } else { "standard-user attempt" }
+        Write-Host "    $($Script:Theme.Glyphs.INFO) Creating printer migration file (PrintBRM, $accessMode)" -ForegroundColor DarkGray
         & $printBrmPath @brmArgs *>&1 | Tee-Object -FilePath $brmLog | Out-Null
         $brmExit = $LASTEXITCODE
 
         if ((Test-Path $exportFile) -and ((Get-Item $exportFile).Length -gt 0)) {
             $file = Get-Item $exportFile
-            Write-Log "Local printer backup created ($(Format-FileSize $file.Length))" -Level Success
-            Write-Status "Local printers" "OK" "$(Format-FileSize $file.Length) (PrintBRM)"
-            Add-Result -Category "Printers" -Item "Local Printers" -Status "Success" -Details "$(Format-FileSize $file.Length), drivers=$($Script:Config.IncludePrinterDrivers)"
+            Write-Log "Printer migration file created ($(Format-FileSize $file.Length)); PrintBRM exit $brmExit" -Level Success
+            Write-Status "Printer migration file" "OK" "$(Format-FileSize $file.Length) (PrintBRM)"
+            Add-Result -Category "Printers" -Item "Printer Migration File" -Status "Success" -Details "$(Format-FileSize $file.Length), drivers=$($Script:Config.IncludePrinterDrivers), exit=$brmExit"
         }
         else {
-            Write-Status "Local printers" "WARN" "no package created (exit $brmExit)"
-            Add-Result -Category "Printers" -Item "Local Printers" -Status "Warning" -Details "Exit $brmExit, see printbrm_backup.log"
+            $elevationHint = if ($Script:IsAdmin) { "" } else { "; Windows commonly requires an elevated session" }
+            Write-Log "PrintBRM did not create Printers.printerExport (exit $brmExit)$elevationHint" -Level Warning
+            Write-Status "Printer migration file" "WARN" "not created (exit $brmExit)"
+            Add-Result -Category "Printers" -Item "Printer Migration File" -Status "Warning" -Details "Exit $brmExit$elevationHint; see printbrm_backup.log"
+            if (-not $Script:IsAdmin) {
+                Add-ManualTask -Task "Create PrintBRM printer migration file" -Reason "PrintBRM did not allow the standard-user export" -Instructions "Re-run Export-LaptopData.ps1 and select Y at the administrator prompt. The failed PrintBRM output is in Logs\\printbrm_backup.log."
+            }
         }
     }
     catch {
