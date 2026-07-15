@@ -740,6 +740,11 @@ function Get-DestinationFreeSpaceBytes {
 function New-TransferArchive {
     param([string]$TransferBase)
 
+    if ($Script:Config.TransferMode -ne "Online") {
+        Write-Log "Skipping ZIP archive for Local transfer" -Level Info
+        return $null
+    }
+
     $parentFolder = Split-Path -Path $TransferBase -Parent
     $archiveName = "$(Split-Path -Path $TransferBase -Leaf).zip"
     $archivePath = Join-Path $parentFolder $archiveName
@@ -1979,7 +1984,10 @@ function New-ImportScript {
 #Requires -Version 5.1
 
 param(
-    [switch]$TestMode
+    [switch]$TestMode,
+    # Used by QuickImport.bat so a double-click restore stays in the current
+    # user's context and does not show a UAC elevation prompt.
+    [switch]$NoElevationPrompt
 )
 
 $ErrorActionPreference = "Continue"
@@ -2313,26 +2321,31 @@ if ($env:COMPUTERNAME -eq "{COMPUTERNAME}") {
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 if (-not $isAdmin) {
-    Write-Host "  Some features require Administrator rights:" -ForegroundColor Yellow
-    Write-Host "    - Power scheme import" -ForegroundColor Gray
-    Write-Host "    - Lid close action settings" -ForegroundColor Gray
-    Write-Host ""
-    $elevate = Read-Host "  Run as Administrator? (Y/N, or S to skip)"
-    
-    if ($elevate -match "^[Yy]") {
-        Write-Host "`n  Requesting elevation..." -ForegroundColor Cyan
-        try {
-            $scriptFullPath = $MyInvocation.MyCommand.Path
-            Start-Process powershell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$scriptFullPath`""
-            exit
-        }
-        catch {
-            Write-Host "  Could not elevate. Continuing without admin rights." -ForegroundColor Yellow
-            $isAdmin = $false
-        }
+    if ($NoElevationPrompt) {
+        Write-Host "  Running as the current user; admin-only restore steps will be skipped." -ForegroundColor DarkGray
     }
     else {
-        Write-Host "  Continuing without admin rights..." -ForegroundColor Gray
+        Write-Host "  Some features require Administrator rights:" -ForegroundColor Yellow
+        Write-Host "    - Power scheme import" -ForegroundColor Gray
+        Write-Host "    - Lid close action settings" -ForegroundColor Gray
+        Write-Host ""
+        $elevate = Read-Host "  Run as Administrator? (Y/N, or S to skip)"
+
+        if ($elevate -match "^[Yy]") {
+            Write-Host "`n  Requesting elevation..." -ForegroundColor Cyan
+            try {
+                $scriptFullPath = $MyInvocation.MyCommand.Path
+                Start-Process powershell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$scriptFullPath`""
+                exit
+            }
+            catch {
+                Write-Host "  Could not elevate. Continuing without admin rights." -ForegroundColor Yellow
+                $isAdmin = $false
+            }
+        }
+        else {
+            Write-Host "  Continuing without admin rights..." -ForegroundColor Gray
+        }
     }
 }
 else {
@@ -2900,7 +2913,7 @@ if (Test-Path $printerExportFile) {
         Write-Log "Local printer package present but restore needs admin" -Level "Warning"
         Write-Status "Local printers" "SKIP" "admin needed for local drivers"
         Add-Result -Category "Printers" -Item "Local Printers" -Status "Manual" -Details "Re-run elevated (or re-add via Settings) for local printers"
-        Add-ManualTask -Task "Restore local/direct-IP printers" -Reason "Local printers carry their own drivers and need admin" -Instructions "Re-run QuickImport.bat (it self-elevates) or run Import-LaptopData.ps1 as Administrator to install local printers."
+        Add-ManualTask -Task "Restore local/direct-IP printers" -Reason "Local printers carry their own drivers and need admin" -Instructions "Run Import-LaptopData.ps1 as Administrator to install local printers. QuickImport.bat intentionally runs without elevation."
     }
     elseif (-not (Test-Path $printBrmPath)) {
         Write-Status "Local printers" "SKIP" "PrintBRM.exe not present"
@@ -3639,29 +3652,23 @@ function New-QuickImportBatch {
 
     $batPath = Join-Path $DestinationBase "QuickImport.bat"
 
-    # Self-elevating launcher: printer + power restore need admin, so the
-    # convenience double-click must relaunch itself elevated (UAC prompt).
+    # Quick Import deliberately stays in the signed-in user's context. It
+    # restores the user-scoped data without UAC; admin-only steps are reported
+    # as manual tasks by the generated import script.
     $batContent = @"
 @echo off
 title STO Laptop Transfer - Quick Import
-
-rem --- Self-elevate: re-launch this .bat as admin if not already ---
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Requesting administrator privileges...
-    powershell -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
-    exit /b
-)
 
 echo.
 echo ============================================
 echo    STO Laptop Transfer - Quick Import
 echo ============================================
 echo.
-echo Running import script (elevated)...
+echo Running import script as the current user...
+echo Admin-only restore steps will be skipped and listed in the report.
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Import-LaptopData.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Import-LaptopData.ps1" -NoElevationPrompt
 set IMPORT_EXIT=%errorlevel%
 
 echo.
@@ -3728,13 +3735,15 @@ function Start-LaptopExport {
         if ($null -ne $freeBytes) {
             Write-KeyValue "Free at destination" (Format-FileSize $freeBytes)
         }
-        # The uncompressed package remains in place while its ZIP is created,
-        # so reserve room for both plus headroom for settings and metadata.
-        $requiredFreeBytes = [math]::Ceiling($estBytes * 2.15)
+        # Online mode keeps the folder while creating a ZIP; Local mode keeps
+        # only the folder, so it needs substantially less destination space.
+        $spaceMultiplier = if ($Script:Config.TransferMode -eq "Online") { 2.15 } else { 1.15 }
+        $requiredFreeBytes = [math]::Ceiling($estBytes * $spaceMultiplier)
         if ($freeBytes -gt 0 -and $freeBytes -lt $requiredFreeBytes) {
             Write-Host ""
             Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
-            Write-Host "Destination may not have enough free space for the package and its ZIP archive." -ForegroundColor White
+            $spaceDetail = if ($Script:Config.TransferMode -eq "Online") { "the package and its ZIP archive" } else { "the transfer package" }
+            Write-Host "Destination may not have enough free space for $spaceDetail." -ForegroundColor White
             $go = Read-Host "    Continue anyway? (Y/N)"
             if ($go -notmatch "^[Yy]") { Write-Host "  Cancelled." -ForegroundColor Yellow; return }
         }
@@ -3793,9 +3802,12 @@ function Start-LaptopExport {
     $logPath = Join-Path $transferBase "Logs\ExportLog.txt"
     $Script:Log | Out-File $logPath -Encoding UTF8
 
-    # Keep the folder for immediate report viewing and produce a portable ZIP
-    # beside it for online transfer or removable-media handoff.
-    $archivePath = New-TransferArchive -TransferBase $transferBase
+    # Local transfers stay as folders for a removable drive. Online transfers
+    # also produce a portable ZIP beside the package.
+    $archivePath = $null
+    if ($Script:Config.TransferMode -eq "Online") {
+        $archivePath = New-TransferArchive -TransferBase $transferBase
+    }
     
     # Summary
     $Script:Results.EndTime = Get-Date
@@ -3817,7 +3829,7 @@ function Start-LaptopExport {
     Write-Status "Printers"               "INFO" "PrintBRM package"
     Write-Status "BrowserData"            "INFO" "bookmarks"
     Write-Status "Import-LaptopData.ps1"  "OK"   "run on new machine"
-    Write-Status "QuickImport.bat"        "OK"   "double-click (self-elevates)"
+    Write-Status "QuickImport.bat"        "OK"   "double-click (no admin required)"
     Write-Status "TransferReport.html"    "OK"   "full report"
     if ($archivePath) {
         Write-Status "$(Split-Path -Path $archivePath -Leaf)" "OK" "portable compressed package"

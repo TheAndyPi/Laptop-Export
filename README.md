@@ -20,7 +20,7 @@ The script is interactive. It will prompt you to:
    - **Local:** Select an external or secondary drive from the console; the Windows folder picker is not opened.
    - **Online:** A Windows folder picker opens. Choose a network share, cloud-synced folder, or any local folder.
 
-It then runs the export, creates `LaptopTransfer_<timestamp>.zip` beside the package folder, and opens the HTML report when finished.
+It then runs the export and opens the HTML report when finished. **Online** transfers also create `LaptopTransfer_<timestamp>.zip` beside the package folder; **Local** transfers keep only the folder.
 
 ## Requirements
 
@@ -33,8 +33,8 @@ It then runs the export, creates `LaptopTransfer_<timestamp>.zip` beside the pac
 
 | Mode | Use case | Behavior |
 |------|----------|----------|
-| **Local** | USB / on-site | Full copy of everything. |
-| **Online** | Slow / remote links | Trimmed: caps `Downloads` at 5 GB (omits if larger), skips Lotus Notes data, prompts on any folder over 10 GB, and skips OneDrive re-hydration. |
+| **Local** | USB / on-site | Full copy of everything; no ZIP is created. |
+| **Online** | Slow / remote links | Trimmed: caps `Downloads` at 5 GB (omits if larger), skips Lotus Notes data, prompts on any folder over 10 GB, skips OneDrive re-hydration, and creates a ZIP. |
 
 ## What it captures
 
@@ -48,7 +48,7 @@ It then runs the export, creates `LaptopTransfer_<timestamp>.zip` beside the pac
 
 ## Output package
 
-Written to the chosen destination as a package folder plus a ZIP archive:
+Written to the chosen destination as a package folder. Online transfers also include a ZIP archive:
 
 ```
 LaptopTransfer_<timestamp>\
@@ -59,21 +59,21 @@ LaptopTransfer_<timestamp>\
 ├── Printers\              # PrintBRM package
 ├── Logs\                  # ExportLog.txt
 ├── Import-LaptopData.ps1  # run on the NEW machine to restore
-├── QuickImport.bat        # double-click launcher (self-elevates)
+├── QuickImport.bat        # double-click launcher (runs as the current user)
 └── TransferReport.html    # full report of everything captured
 
-LaptopTransfer_<timestamp>.zip  # portable copy of the package above
+LaptopTransfer_<timestamp>.zip  # Online transfers only: portable copy of the package above
 ```
 
 ## On the new machine
 
-Copy the transfer folder to the new laptop, or extract `LaptopTransfer_<timestamp>.zip`, then restore with **either**:
+Copy the transfer folder to the new laptop, or (for Online transfers) extract `LaptopTransfer_<timestamp>.zip`, then restore with **either**:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\Import-LaptopData.ps1"
 ```
 
-...or double-click **`QuickImport.bat`** (it self-elevates). Add `-TestMode` to the Import command to preview actions without making changes.
+...or double-click **`QuickImport.bat`** (no administrator prompt). It restores user-scoped data and reports any admin-only steps for manual follow-up. Add `-TestMode` to the Import command to preview actions without making changes.
 
 ## Command-line parameters
 
