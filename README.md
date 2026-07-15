@@ -59,7 +59,7 @@ LaptopTransfer_<timestamp>\
 ├── Printers\              # PrintBRM package
 ├── Logs\                  # ExportLog.txt
 ├── Import-LaptopData.ps1  # run on the NEW machine to restore
-├── QuickImport.bat        # double-click launcher (runs as the current user)
+├── QuickImport.bat        # double-click launcher (choose admin or standard)
 └── TransferReport.html    # full report of everything captured
 
 LaptopTransfer_<timestamp>.zip  # Online transfers only: portable copy of the package above
@@ -73,7 +73,7 @@ Copy the transfer folder to the new laptop, or (for Online transfers) extract `L
 powershell -ExecutionPolicy Bypass -File ".\Import-LaptopData.ps1"
 ```
 
-...or double-click **`QuickImport.bat`** (no administrator prompt). It restores user-scoped data and reports any admin-only steps for manual follow-up. Add `-TestMode` to the Import command to preview actions without making changes.
+...or double-click **`QuickImport.bat`** and choose whether to run with administrator rights. Standard mode restores user-scoped data and reports any admin-only steps for manual follow-up. Add `-TestMode` to the Import command to preview actions without making changes.
 
 ## Command-line parameters
 

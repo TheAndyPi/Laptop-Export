@@ -3652,9 +3652,8 @@ function New-QuickImportBatch {
 
     $batPath = Join-Path $DestinationBase "QuickImport.bat"
 
-    # Quick Import deliberately stays in the signed-in user's context. It
-    # restores the user-scoped data without UAC; admin-only steps are reported
-    # as manual tasks by the generated import script.
+    # Let the technician choose once: run normally for user-scoped data, or
+    # request elevation when power settings and local printer drivers matter.
     $batContent = @"
 @echo off
 title STO Laptop Transfer - Quick Import
@@ -3664,11 +3663,27 @@ echo ============================================
 echo    STO Laptop Transfer - Quick Import
 echo ============================================
 echo.
-echo Running import script as the current user...
-echo Admin-only restore steps will be skipped and listed in the report.
+if /I "%~1"=="--elevated" goto :Elevated
+
+set /p RUN_AS_ADMIN="Run with administrator rights? (Y/N) [N]: "
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Import-LaptopData.ps1" -NoElevationPrompt
+if /I "%RUN_AS_ADMIN%"=="Y" (
+    echo Requesting administrator privileges...
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -ArgumentList '--elevated'"
+    exit /b
+) else (
+    echo Running import script as the current user...
+    echo Admin-only restore steps will be skipped and listed in the report.
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Import-LaptopData.ps1" -NoElevationPrompt
+)
+goto :Complete
+
+:Elevated
+echo Running import script with administrator rights...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Import-LaptopData.ps1"
+
+:Complete
 set IMPORT_EXIT=%errorlevel%
 
 echo.
@@ -3829,7 +3844,7 @@ function Start-LaptopExport {
     Write-Status "Printers"               "INFO" "PrintBRM package"
     Write-Status "BrowserData"            "INFO" "bookmarks"
     Write-Status "Import-LaptopData.ps1"  "OK"   "run on new machine"
-    Write-Status "QuickImport.bat"        "OK"   "double-click (no admin required)"
+    Write-Status "QuickImport.bat"        "OK"   "double-click (choose admin or standard)"
     Write-Status "TransferReport.html"    "OK"   "full report"
     if ($archivePath) {
         Write-Status "$(Split-Path -Path $archivePath -Leaf)" "OK" "portable compressed package"
