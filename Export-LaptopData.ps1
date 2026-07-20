@@ -1,4 +1,9 @@
-﻿<#
+# ---------------------------------------------------------------------------
+# GENERATED FILE - DO NOT EDIT DIRECTLY
+# Source modules: src\\01-bootstrap.ps1 through src\\10-main.ps1
+# Build command: powershell -ExecutionPolicy Bypass -File .\\Build-Deployment.ps1
+# ---------------------------------------------------------------------------
+<#
 .SYNOPSIS
     STO Building Group Laptop Transfer - Export Script
     Captures user data, settings, and generates import script for new machine.

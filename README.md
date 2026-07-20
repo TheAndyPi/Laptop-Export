@@ -4,6 +4,14 @@
 
 A single-file PowerShell tool that automates the **data-collection phase** of a laptop refresh. An IT technician runs it on the **old** laptop (logged in as, or on behalf of, the user being transferred). It creates a self-contained transfer package, ZIPs it for handoff, and generates a matching **Import** script, a **QuickImport.bat**, and an **HTML report** to run on the new machine.
 
+## Development and deployment
+
+The deployed `Export-LaptopData.ps1` remains a single, self-contained script. For maintenance, edit the focused modules in [`src`](src/README.md), then rebuild the deployment file:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\Build-Deployment.ps1"
+```
+
 ## Deploy / Run
 
 Run on the **old** laptop, signed in as the user being transferred:
