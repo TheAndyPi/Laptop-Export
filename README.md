@@ -1,6 +1,6 @@
 # Laptop Export
 
-**STO Building Group – Laptop Transfer / Export Tool** (`Export-LaptopData.ps1`, v0.6)
+**STO Building Group – Laptop Transfer / Export Tool** (`Export-LaptopData.ps1`, v0.7)
 
 A single-file PowerShell tool that automates the **data-collection phase** of a laptop refresh. An IT technician runs it on the **old** laptop (logged in as, or on behalf of, the user being transferred). It creates a self-contained transfer package, ZIPs it for handoff, and generates a matching **Import** script, a **QuickImport.bat**, and an **HTML report** to run on the new machine.
 
@@ -43,7 +43,7 @@ It then runs the export and opens the HTML report when finished. **Online** tran
 - **System settings** — power scheme, lid-close actions (AC/DC), mapped network drives, personalization (colors, dark mode, taskbar), wallpaper
 - **Installed programs** — documented to a list
 - **Printers** — a `Printers.printerExport` PrintBRM migration file is attempted for every run, plus a driverless network-connection list. Windows may require elevation to create a full PrintBRM package; the package log records the exact result.
-- **Browser data** — Chrome & Edge bookmarks (HTML), Firefox reminder
+- **Browser data** — Chrome & Edge bookmarks (HTML); full Firefox profile data, including bookmarks, saved logins, history, extensions, settings, and companion local data
 - **OneDrive** — sync-state handling
 
 ## Output package
@@ -55,7 +55,7 @@ LaptopTransfer_<timestamp>\
 ├── UserData\              # user folders + loose files
 ├── AppData\               # Bluebeam, signatures, Quick Access, Lotus
 ├── Settings\              # power, drives, personalization
-├── BrowserData\           # bookmarks
+├── BrowserData\           # Chrome/Edge bookmark HTML and Firefox profile data
 ├── Printers\              # PrintBRM package
 ├── Logs\                  # ExportLog.txt
 ├── Import-LaptopData.ps1  # run on the NEW machine to restore
@@ -74,6 +74,8 @@ powershell -ExecutionPolicy Bypass -File ".\Import-LaptopData.ps1"
 ```
 
 ...or double-click **`QuickImport.bat`** and choose whether to run with administrator rights. Standard mode restores user-scoped data and reports any admin-only steps for manual follow-up. Add `-TestMode` to the Import command to preview actions without making changes.
+
+If Firefox data is present, the import script restores it automatically. Close Firefox when prompted; any existing Firefox data on the new laptop is moved to a timestamped `Firefox_Backup_*` folder beside the restored profile.
 
 ## Command-line parameters
 

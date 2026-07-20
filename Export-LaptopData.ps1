@@ -295,7 +295,7 @@ if (-not $Script:IsAdmin) {
 # ============================================================================
 
 $Script:Config = @{
-    Version = "0.6"
+    Version = "0.7"
     TransferFolderName = "LaptopTransfer_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 
     # Printer driver binaries in the PrintBRM package. Network printers also
@@ -1794,34 +1794,64 @@ OR: Sign into Chrome with Google account to sync automatically.
         Add-Result -Category "Browser" -Item "Chrome" -Status "Skipped" -Details "Not found"
     }
     
-    # ========== FIREFOX BOOKMARKS ==========
-    # Firefox bookmarks must be exported manually as HTML - no reliable automated way
-    $firefoxPath = Join-Path $Script:OriginalAppDataRoaming "Mozilla\Firefox\Profiles"
-    if (Test-Path $firefoxPath) {
-        Write-Log "Firefox detected - bookmarks require manual export" -Level Info
-        
-        Add-ManualTask -Task "Export Firefox Bookmarks" -Reason "Firefox bookmarks must be exported manually as HTML" -Instructions @"
-BEFORE wiping the old laptop:
-1. Open Firefox > Press Ctrl+Shift+O (Bookmarks Manager)
-2. Click 'Import and Backup' > 'Export Bookmarks to HTML...'
-3. Save to transfer drive as 'Firefox_Bookmarks.html'
-4. On new laptop: Bookmarks Manager > 'Import and Backup' > 'Import Bookmarks from HTML...'
-"@
-        
-        Add-ManualTask -Task "Export Firefox Passwords" -Reason "Passwords require manual export" -Instructions @"
-BEFORE wiping the old laptop:
-1. Open Firefox > about:logins
-2. Click three dots menu > 'Export Logins...'
-3. Save CSV file to transfer drive
-4. On new laptop: about:logins > Import from a File
+    # ========== FIREFOX PROFILE ==========
+    # Firefox stores the portable profile (bookmarks, history, extensions,
+    # saved logins, settings, and open tabs) in Roaming AppData. Local AppData
+    # holds companion profile data such as offline storage and cache metadata.
+    # Copy both locations so the generated import script can restore Firefox
+    # without requiring separate HTML/CSV exports.
+    $firefoxRoamingSource = Join-Path $Script:OriginalAppDataRoaming "Mozilla\Firefox"
+    $firefoxLocalSource = Join-Path $Script:OriginalAppDataLocal "Mozilla\Firefox"
+    $firefoxPackagePath = Join-Path $browserPath "Firefox"
+    $firefoxFound = $false
 
-OR: Sign into Firefox Sync to sync automatically.
-"@
-        Add-Result -Category "Browser" -Item "Firefox Bookmarks" -Status "Manual" -Details "User must export as HTML"
-        Add-Result -Category "Browser" -Item "Firefox Passwords" -Status "Manual" -Details "User must export as CSV"
+    if (@(Get-Process -Name "firefox" -ErrorAction SilentlyContinue).Count -gt 0) {
+        Write-Log "Firefox is running; profile files may change while they are copied" -Level Warning
+        Add-ManualTask -Task "Verify Firefox profile export" -Reason "Firefox was open during export" -Instructions "Close Firefox before running the export when possible. If Firefox data is important, run the export again with Firefox closed so its profile databases are captured consistently."
     }
-    else {
-        Write-Log "Firefox not installed" -Level Info
+
+    if (Test-Path $firefoxRoamingSource) {
+        $firefoxFound = $true
+        $firefoxRoamingDest = Join-Path $firefoxPackagePath "Roaming"
+        $firefoxRoamingLog = Join-Path $DestinationBase "Logs\robocopy_firefox_roaming.log"
+        $result = Copy-WithProgress -Source $firefoxRoamingSource `
+                                    -Destination $firefoxRoamingDest `
+                                    -FolderName "Firefox profile (Roaming)" `
+                                    -LogPath $firefoxRoamingLog `
+                                    -RobocopyArgs $Script:Config.RobocopyArgs
+
+        if ($result.Status -eq "Success") {
+            Write-Log "Firefox roaming profile copied: $($result.FilesCopied) files" -Level Success
+            Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Success" -Details "$($result.FilesCopied) files; bookmarks, history, logins, extensions, and settings"
+        }
+        else {
+            Write-Log "Firefox roaming profile copy completed with warnings" -Level Warning
+            Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Warning" -Details "Check robocopy_firefox_roaming.log"
+        }
+    }
+
+    if (Test-Path $firefoxLocalSource) {
+        $firefoxFound = $true
+        $firefoxLocalDest = Join-Path $firefoxPackagePath "Local"
+        $firefoxLocalLog = Join-Path $DestinationBase "Logs\robocopy_firefox_local.log"
+        $result = Copy-WithProgress -Source $firefoxLocalSource `
+                                    -Destination $firefoxLocalDest `
+                                    -FolderName "Firefox data (Local)" `
+                                    -LogPath $firefoxLocalLog `
+                                    -RobocopyArgs $Script:Config.RobocopyArgs
+
+        if ($result.Status -eq "Success") {
+            Write-Log "Firefox local data copied: $($result.FilesCopied) files" -Level Success
+            Add-Result -Category "Browser" -Item "Firefox Local Data" -Status "Success" -Details "$($result.FilesCopied) files"
+        }
+        else {
+            Write-Log "Firefox local data copy completed with warnings" -Level Warning
+            Add-Result -Category "Browser" -Item "Firefox Local Data" -Status "Warning" -Details "Check robocopy_firefox_local.log"
+        }
+    }
+
+    if (-not $firefoxFound) {
+        Write-Log "Firefox not installed or no profile data found" -Level Info
         Add-Result -Category "Browser" -Item "Firefox" -Status "Skipped" -Details "Not found"
     }
     
@@ -1967,7 +1997,7 @@ function New-ImportScript {
     - Mapped network drives
     - Desktop wallpaper
     - Chrome/Edge bookmarks (HTML files for manual import)
-    - Firefox profiles (manual restore)
+    - Firefox profile data (bookmarks, logins, extensions, settings, and history)
 
 .PARAMETER TestMode
     Runs in test mode - shows what would be restored without making changes
@@ -3094,7 +3124,7 @@ Write-Host ""
 # RESTORE BROWSER DATA
 # ============================================================================
 
-Write-Section "Browser bookmarks"
+Write-Section "Browser data"
 Write-Host ""
 
 # Browser bookmarks are exported as HTML files for manual import
@@ -3118,15 +3148,75 @@ if (Test-Path $edgeHtml) {
     Add-Result -Category "Browser" -Item "Edge Bookmarks" -Status "Ready" -Details "HTML file for manual import"
 }
 
-# Firefox - remind about manual export
-Write-Log "Firefox bookmarks - User should have exported HTML manually" -Level "Info"
-Write-Host "    To import: Firefox > Ctrl+Shift+O > Import and Backup > Import from HTML" -ForegroundColor Gray
+# Firefox profile data
+$firefoxRoamingSource = Join-Path $browserDataPath "Firefox\Roaming"
+$firefoxLocalSource = Join-Path $browserDataPath "Firefox\Local"
+if ((Test-Path $firefoxRoamingSource) -or (Test-Path $firefoxLocalSource)) {
+    if ($TestMode) {
+        $firefoxFileCount = ((Get-ChildItem $firefoxRoamingSource -Recurse -File -Force -ErrorAction SilentlyContinue) + (Get-ChildItem $firefoxLocalSource -Recurse -File -Force -ErrorAction SilentlyContinue) | Measure-Object).Count
+        Write-Log "Firefox profile - Would restore $firefoxFileCount files" -Level "Info"
+        Add-Result -Category "Browser" -Item "Firefox Profile" -Status "TestMode" -Details "$firefoxFileCount files"
+    }
+    else {
+        $firefoxProcesses = @(Get-Process -Name "firefox" -ErrorAction SilentlyContinue)
+        if ($firefoxProcesses.Count -gt 0) {
+            Write-Host "  Firefox must be closed before its profile can be restored." -ForegroundColor Yellow
+            $closeFirefox = Read-Host "  Close Firefox, then press Enter to continue (S to skip)"
+            $firefoxProcesses = @(Get-Process -Name "firefox" -ErrorAction SilentlyContinue)
+        }
+
+        if ($firefoxProcesses.Count -gt 0 -or $closeFirefox -match "^[Ss]") {
+            Write-Log "Firefox profile restore skipped because Firefox is still running or was skipped" -Level "Warning"
+            Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Skipped" -Details "Close Firefox and re-run the import script"
+        }
+        else {
+            $backupStamp = Get-Date -Format "yyyyMMdd_HHmmss"
+            $firefoxRestoreTargets = @(
+                @{ Source = $firefoxRoamingSource; Parent = (Join-Path $env:APPDATA "Mozilla"); Name = "Roaming" },
+                @{ Source = $firefoxLocalSource; Parent = (Join-Path $env:LOCALAPPDATA "Mozilla"); Name = "Local" }
+            )
+
+            foreach ($target in $firefoxRestoreTargets) {
+                if (-not (Test-Path $target.Source)) { continue }
+
+                $destination = Join-Path $target.Parent "Firefox"
+                $backup = Join-Path $target.Parent "Firefox_Backup_$backupStamp"
+                try {
+                    if (-not (Test-Path $target.Parent)) { New-Item -ItemType Directory -Path $target.Parent -Force | Out-Null }
+                    if (Test-Path $destination) {
+                        Move-Item -LiteralPath $destination -Destination $backup -ErrorAction Stop
+                        Write-Log "Existing Firefox $($target.Name) data backed up to $backup" -Level "Info"
+                    }
+
+                    $logPath = Join-Path $logsPath "import_firefox_$($target.Name.ToLower()).log"
+                    $result = Copy-WithProgress -Source $target.Source `
+                                               -Destination $destination `
+                                               -FolderName "Firefox $($target.Name) data" `
+                                               -LogPath $logPath
+                    if ($result.Status -eq "Success") {
+                        Write-Log "Firefox $($target.Name) data restored: $($result.FilesCopied) files" -Level "Success"
+                        Add-Result -Category "Browser" -Item "Firefox $($target.Name) Data" -Status "Success" -Details "$($result.FilesCopied) files"
+                    }
+                    else {
+                        Write-Log "Firefox $($target.Name) data restore completed with warnings" -Level "Warning"
+                        Add-Result -Category "Browser" -Item "Firefox $($target.Name) Data" -Status $result.Status -Details "Check $logPath"
+                    }
+                }
+                catch {
+                    Write-Log "Firefox $($target.Name) data restore failed: $_" -Level "Warning"
+                    Add-Result -Category "Browser" -Item "Firefox $($target.Name) Data" -Status "Warning" -Details $_.Exception.Message
+                }
+            }
+
+            Write-Host "    Firefox profile restored. Start Firefox after this import completes." -ForegroundColor Gray
+        }
+    }
+}
 
 # Note about passwords
 Write-Host ""
-Write-Host "  NOTE: Browser passwords must be imported from CSV files" -ForegroundColor Yellow
+Write-Host "  NOTE: Chrome passwords must be imported from CSV files" -ForegroundColor Yellow
 Write-Host "    Chrome: chrome://settings/passwords > Import" -ForegroundColor Gray
-Write-Host "    Firefox: about:logins > Import from a File" -ForegroundColor Gray
 
 Write-Host ""
 
