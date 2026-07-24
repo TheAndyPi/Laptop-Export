@@ -219,7 +219,7 @@ function Start-LaptopExport {
     Write-Status "AppData"                "INFO" "Bluebeam, signatures, Quick Access"
     Write-Status "Settings"               "INFO" "power, drives, personalization"
     Write-Status "Printers"               "INFO" "PrintBRM package"
-    Write-Status "BrowserData"            "INFO" "bookmarks"
+    Write-Status "BrowserData"            "INFO" "Chrome archive/bookmarks/password CSV if chosen; Firefox profile"
     Write-Status "Import-LaptopData.ps1"  "OK"   "run on new machine"
     Write-Status "QuickImport.bat"        "OK"   "double-click (choose admin or standard)"
     Write-Status "TransferReport.html"    "OK"   "full report"

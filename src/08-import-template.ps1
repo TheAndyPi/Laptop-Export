@@ -32,6 +32,8 @@ function New-ImportScript {
     - Mapped network drives
     - Desktop wallpaper
     - Chrome/Edge bookmarks (HTML files for manual import)
+    - Chrome password-export CSV files (manual native Chrome import)
+    - Chrome profile archive retained for recovery/reference (not auto-restored)
     - Firefox profile data (bookmarks, logins, extensions, settings, and history)
 
 .PARAMETER TestMode
@@ -1153,16 +1155,89 @@ Write-Host ""
 Write-Section "Browser data"
 Write-Host ""
 
-# Browser bookmarks are exported as HTML files for manual import
+# Browser bookmarks are exported as HTML files for manual import. Chrome
+# profile archives and password CSVs are handled deliberately below; copying a
+# Chrome profile onto a different Windows installation cannot restore the
+# Windows-protected credential material safely.
 $browserDataPath = Join-Path $scriptPath "BrowserData"
 
-# Chrome bookmarks HTML
-$chromeHtml = Join-Path $browserDataPath "Chrome_Bookmarks.html"
-if (Test-Path $chromeHtml) {
-    Write-Log "Chrome bookmarks HTML file available" -Level "Success"
-    Write-Host "    File: $chromeHtml" -ForegroundColor Gray
-    Write-Host "    To import: Chrome > Bookmarks > Import bookmarks and settings > HTML file" -ForegroundColor Gray
-    Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Ready" -Details "HTML file for manual import"
+# Chrome bookmarks HTML (one file per old Chrome profile)
+$chromeBookmarksPath = Join-Path $browserDataPath "Chrome\Bookmarks"
+$chromeBookmarkFiles = @(Get-ChildItem -LiteralPath $chromeBookmarksPath -Filter "*.html" -File -Force -ErrorAction SilentlyContinue)
+if ($chromeBookmarkFiles.Count -eq 0) {
+    # Compatibility with transfer packages generated before multi-profile
+    # Chrome bookmark export was introduced.
+    $legacyChromeHtml = Join-Path $browserDataPath "Chrome_Bookmarks.html"
+    if (Test-Path -LiteralPath $legacyChromeHtml) { $chromeBookmarkFiles = @(Get-Item -LiteralPath $legacyChromeHtml) }
+}
+if ($chromeBookmarkFiles.Count -gt 0) {
+    Write-Log "Chrome bookmark HTML files available for $($chromeBookmarkFiles.Count) profile(s)" -Level "Success"
+    foreach ($chromeBookmarkFile in $chromeBookmarkFiles) {
+        Write-Host "    File: $($chromeBookmarkFile.FullName)" -ForegroundColor Gray
+    }
+    Write-Host "    To import: Chrome > Bookmarks and lists > Import bookmarks and settings > HTML file" -ForegroundColor Gray
+    Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Ready" -Details "$($chromeBookmarkFiles.Count) HTML file(s) for manual import"
+}
+
+# Chrome profile archive. It contains useful browser state and encrypted
+# database files from every profile, but it is intentionally not copied over
+# a new Chrome profile: Chrome passwords/cookies use keys tied to the old
+# Windows installation, and overwriting a new profile can make Chrome fail to
+# start or lose the new machine's sign-in state.
+$chromeProfileArchive = Join-Path $browserDataPath "Chrome\User Data"
+if (Test-Path -LiteralPath $chromeProfileArchive) {
+    $chromeArchiveFiles = (Get-ChildItem -LiteralPath $chromeProfileArchive -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object).Count
+    Write-Log "Chrome profile archive retained ($chromeArchiveFiles files; not auto-restored)" -Level "Info"
+    Write-Host "    Chrome profile archive: $chromeProfileArchive" -ForegroundColor Gray
+    Write-Host "    Bookmarks and native password CSV import are the supported cross-PC restore paths." -ForegroundColor Gray
+    Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Info" -Details "$chromeArchiveFiles files retained; not safe to auto-restore across Windows installations"
+}
+
+# Chrome's native Password Manager export produces a plaintext CSV after the
+# user completes the Windows authentication prompt on the old computer. Do
+# not attempt to decrypt the raw Chrome profile here; the browser/Windows
+# protections are intentional. Instead, guide the user through Chrome's own
+# CSV import and offer to remove the sensitive export after confirmation.
+$chromePasswordExportPath = Join-Path $browserDataPath "Chrome\PasswordExport"
+$chromePasswordCsvs = @(Get-ChildItem -LiteralPath $chromePasswordExportPath -Filter "*.csv" -File -Force -ErrorAction SilentlyContinue)
+if ($chromePasswordCsvs.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  Chrome password export detected - this CSV is plaintext. Keep the transfer package secure." -ForegroundColor Yellow
+    foreach ($chromePasswordCsv in $chromePasswordCsvs) {
+        Write-Host "    File: $($chromePasswordCsv.FullName)" -ForegroundColor Gray
+    }
+    Write-Host "    In Chrome: Passwords and autofill > Google Password Manager > Settings > Import passwords." -ForegroundColor Gray
+
+    if ($TestMode) {
+        Write-Log "Chrome passwords - Would make $($chromePasswordCsvs.Count) CSV file(s) available for native import" -Level "Info"
+        Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "TestMode" -Details "$($chromePasswordCsvs.Count) plaintext CSV file(s); manual native Chrome import required"
+    }
+    else {
+        $openChrome = Read-Host "  Open Chrome Password Manager now? (Y/N)"
+        if ($openChrome -match '^[Yy]') {
+            try { Start-Process "chrome.exe" "chrome://password-manager/settings" -ErrorAction Stop }
+            catch { Write-Log "Could not open Chrome Password Manager automatically: $_" -Level Warning }
+        }
+
+        $deleteCsv = Read-Host "  After importing and verifying passwords, type DELETE to permanently remove the plaintext CSV (or press Enter to keep it)"
+        if ($deleteCsv -ceq "DELETE") {
+            try {
+                foreach ($chromePasswordCsv in $chromePasswordCsvs) {
+                    Remove-Item -LiteralPath $chromePasswordCsv.FullName -Force -ErrorAction Stop
+                }
+                Write-Log "Chrome password CSV removed after user-confirmed import" -Level Success
+                Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Success" -Details "Imported through Chrome and deleted from transfer package"
+            }
+            catch {
+                Write-Log "Could not remove Chrome password CSV: $_" -Level Warning
+                Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Warning" -Details "CSV may still be present; remove it securely after import"
+            }
+        }
+        else {
+            Write-Log "Chrome password CSV retained; delete it after native Chrome import" -Level Warning
+            Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Manual" -Details "Import in Chrome, verify, then securely delete plaintext CSV"
+        }
+    }
 }
 
 # Edge bookmarks HTML
@@ -1238,11 +1313,6 @@ if ((Test-Path $firefoxRoamingSource) -or (Test-Path $firefoxLocalSource)) {
         }
     }
 }
-
-# Note about passwords
-Write-Host ""
-Write-Host "  NOTE: Chrome passwords must be imported from CSV files" -ForegroundColor Yellow
-Write-Host "    Chrome: chrome://settings/passwords > Import" -ForegroundColor Gray
 
 Write-Host ""
 

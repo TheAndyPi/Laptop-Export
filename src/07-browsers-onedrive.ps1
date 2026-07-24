@@ -44,19 +44,32 @@ function Convert-ChromeBookmarksToHtml {
             return $result
         }
         
-        # Process bookmark bar
-        if ($bookmarksJson.roots.bookmark_bar) {
-            $html += "    <DT><H3>Bookmarks Bar</H3>`n"
-            $html += "    <DL><p>`n"
-            $html += (Process-BookmarkFolder -folder $bookmarksJson.roots.bookmark_bar -indent "        ")
-            $html += "    </DL><p>`n"
+        # Chrome can have several root folders (bookmark bar, other/mobile
+        # bookmarks, reading list, managed folders, etc.).  Enumerating them
+        # instead of hard-coding two roots preserves every bookmark Chrome
+        # exposes in the profile file.
+        $rootLabels = @{
+            bookmark_bar = "Bookmarks Bar"
+            other        = "Other Bookmarks"
+            synced       = "Mobile Bookmarks"
         }
-        
-        # Process other bookmarks
-        if ($bookmarksJson.roots.other) {
-            $html += "    <DT><H3>Other Bookmarks</H3>`n"
+        foreach ($rootProperty in $bookmarksJson.roots.PSObject.Properties) {
+            $folder = $rootProperty.Value
+            if (-not $folder -or -not $folder.children) { continue }
+
+            $label = if ($rootLabels.ContainsKey($rootProperty.Name)) {
+                $rootLabels[$rootProperty.Name]
+            }
+            elseif ($folder.name) {
+                $folder.name
+            }
+            else {
+                $rootProperty.Name
+            }
+
+            $html += "    <DT><H3>$(Out-HtmlEncoded $label)</H3>`n"
             $html += "    <DL><p>`n"
-            $html += (Process-BookmarkFolder -folder $bookmarksJson.roots.other -indent "        ")
+            $html += (Process-BookmarkFolder -folder $folder -indent "        ")
             $html += "    </DL><p>`n"
         }
         
@@ -71,12 +84,146 @@ function Convert-ChromeBookmarksToHtml {
     }
 }
 
+function Get-ChromeProfileDirectories {
+    param([string]$UserDataPath)
+
+    if (-not (Test-Path -LiteralPath $UserDataPath)) { return @() }
+
+    # The profile names Chrome creates on Windows are Default and Profile N.
+    # Guest/System profiles are intentionally not exported as personal data.
+    return @(Get-ChildItem -LiteralPath $UserDataPath -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq "Default" -or $_.Name -like "Profile *" } |
+        Sort-Object Name)
+}
+
+function Request-BrowserClose {
+    param(
+        [string]$ProcessName,
+        [string]$DisplayName
+    )
+
+    $processes = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+    if ($processes.Count -eq 0) { return $true }
+
+    Write-Host ""
+    Write-Host "  $DisplayName is open. Close it to capture its profile databases consistently." -ForegroundColor Yellow
+    $response = Read-Host "  Close $DisplayName, then press Enter to continue (S to copy while it is open)"
+    $processes = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+    if ($processes.Count -eq 0) { return $true }
+
+    Write-Log "$DisplayName is still running; some active database files may be unavailable or inconsistent" -Level Warning
+    Add-ManualTask -Task "Verify $DisplayName profile export" -Reason "$DisplayName was open during export" -Instructions "Close $DisplayName and run the export again before the old laptop is wiped if its current browser data is important."
+    return $false
+}
+
+function Export-ChromeBookmarks {
+    param(
+        [string]$ChromeUserDataPath,
+        [string]$BrowserPath
+    )
+
+    $bookmarkPath = Join-Path $BrowserPath "Chrome\Bookmarks"
+    $profiles = @(Get-ChromeProfileDirectories -UserDataPath $ChromeUserDataPath)
+    $exported = 0
+
+    foreach ($profile in $profiles) {
+        $bookmarksJson = Join-Path $profile.FullName "Bookmarks"
+        if (-not (Test-Path -LiteralPath $bookmarksJson)) { continue }
+
+        $safeProfileName = $profile.Name -replace '[^a-zA-Z0-9_.-]', '_'
+        $chromeHtml = Join-Path $bookmarkPath "Chrome_Bookmarks_$safeProfileName.html"
+        if (-not (Test-Path -LiteralPath $bookmarkPath)) {
+            New-Item -ItemType Directory -Path $bookmarkPath -Force | Out-Null
+        }
+
+        if (Convert-ChromeBookmarksToHtml -JsonPath $bookmarksJson -HtmlPath $chromeHtml) {
+            $exported++
+            Write-Log "Chrome bookmarks exported for profile '$($profile.Name)'" -Level Success
+
+            # Keep the old Default filename as a convenience for technicians
+            # who are accustomed to the original single-profile layout.
+            if ($profile.Name -eq "Default") {
+                Copy-Item -LiteralPath $chromeHtml -Destination (Join-Path $BrowserPath "Chrome_Bookmarks.html") -Force
+            }
+        }
+        else {
+            Write-Log "Could not convert Chrome bookmarks for profile '$($profile.Name)'" -Level Warning
+        }
+    }
+
+    if ($exported -gt 0) {
+        Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Success" -Details "$exported Chrome profile(s) exported as HTML"
+    }
+    else {
+        Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Skipped" -Details "No Chrome bookmark files found"
+    }
+
+    return $exported
+}
+
+function Invoke-ChromePasswordExportPrompt {
+    param(
+        [string]$BrowserPath,
+        [bool]$CanLaunchChromeForOriginalUser
+    )
+
+    $passwordExportPath = Join-Path $BrowserPath "Chrome\PasswordExport"
+    New-Item -ItemType Directory -Path $passwordExportPath -Force | Out-Null
+
+    Write-Host ""
+    Write-Host "  Chrome passwords are protected by Windows and cannot be restored by copying the profile." -ForegroundColor Yellow
+    Write-Host "  Chrome's own export is the supported transfer method: it will request Windows authentication." -ForegroundColor Yellow
+    Write-Host "  Save the resulting CSV only in: $passwordExportPath" -ForegroundColor Cyan
+
+    $exportNow = Read-Host "  Open Chrome Password Manager now to export passwords? (Y/N)"
+    if ($exportNow -notmatch '^[Yy]') {
+        Add-ManualTask -Task "Export Chrome Passwords" -Reason "Chrome passwords remain encrypted in the raw profile backup" -Instructions @"
+On the old laptop, while signed in as the original Windows user:
+1. Open Chrome > Passwords and autofill > Google Password Manager > Settings.
+2. Under Export passwords, select Download file and complete the Windows authentication prompt.
+3. Save the CSV only to: $passwordExportPath
+4. On the new laptop, import it in Google Password Manager > Settings > Import passwords, then delete the CSV.
+"@
+        Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Manual" -Details "Native Chrome export declined; raw encrypted profile backup is included"
+        return
+    }
+
+    if (-not $CanLaunchChromeForOriginalUser) {
+        Write-Log "Cannot safely launch Chrome for the original profile from an elevated alternate-user session" -Level Warning
+        Write-Host "  Run the native Chrome export from the original user's desktop and use the path above." -ForegroundColor Yellow
+        Add-ManualTask -Task "Export Chrome Passwords" -Reason "Export is running under a different/elevated Windows user" -Instructions "Sign in as the original user, open Chrome's Google Password Manager > Settings > Export passwords, complete Windows authentication, and save the CSV to: $passwordExportPath"
+        Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Manual" -Details "Must be exported in original user's Windows session"
+        return
+    }
+
+    try {
+        Start-Process "chrome.exe" "chrome://password-manager/settings" -ErrorAction Stop
+        Write-Host "  Complete Chrome's export, choose the folder shown above, then return here." -ForegroundColor Gray
+        [void](Read-Host "  Press Enter after saving the CSV (S to skip)")
+    }
+    catch {
+        Write-Log "Could not open Chrome Password Manager: $_" -Level Warning
+        Write-Host "  Open Chrome manually and use the folder shown above." -ForegroundColor Yellow
+    }
+
+    $csvFiles = @(Get-ChildItem -LiteralPath $passwordExportPath -Filter "*.csv" -File -Force -ErrorAction SilentlyContinue)
+    if ($csvFiles.Count -gt 0) {
+        Write-Log "Chrome password CSV captured: $($csvFiles.Count) file(s)" -Level Success
+        Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Success" -Details "$($csvFiles.Count) CSV file(s) captured; plaintext - protect transfer package"
+    }
+    else {
+        Write-Log "No Chrome password CSV was found in the designated folder" -Level Warning
+        Add-ManualTask -Task "Export Chrome Passwords" -Reason "No CSV was saved to the transfer package" -Instructions "Use Chrome's Google Password Manager > Settings > Export passwords, complete Windows authentication, and save the CSV to: $passwordExportPath"
+        Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Manual" -Details "No native Chrome password export captured"
+    }
+}
+
 function Copy-BrowserData {
     param(
         [string]$DestinationBase
     )
     
-    Write-Log "Capturing browser bookmarks..." -Level Info
+    Write-Log "Capturing browser data..." -Level Info
     
     $browserPath = Join-Path $DestinationBase "BrowserData"
     if (-not (Test-Path $browserPath)) {
@@ -85,36 +232,39 @@ function Copy-BrowserData {
     
     $localAppData = $Script:OriginalAppDataLocal
     
-    # ========== CHROME BOOKMARKS ==========
-    $chromePath = Join-Path $localAppData "Google\Chrome\User Data\Default"
-    $bookmarksJson = Join-Path $chromePath "Bookmarks"
-    
-    if (Test-Path $bookmarksJson) {
-        Write-Log "Chrome bookmarks found" -Level Info
-        
-        $chromeHtml = Join-Path $browserPath "Chrome_Bookmarks.html"
-        if (Convert-ChromeBookmarksToHtml -JsonPath $bookmarksJson -HtmlPath $chromeHtml) {
-            Write-Log "Chrome bookmarks exported as HTML" -Level Success
-            Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Success" -Details "HTML file ready for import"
+    # ========== CHROME ==========
+    # Chrome data is split across every profile under User Data.  Keep a raw
+    # archive with common disposable cache directories excluded, then export each profile's
+    # bookmarks into Chrome's portable HTML format for reliable import.
+    $chromeUserDataPath = Join-Path $localAppData "Google\Chrome\User Data"
+    if (Test-Path -LiteralPath $chromeUserDataPath) {
+        [void](Request-BrowserClose -ProcessName "chrome" -DisplayName "Google Chrome")
+        [void](Export-ChromeBookmarks -ChromeUserDataPath $chromeUserDataPath -BrowserPath $browserPath)
+
+        $chromeRawDestination = Join-Path $browserPath "Chrome\User Data"
+        $chromeRawLog = Join-Path $DestinationBase "Logs\robocopy_chrome_user_data.log"
+        $chromeCopyArgs = @($Script:Config.RobocopyArgs) + @(
+            "/XD", "Cache", '"Code Cache"', "GPUCache", "ShaderCache", "GrShaderCache", "DawnCache", "Crashpad"
+        )
+        $result = Copy-WithProgress -Source $chromeUserDataPath `
+                                    -Destination $chromeRawDestination `
+                                    -FolderName "Chrome profile archive (all profiles)" `
+                                    -LogPath $chromeRawLog `
+                                    -RobocopyArgs $chromeCopyArgs
+        if ($result.Status -eq "Success") {
+            Write-Log "Chrome profile archive copied: $($result.FilesCopied) files" -Level Success
+            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Success" -Details "$($result.FilesCopied) files; common caches excluded; credentials remain Windows-protected"
         }
         else {
-            Write-Log "Could not convert Chrome bookmarks" -Level Warning
-            Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Warning" -Details "Conversion failed"
+            Write-Log "Chrome profile archive copy completed with warnings" -Level Warning
+            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Warning" -Details "Check robocopy_chrome_user_data.log"
         }
-        
-        # Manual task for passwords
-        Add-ManualTask -Task "Export Chrome Passwords" -Reason "Passwords are encrypted and require manual export" -Instructions @"
-BEFORE wiping the old laptop:
-1. Open Chrome > chrome://settings/passwords
-2. Click three dots menu > 'Export passwords'
-3. Save CSV file to transfer drive
-4. On new laptop: chrome://settings/passwords > Import
 
-OR: Sign into Chrome with Google account to sync automatically.
-"@
+        $canLaunchChromeForOriginalUser = (-not $Script:IsAdmin) -or ($Script:OriginalUserProfile -eq $env:USERPROFILE)
+        Invoke-ChromePasswordExportPrompt -BrowserPath $browserPath -CanLaunchChromeForOriginalUser $canLaunchChromeForOriginalUser
     }
     else {
-        Write-Log "Chrome not installed or no bookmarks" -Level Info
+        Write-Log "Chrome not installed or no user data found" -Level Info
         Add-Result -Category "Browser" -Item "Chrome" -Status "Skipped" -Details "Not found"
     }
     
@@ -129,10 +279,7 @@ OR: Sign into Chrome with Google account to sync automatically.
     $firefoxPackagePath = Join-Path $browserPath "Firefox"
     $firefoxFound = $false
 
-    if (@(Get-Process -Name "firefox" -ErrorAction SilentlyContinue).Count -gt 0) {
-        Write-Log "Firefox is running; profile files may change while they are copied" -Level Warning
-        Add-ManualTask -Task "Verify Firefox profile export" -Reason "Firefox was open during export" -Instructions "Close Firefox before running the export when possible. If Firefox data is important, run the export again with Firefox closed so its profile databases are captured consistently."
-    }
+    [void](Request-BrowserClose -ProcessName "firefox" -DisplayName "Firefox")
 
     if (Test-Path $firefoxRoamingSource) {
         $firefoxFound = $true
