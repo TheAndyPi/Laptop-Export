@@ -181,6 +181,8 @@ $Script:Results = @{
 $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $userProfile = $env:USERPROFILE
 $logFile = Join-Path $scriptPath "ImportLog.txt"
+$deletePrintBrmAfterImport = [bool]::Parse('{DELETE_PRINTBRM_AFTER_IMPORT}')
+$printBrmRestoreSucceeded = $false
 
 function Write-Log {
     param([string]$Message, [string]$Level = "Info")
@@ -998,18 +1000,7 @@ if (Test-Path $printerExportFile) {
                 Write-Status "Local printers" "OK" "restore command completed"
                 Add-Result -Category "Printers" -Item "Local Printers" -Status "Success"
                 Write-Host "    $([char]0x2139) A zero exit code doesn't guarantee every driver installed." -ForegroundColor DarkGray
-
-                # Keep the backup: archive rather than delete, to allow a retry.
-                try {
-                    $archiveFolder = Join-Path $scriptPath "Printers\_restored"
-                    if (-not (Test-Path $archiveFolder)) { New-Item -ItemType Directory -Path $archiveFolder -Force | Out-Null }
-                    $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-                    Move-Item -Path $printerExportFile -Destination (Join-Path $archiveFolder "Printers_$stamp.printerExport") -Force -ErrorAction Stop
-                    Write-Log "Local printer package archived to _restored" -Level "Info"
-                }
-                catch {
-                    Write-Log "Could not archive local printer package: $_" -Level "Warning"
-                }
+                $printBrmRestoreSucceeded = $true
             }
             else {
                 Write-Status "Local printers" "WARN" "exit $printBrmExitCode, backup retained"
@@ -1290,6 +1281,18 @@ $skippedCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Skipped
 Write-Host "  Import complete" -ForegroundColor Green
 Write-SummaryCard -Success $successCount -Warning $warningCount -Errors $errorCount -Skipped $skippedCount -Duration "$([math]::Round($duration.TotalMinutes, 1)) min"
 
+if ($deletePrintBrmAfterImport -and $printBrmRestoreSucceeded) {
+    try {
+        Remove-Item -LiteralPath $printerExportFile -Force -ErrorAction Stop
+        Write-Log "Deleted PrintBRM package after successful import" -Level "Success"
+        Add-Result -Category "Printers" -Item "PrintBRM Package Cleanup" -Status "Success" -Details "Deleted after successful import"
+    }
+    catch {
+        Write-Log "Could not delete PrintBRM package: $_" -Level "Warning"
+        Add-Result -Category "Printers" -Item "PrintBRM Package Cleanup" -Status "Warning" -Details $_.Exception.Message
+    }
+}
+
 if ($Script:Results.Warnings.Count -gt 0) {
     Write-Section "Items needing attention"
     foreach ($warning in $Script:Results.Warnings) {
@@ -1324,6 +1327,7 @@ Read-Host "  Press Enter to exit"
     $importScript = $importScript -replace '\{TIMESTAMP\}', (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
     $importScript = $importScript -replace '\{USERNAME\}', $Script:OriginalUserName
     $importScript = $importScript -replace '\{COMPUTERNAME\}', $env:COMPUTERNAME
+    $importScript = $importScript -replace '\{DELETE_PRINTBRM_AFTER_IMPORT\}', $Script:Config.Import.DeletePrintBrmAfterImport.ToString().ToLowerInvariant()
     
     $importScriptPath = Join-Path $DestinationBase "Import-LaptopData.ps1"
     $importScript | Out-File $importScriptPath -Encoding UTF8

@@ -117,6 +117,49 @@ $Script:Config = @{
         # over the same constrained link).
         SkipOneDriveHydration = $true
     }
+
+    # These switches are supplied by src\00-development-config.psd1 at build
+    # time and remain embedded in the single deployment script.
+    Backup = @{
+        UserData          = $true
+        AppData           = $true
+        SystemSettings    = $true
+        InstalledPrograms = $true
+        Printers          = $true
+        BrowserData       = $true
+        OneDrive          = $true
+    }
+    Import = @{
+        DeletePrintBrmAfterImport = $true
+    }
+}
+
+# Apply only known Boolean development switches so invalid additions cannot
+# unexpectedly change the behavior of a technician deployment.
+foreach ($sectionName in @("Backup", "Import")) {
+    if (-not ($Script:DevelopmentConfig -is [hashtable]) -or
+        -not $Script:DevelopmentConfig.ContainsKey($sectionName) -or
+        -not ($Script:DevelopmentConfig[$sectionName] -is [hashtable])) {
+        continue
+    }
+
+    foreach ($switchName in $Script:Config[$sectionName].Keys) {
+        if ($Script:DevelopmentConfig[$sectionName].ContainsKey($switchName) -and
+            $Script:DevelopmentConfig[$sectionName][$switchName] -is [bool]) {
+            $Script:Config[$sectionName][$switchName] = $Script:DevelopmentConfig[$sectionName][$switchName]
+        }
+    }
+}
+
+function Add-DisabledBackupResult {
+    param(
+        [string]$Item,
+        [string]$Category = "Backup"
+    )
+
+    Write-Log "$Item backup disabled by development configuration" -Level Info
+    Write-Status $Item "SKIP" "disabled by config"
+    Add-Result -Category $Category -Item $Item -Status "Skipped" -Details "Disabled by development configuration"
 }
 
 # ============================================================================

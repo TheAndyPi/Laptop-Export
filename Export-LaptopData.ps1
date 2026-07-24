@@ -1,4 +1,4 @@
-# ---------------------------------------------------------------------------
+﻿# ---------------------------------------------------------------------------
 # GENERATED FILE - DO NOT EDIT DIRECTLY
 # Source modules: src\\01-bootstrap.ps1 through src\\10-main.ps1
 # Build command: powershell -ExecutionPolicy Bypass -File .\\Build-Deployment.ps1
@@ -100,6 +100,27 @@ $Script:Theme = @{
     Box        = @{ TL=[char]0x2554; TR=[char]0x2557; BL=[char]0x255A; BR=[char]0x255D; H=[char]0x2550; V=[char]0x2551; ML=[char]0x2560; MR=[char]0x2563 }
     Bar        = @{ Full=[char]0x2588; Light=[char]0x2591 }
     Spinner    = @([char]0x280B,[char]0x2819,[char]0x2839,[char]0x2838,[char]0x283C,[char]0x2834,[char]0x2826,[char]0x2827,[char]0x2807,[char]0x280F)
+}
+
+$Script:DevelopmentConfig = @{
+    # Development-time backup switches. Edit these values, then run
+    # Build-Deployment.ps1 to embed the configuration in Export-LaptopData.ps1.
+    # Every backup stage is enabled by default.
+    Backup = @{
+        UserData          = $true
+        AppData           = $true
+        SystemSettings    = $true
+        InstalledPrograms = $true
+        Printers          = $true
+        BrowserData       = $true
+        OneDrive          = $true
+    }
+
+    Import = @{
+        # Deletes Printers\Printers.printerExport only after a successful
+        # PrintBRM restore and completion of the generated import script.
+        DeletePrintBrmAfterImport = $true
+    }
 }
 
 function Get-VisibleLength {
@@ -358,6 +379,49 @@ $Script:Config = @{
         # over the same constrained link).
         SkipOneDriveHydration = $true
     }
+
+    # These switches are supplied by src\00-development-config.psd1 at build
+    # time and remain embedded in the single deployment script.
+    Backup = @{
+        UserData          = $true
+        AppData           = $true
+        SystemSettings    = $true
+        InstalledPrograms = $true
+        Printers          = $true
+        BrowserData       = $true
+        OneDrive          = $true
+    }
+    Import = @{
+        DeletePrintBrmAfterImport = $true
+    }
+}
+
+# Apply only known Boolean development switches so invalid additions cannot
+# unexpectedly change the behavior of a technician deployment.
+foreach ($sectionName in @("Backup", "Import")) {
+    if (-not ($Script:DevelopmentConfig -is [hashtable]) -or
+        -not $Script:DevelopmentConfig.ContainsKey($sectionName) -or
+        -not ($Script:DevelopmentConfig[$sectionName] -is [hashtable])) {
+        continue
+    }
+
+    foreach ($switchName in $Script:Config[$sectionName].Keys) {
+        if ($Script:DevelopmentConfig[$sectionName].ContainsKey($switchName) -and
+            $Script:DevelopmentConfig[$sectionName][$switchName] -is [bool]) {
+            $Script:Config[$sectionName][$switchName] = $Script:DevelopmentConfig[$sectionName][$switchName]
+        }
+    }
+}
+
+function Add-DisabledBackupResult {
+    param(
+        [string]$Item,
+        [string]$Category = "Backup"
+    )
+
+    Write-Log "$Item backup disabled by development configuration" -Level Info
+    Write-Status $Item "SKIP" "disabled by config"
+    Add-Result -Category $Category -Item $Item -Status "Skipped" -Details "Disabled by development configuration"
 }
 
 # ============================================================================
@@ -2151,6 +2215,8 @@ $Script:Results = @{
 $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $userProfile = $env:USERPROFILE
 $logFile = Join-Path $scriptPath "ImportLog.txt"
+$deletePrintBrmAfterImport = [bool]::Parse('{DELETE_PRINTBRM_AFTER_IMPORT}')
+$printBrmRestoreSucceeded = $false
 
 function Write-Log {
     param([string]$Message, [string]$Level = "Info")
@@ -2968,18 +3034,7 @@ if (Test-Path $printerExportFile) {
                 Write-Status "Local printers" "OK" "restore command completed"
                 Add-Result -Category "Printers" -Item "Local Printers" -Status "Success"
                 Write-Host "    $([char]0x2139) A zero exit code doesn't guarantee every driver installed." -ForegroundColor DarkGray
-
-                # Keep the backup: archive rather than delete, to allow a retry.
-                try {
-                    $archiveFolder = Join-Path $scriptPath "Printers\_restored"
-                    if (-not (Test-Path $archiveFolder)) { New-Item -ItemType Directory -Path $archiveFolder -Force | Out-Null }
-                    $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-                    Move-Item -Path $printerExportFile -Destination (Join-Path $archiveFolder "Printers_$stamp.printerExport") -Force -ErrorAction Stop
-                    Write-Log "Local printer package archived to _restored" -Level "Info"
-                }
-                catch {
-                    Write-Log "Could not archive local printer package: $_" -Level "Warning"
-                }
+                $printBrmRestoreSucceeded = $true
             }
             else {
                 Write-Status "Local printers" "WARN" "exit $printBrmExitCode, backup retained"
@@ -3260,6 +3315,18 @@ $skippedCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Skipped
 Write-Host "  Import complete" -ForegroundColor Green
 Write-SummaryCard -Success $successCount -Warning $warningCount -Errors $errorCount -Skipped $skippedCount -Duration "$([math]::Round($duration.TotalMinutes, 1)) min"
 
+if ($deletePrintBrmAfterImport -and $printBrmRestoreSucceeded) {
+    try {
+        Remove-Item -LiteralPath $printerExportFile -Force -ErrorAction Stop
+        Write-Log "Deleted PrintBRM package after successful import" -Level "Success"
+        Add-Result -Category "Printers" -Item "PrintBRM Package Cleanup" -Status "Success" -Details "Deleted after successful import"
+    }
+    catch {
+        Write-Log "Could not delete PrintBRM package: $_" -Level "Warning"
+        Add-Result -Category "Printers" -Item "PrintBRM Package Cleanup" -Status "Warning" -Details $_.Exception.Message
+    }
+}
+
 if ($Script:Results.Warnings.Count -gt 0) {
     Write-Section "Items needing attention"
     foreach ($warning in $Script:Results.Warnings) {
@@ -3294,6 +3361,7 @@ Read-Host "  Press Enter to exit"
     $importScript = $importScript -replace '\{TIMESTAMP\}', (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
     $importScript = $importScript -replace '\{USERNAME\}', $Script:OriginalUserName
     $importScript = $importScript -replace '\{COMPUTERNAME\}', $env:COMPUTERNAME
+    $importScript = $importScript -replace '\{DELETE_PRINTBRM_AFTER_IMPORT\}', $Script:Config.Import.DeletePrintBrmAfterImport.ToString().ToLowerInvariant()
     
     $importScriptPath = Join-Path $DestinationBase "Import-LaptopData.ps1"
     $importScript | Out-File $importScriptPath -Encoding UTF8
@@ -3831,12 +3899,14 @@ function Start-LaptopExport {
     # the trimmed set (Downloads over cap and Lotus are excluded from the estimate).
     Write-Section "Estimating transfer size"
     $estBytes = 0
-    foreach ($f in $Script:Config.UserFolders) {
-        $fp = Join-Path $Script:OriginalUserProfile $f
-        $fb = Get-FolderSizeBytes $fp
-        if ($Script:Config.TransferMode -eq "Online" -and $f -eq "Downloads" -and
-            ($fb / 1GB) -gt $Script:Config.Online.DownloadsCapGB) { continue }
-        $estBytes += $fb
+    if ($Script:Config.Backup.UserData) {
+        foreach ($f in $Script:Config.UserFolders) {
+            $fp = Join-Path $Script:OriginalUserProfile $f
+            $fb = Get-FolderSizeBytes $fp
+            if ($Script:Config.TransferMode -eq "Online" -and $f -eq "Downloads" -and
+                ($fb / 1GB) -gt $Script:Config.Online.DownloadsCapGB) { continue }
+            $estBytes += $fb
+        }
     }
     Write-KeyValue "Estimated size" (Format-FileSize $estBytes)
 
@@ -3879,25 +3949,47 @@ function Start-LaptopExport {
     Write-Banner -Title "Starting Export Process ($($Script:Config.TransferMode))"
     
     # 1. Copy user folders
-    Copy-UserFolders -DestinationBase $transferBase
+    if ($Script:Config.Backup.UserData) {
+        Copy-UserFolders -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "User data" -Category "User Folders" }
     
     # 2. Copy AppData
-    Copy-AppData -DestinationBase $transferBase
+    if ($Script:Config.Backup.AppData) {
+        Copy-AppData -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "AppData" }
     
     # 3. Capture system settings
-    $settings = Get-SystemSettings -DestinationBase $transferBase
+    $settings = @{}
+    if ($Script:Config.Backup.SystemSettings) {
+        $settings = Get-SystemSettings -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "System settings" -Category "Settings" }
     
     # 4. Document installed programs
-    $programs = Get-InstalledPrograms -DestinationBase $transferBase
+    if ($Script:Config.Backup.InstalledPrograms) {
+        $programs = Get-InstalledPrograms -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "Installed programs" }
     
     # 5. Back up printers
-    Backup-Printers -DestinationBase $transferBase
+    if ($Script:Config.Backup.Printers) {
+        Backup-Printers -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "Printers" }
 
     # 6. Copy browser data
-    Copy-BrowserData -DestinationBase $transferBase
+    if ($Script:Config.Backup.BrowserData) {
+        Copy-BrowserData -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "Browser data" -Category "Browser" }
     
     # 7. Check OneDrive
-    Set-OneDriveLocalSync
+    if ($Script:Config.Backup.OneDrive) {
+        Set-OneDriveLocalSync
+    }
+    else { Add-DisabledBackupResult -Item "OneDrive" }
     
     # 8. Generate import script
     New-ImportScript -DestinationBase $transferBase -Settings $settings

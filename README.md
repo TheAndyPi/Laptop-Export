@@ -12,6 +12,8 @@ The deployed `Export-LaptopData.ps1` remains a single, self-contained script. Fo
 powershell -ExecutionPolicy Bypass -File ".\Build-Deployment.ps1"
 ```
 
+For development, [`src/00-development-config.psd1`](src/00-development-config.psd1) controls each export stage. All switches default to `$true`; rebuild after changing a value. The config is embedded in the generated deployment script, so it is not a separate technician-side dependency. Its import setting also defaults to deleting a successfully restored `Printers.printerExport` file after the import finishes.
+
 ## Deploy / Run
 
 Run on the **old** laptop, signed in as the user being transferred:

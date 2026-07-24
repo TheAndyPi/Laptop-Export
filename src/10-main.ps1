@@ -89,12 +89,14 @@ function Start-LaptopExport {
     # the trimmed set (Downloads over cap and Lotus are excluded from the estimate).
     Write-Section "Estimating transfer size"
     $estBytes = 0
-    foreach ($f in $Script:Config.UserFolders) {
-        $fp = Join-Path $Script:OriginalUserProfile $f
-        $fb = Get-FolderSizeBytes $fp
-        if ($Script:Config.TransferMode -eq "Online" -and $f -eq "Downloads" -and
-            ($fb / 1GB) -gt $Script:Config.Online.DownloadsCapGB) { continue }
-        $estBytes += $fb
+    if ($Script:Config.Backup.UserData) {
+        foreach ($f in $Script:Config.UserFolders) {
+            $fp = Join-Path $Script:OriginalUserProfile $f
+            $fb = Get-FolderSizeBytes $fp
+            if ($Script:Config.TransferMode -eq "Online" -and $f -eq "Downloads" -and
+                ($fb / 1GB) -gt $Script:Config.Online.DownloadsCapGB) { continue }
+            $estBytes += $fb
+        }
     }
     Write-KeyValue "Estimated size" (Format-FileSize $estBytes)
 
@@ -137,25 +139,47 @@ function Start-LaptopExport {
     Write-Banner -Title "Starting Export Process ($($Script:Config.TransferMode))"
     
     # 1. Copy user folders
-    Copy-UserFolders -DestinationBase $transferBase
+    if ($Script:Config.Backup.UserData) {
+        Copy-UserFolders -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "User data" -Category "User Folders" }
     
     # 2. Copy AppData
-    Copy-AppData -DestinationBase $transferBase
+    if ($Script:Config.Backup.AppData) {
+        Copy-AppData -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "AppData" }
     
     # 3. Capture system settings
-    $settings = Get-SystemSettings -DestinationBase $transferBase
+    $settings = @{}
+    if ($Script:Config.Backup.SystemSettings) {
+        $settings = Get-SystemSettings -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "System settings" -Category "Settings" }
     
     # 4. Document installed programs
-    $programs = Get-InstalledPrograms -DestinationBase $transferBase
+    if ($Script:Config.Backup.InstalledPrograms) {
+        $programs = Get-InstalledPrograms -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "Installed programs" }
     
     # 5. Back up printers
-    Backup-Printers -DestinationBase $transferBase
+    if ($Script:Config.Backup.Printers) {
+        Backup-Printers -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "Printers" }
 
     # 6. Copy browser data
-    Copy-BrowserData -DestinationBase $transferBase
+    if ($Script:Config.Backup.BrowserData) {
+        Copy-BrowserData -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "Browser data" -Category "Browser" }
     
     # 7. Check OneDrive
-    Set-OneDriveLocalSync
+    if ($Script:Config.Backup.OneDrive) {
+        Set-OneDriveLocalSync
+    }
+    else { Add-DisabledBackupResult -Item "OneDrive" }
     
     # 8. Generate import script
     New-ImportScript -DestinationBase $transferBase -Settings $settings

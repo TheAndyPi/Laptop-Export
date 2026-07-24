@@ -12,11 +12,15 @@
 
 [CmdletBinding()]
 param(
-    [string]$OutputPath = (Join-Path $PSScriptRoot "Export-LaptopData.ps1")
+    [string]$OutputPath = ""
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $OutputPath) {
+    $OutputPath = Join-Path $PSScriptRoot "Export-LaptopData.ps1"
+}
 $sourceRoot = Join-Path $PSScriptRoot "src"
+$developmentConfigPath = Join-Path $sourceRoot "00-development-config.psd1"
 $moduleOrder = @(
     "01-bootstrap.ps1",
     "02-ui.ps1",
@@ -34,6 +38,23 @@ if (-not (Test-Path -LiteralPath $sourceRoot)) {
     throw "Source directory not found: $sourceRoot"
 }
 
+if (-not (Test-Path -LiteralPath $developmentConfigPath)) {
+    throw "Development configuration file not found: $developmentConfigPath"
+}
+
+# Compile the development config into the one-file technician deployment.
+try {
+    $developmentConfig = Import-PowerShellDataFile -LiteralPath $developmentConfigPath -ErrorAction Stop
+    $developmentConfigText = Get-Content -LiteralPath $developmentConfigPath -Raw
+}
+catch {
+    throw "Could not load development configuration '$developmentConfigPath': $_"
+}
+
+if (-not ($developmentConfig -is [hashtable])) {
+    throw "Development configuration must contain a PowerShell hashtable."
+}
+
 $modulePaths = foreach ($module in $moduleOrder) {
     $path = Join-Path $sourceRoot $module
     if (-not (Test-Path -LiteralPath $path)) {
@@ -42,11 +63,16 @@ $modulePaths = foreach ($module in $moduleOrder) {
     $path
 }
 
-# Catch syntax errors before replacing the deployment artifact.
-$sourceText = (($modulePaths | ForEach-Object { Get-Content -LiteralPath $_ -Raw }) -join "")
+# Catch syntax errors before replacing the deployment artifact. The bootstrap
+# module owns the script-level param block, so insert the compiled config only
+# after that module; a PowerShell param block must be the first statement.
+$configAssignment = "`$Script:DevelopmentConfig = " + $developmentConfigText.Trim() + "`r`n`r`n"
+$bootstrapText = Get-Content -LiteralPath $modulePaths[0] -Raw
+$remainingSourceText = (($modulePaths | Select-Object -Skip 1 | ForEach-Object { Get-Content -LiteralPath $_ -Raw }) -join "")
+$combinedSourceText = $bootstrapText + $configAssignment + $remainingSourceText
 $tokens = $null
 $parseErrors = $null
-[void][System.Management.Automation.Language.Parser]::ParseInput($sourceText, [ref]$tokens, [ref]$parseErrors)
+[void][System.Management.Automation.Language.Parser]::ParseInput($combinedSourceText, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count -gt 0) {
     $details = $parseErrors | ForEach-Object { "$($_.Message) at line $($_.Extent.StartLineNumber), column $($_.Extent.StartColumnNumber)" }
     throw "Build stopped because the combined source has PowerShell syntax errors:`n$($details -join "`n")"
@@ -66,6 +92,6 @@ $preamble = @"
 
 "@
 
-$deploymentText = $preamble + $sourceText.TrimEnd("`r", "`n")
+$deploymentText = $preamble + $combinedSourceText.TrimEnd("`r", "`n")
 Set-Content -LiteralPath $OutputPath -Value $deploymentText -Encoding UTF8
 Write-Host "Built single-file deployment script: $OutputPath" -ForegroundColor Green
