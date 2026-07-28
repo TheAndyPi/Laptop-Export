@@ -237,7 +237,10 @@ function Copy-BrowserData {
     # archive with common disposable cache directories excluded, then export each profile's
     # bookmarks into Chrome's portable HTML format for reliable import.
     $chromeUserDataPath = Join-Path $localAppData "Google\Chrome\User Data"
-    if (Test-Path -LiteralPath $chromeUserDataPath) {
+    if (-not $Script:Config.Backup.Chrome) {
+        Add-DisabledBackupResult -Item "Chrome" -Category "Browser"
+    }
+    elseif (Test-Path -LiteralPath $chromeUserDataPath) {
         [void](Request-BrowserClose -ProcessName "chrome" -DisplayName "Google Chrome")
         [void](Export-ChromeBookmarks -ChromeUserDataPath $chromeUserDataPath -BrowserPath $browserPath)
 
@@ -255,13 +258,19 @@ function Copy-BrowserData {
             Write-Log "Chrome profile archive copied: $($result.FilesCopied) files" -Level Success
             Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Success" -Details "$($result.FilesCopied) files; common caches excluded; credentials remain Windows-protected"
         }
+        elseif ($result.Aborted) {
+            Write-Log "Chrome profile archive copy stopped by operator" -Level Warning
+            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Skipped" -Details "Stopped by operator; partial files may remain and can be resumed by rerunning the export"
+        }
         else {
             Write-Log "Chrome profile archive copy completed with warnings" -Level Warning
             Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Warning" -Details "Check robocopy_chrome_user_data.log"
         }
 
-        $canLaunchChromeForOriginalUser = (-not $Script:IsAdmin) -or ($Script:OriginalUserProfile -eq $env:USERPROFILE)
-        Invoke-ChromePasswordExportPrompt -BrowserPath $browserPath -CanLaunchChromeForOriginalUser $canLaunchChromeForOriginalUser
+        if (-not $result.Aborted) {
+            $canLaunchChromeForOriginalUser = (-not $Script:IsAdmin) -or ($Script:OriginalUserProfile -eq $env:USERPROFILE)
+            Invoke-ChromePasswordExportPrompt -BrowserPath $browserPath -CanLaunchChromeForOriginalUser $canLaunchChromeForOriginalUser
+        }
     }
     else {
         Write-Log "Chrome not installed or no user data found" -Level Info
@@ -279,9 +288,13 @@ function Copy-BrowserData {
     $firefoxPackagePath = Join-Path $browserPath "Firefox"
     $firefoxFound = $false
 
-    [void](Request-BrowserClose -ProcessName "firefox" -DisplayName "Firefox")
+    # Unlike Chromium bookmark files, Firefox's SQLite databases and key
+    # material are not safe to capture while the process still owns them.
+    # Do not create a package that looks successful but contains a torn or
+    # locked Firefox profile; the operator can close Firefox and rerun.
+    $firefoxClosed = Request-BrowserClose -ProcessName "firefox" -DisplayName "Firefox"
 
-    if (Test-Path $firefoxRoamingSource) {
+    if ($firefoxClosed -and (Test-Path $firefoxRoamingSource)) {
         $firefoxFound = $true
         $firefoxRoamingDest = Join-Path $firefoxPackagePath "Roaming"
         $firefoxRoamingLog = Join-Path $DestinationBase "Logs\robocopy_firefox_roaming.log"
@@ -295,13 +308,17 @@ function Copy-BrowserData {
             Write-Log "Firefox roaming profile copied: $($result.FilesCopied) files" -Level Success
             Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Success" -Details "$($result.FilesCopied) files; bookmarks, history, logins, extensions, and settings"
         }
+        elseif ($result.Aborted) {
+            Write-Log "Firefox roaming profile copy stopped by operator" -Level Warning
+            Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Skipped" -Details "Stopped by operator; partial files may remain"
+        }
         else {
             Write-Log "Firefox roaming profile copy completed with warnings" -Level Warning
             Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Warning" -Details "Check robocopy_firefox_roaming.log"
         }
     }
 
-    if (Test-Path $firefoxLocalSource) {
+    if ($firefoxClosed -and (Test-Path $firefoxLocalSource)) {
         $firefoxFound = $true
         $firefoxLocalDest = Join-Path $firefoxPackagePath "Local"
         $firefoxLocalLog = Join-Path $DestinationBase "Logs\robocopy_firefox_local.log"
@@ -315,32 +332,75 @@ function Copy-BrowserData {
             Write-Log "Firefox local data copied: $($result.FilesCopied) files" -Level Success
             Add-Result -Category "Browser" -Item "Firefox Local Data" -Status "Success" -Details "$($result.FilesCopied) files"
         }
+        elseif ($result.Aborted) {
+            Write-Log "Firefox local data copy stopped by operator" -Level Warning
+            Add-Result -Category "Browser" -Item "Firefox Local Data" -Status "Skipped" -Details "Stopped by operator; partial files may remain"
+        }
         else {
             Write-Log "Firefox local data copy completed with warnings" -Level Warning
             Add-Result -Category "Browser" -Item "Firefox Local Data" -Status "Warning" -Details "Check robocopy_firefox_local.log"
         }
     }
 
-    if (-not $firefoxFound) {
+    if ($firefoxClosed -and -not $firefoxFound) {
         Write-Log "Firefox not installed or no profile data found" -Level Info
         Add-Result -Category "Browser" -Item "Firefox" -Status "Skipped" -Details "Not found"
     }
-    
-    # ========== EDGE BOOKMARKS ==========
-    $edgePath = Join-Path $localAppData "Microsoft\Edge\User Data\Default"
-    $edgeBookmarks = Join-Path $edgePath "Bookmarks"
-    
-    if (Test-Path $edgeBookmarks) {
-        Write-Log "Edge bookmarks found" -Level Info
-        
-        $edgeHtml = Join-Path $browserPath "Edge_Bookmarks.html"
-        if (Convert-ChromeBookmarksToHtml -JsonPath $edgeBookmarks -HtmlPath $edgeHtml) {
-            Write-Log "Edge bookmarks exported as HTML" -Level Success
-            Add-Result -Category "Browser" -Item "Edge Bookmarks" -Status "Success" -Details "HTML file ready for import"
+    elseif (-not $firefoxClosed) {
+        Write-Log "Firefox export skipped because Firefox is still running" -Level Warning
+        Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Skipped" -Details "Firefox must be closed; rerun the export to capture a consistent profile"
+    }
+
+    # ========== MICROSOFT EDGE ==========
+    # Edge uses the same Chromium profile layout as Chrome.  The previous
+    # implementation looked only in Default and exported only HTML, leaving
+    # Profile N favorites with nothing the import script could restore.  Keep
+    # the portable HTML copies and also preserve each raw Bookmarks file so
+    # the generated importer can restore matching Edge profiles automatically.
+    $edgeUserDataPath = Join-Path $localAppData "Microsoft\Edge\User Data"
+    if (Test-Path -LiteralPath $edgeUserDataPath) {
+        [void](Request-BrowserClose -ProcessName "msedge" -DisplayName "Microsoft Edge")
+        $edgeProfiles = @(Get-ChromeProfileDirectories -UserDataPath $edgeUserDataPath)
+        $edgeBookmarkPath = Join-Path $browserPath "Edge\Bookmarks"
+        $exportedEdgeProfiles = 0
+
+        foreach ($profile in $edgeProfiles) {
+            $bookmarksJson = Join-Path $profile.FullName "Bookmarks"
+            if (-not (Test-Path -LiteralPath $bookmarksJson)) { continue }
+
+            $safeProfileName = $profile.Name -replace '[^a-zA-Z0-9_.-]', '_'
+            if (-not (Test-Path -LiteralPath $edgeBookmarkPath)) {
+                New-Item -ItemType Directory -Path $edgeBookmarkPath -Force | Out-Null
+            }
+
+            $edgeHtml = Join-Path $edgeBookmarkPath "Edge_Bookmarks_$safeProfileName.html"
+            if (Convert-ChromeBookmarksToHtml -JsonPath $bookmarksJson -HtmlPath $edgeHtml) {
+                $rawProfileDestination = Join-Path $browserPath "Edge\User Data\$($profile.Name)"
+                New-Item -ItemType Directory -Path $rawProfileDestination -Force | Out-Null
+                Copy-Item -LiteralPath $bookmarksJson -Destination (Join-Path $rawProfileDestination "Bookmarks") -Force
+                $exportedEdgeProfiles++
+                Write-Log "Edge bookmarks exported for profile '$($profile.Name)'" -Level Success
+
+                # Preserve the legacy filename for older import packages and
+                # technicians who expect a single Default-profile HTML file.
+                if ($profile.Name -eq "Default") {
+                    Copy-Item -LiteralPath $edgeHtml -Destination (Join-Path $browserPath "Edge_Bookmarks.html") -Force
+                }
+            }
+            else {
+                Write-Log "Could not convert Edge bookmarks for profile '$($profile.Name)'" -Level Warning
+            }
+        }
+
+        if ($exportedEdgeProfiles -gt 0) {
+            Add-Result -Category "Browser" -Item "Edge Bookmarks" -Status "Success" -Details "$exportedEdgeProfiles Edge profile(s) exported; matching profiles can be restored automatically"
+        }
+        else {
+            Add-Result -Category "Browser" -Item "Edge Bookmarks" -Status "Skipped" -Details "No Edge bookmark files found"
         }
     }
     else {
-        Write-Log "Edge not installed or no bookmarks" -Level Info
+        Write-Log "Edge not installed or no user data found" -Level Info
         Add-Result -Category "Browser" -Item "Edge" -Status "Skipped" -Details "Not found"
     }
     

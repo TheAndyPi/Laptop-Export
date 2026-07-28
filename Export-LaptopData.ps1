@@ -103,7 +103,7 @@ $Script:Theme = @{
 }
 
 $Script:DevelopmentConfig = @{
-    # Development-time backup switches. Edit these values, then run
+    # Development-time defaults. Edit these values, then run
     # Build-Deployment.ps1 to embed the configuration in Export-LaptopData.ps1.
     # Every backup stage is enabled by default.
     Backup = @{
@@ -113,13 +113,39 @@ $Script:DevelopmentConfig = @{
         InstalledPrograms = $true
         Printers          = $true
         BrowserData       = $true
+        # Controls Chrome only; Edge and Firefox stay enabled when this is false.
+        Chrome            = $true
         OneDrive          = $true
     }
 
     Import = @{
+        # Restores AppData\Lotus_Local when it is present in a transfer package.
+        LotusNotes = $true
+
+        # Restores the Firefox profile and its local companion data.
+        Firefox = $true
+
         # Deletes Printers\Printers.printerExport only after a successful
         # PrintBRM restore and completion of the generated import script.
         DeletePrintBrmAfterImport = $true
+    }
+
+    # These values override the regular Import defaults when the technician
+    # selects an Online transfer. They can still be changed for one transfer
+    # in the runtime settings menu.
+    Online = @{
+        # Online transfers create a ZIP beside the transfer folder by default.
+        CreateZipArchive = $true
+
+        # Build network-bound transfer packages on the local system drive, then
+        # upload one ZIP instead of thousands of small files over the network.
+        StageNetworkTransfersLocally = $true
+
+        Import = @{
+            LotusNotes                  = $true
+            Firefox                     = $true
+            DeletePrintBrmAfterImport   = $true
+        }
     }
 }
 
@@ -378,6 +404,16 @@ $Script:Config = @{
         # Skip the OneDrive force-hydration step (it would re-download everything
         # over the same constrained link).
         SkipOneDriveHydration = $true
+        # Create a portable ZIP beside the transfer folder after an online export.
+        CreateZipArchive = $true
+        # Avoid direct file-by-file exports to a network destination.
+        StageNetworkTransfersLocally = $true
+        # Import defaults used only when the selected transfer mode is Online.
+        Import = @{
+            LotusNotes = $true
+            Firefox = $true
+            DeletePrintBrmAfterImport = $true
+        }
     }
 
     # These switches are supplied by src\00-development-config.psd1 at build
@@ -389,9 +425,12 @@ $Script:Config = @{
         InstalledPrograms = $true
         Printers          = $true
         BrowserData       = $true
+        Chrome            = $true
         OneDrive          = $true
     }
     Import = @{
+        LotusNotes = $true
+        Firefox = $true
         DeletePrintBrmAfterImport = $true
     }
 }
@@ -413,15 +452,115 @@ foreach ($sectionName in @("Backup", "Import")) {
     }
 }
 
+# Online transfer behavior has a nested import-default section. Keep its
+# allowlist separate so config-file additions cannot alter unrelated settings.
+if ($Script:DevelopmentConfig -is [hashtable] -and
+    $Script:DevelopmentConfig.ContainsKey("Online") -and
+    $Script:DevelopmentConfig.Online -is [hashtable]) {
+    $developmentOnline = $Script:DevelopmentConfig.Online
+    foreach ($switchName in @("CreateZipArchive", "StageNetworkTransfersLocally")) {
+        if ($developmentOnline.ContainsKey($switchName) -and
+            $developmentOnline[$switchName] -is [bool]) {
+            $Script:Config.Online[$switchName] = $developmentOnline[$switchName]
+        }
+    }
+
+    if ($developmentOnline.ContainsKey("Import") -and
+        $developmentOnline.Import -is [hashtable]) {
+        foreach ($switchName in $Script:Config.Online.Import.Keys) {
+            if ($developmentOnline.Import.ContainsKey($switchName) -and
+                $developmentOnline.Import[$switchName] -is [bool]) {
+                $Script:Config.Online.Import[$switchName] = $developmentOnline.Import[$switchName]
+            }
+        }
+    }
+}
+
+function Apply-OnlineImportDefaults {
+    if ($Script:Config.TransferMode -ne "Online") { return }
+
+    foreach ($switchName in $Script:Config.Online.Import.Keys) {
+        $Script:Config.Import[$switchName] = $Script:Config.Online.Import[$switchName]
+    }
+}
+
 function Add-DisabledBackupResult {
     param(
         [string]$Item,
         [string]$Category = "Backup"
     )
 
-    Write-Log "$Item backup disabled by development configuration" -Level Info
+    Write-Log "$Item backup disabled by configuration" -Level Info
     Write-Status $Item "SKIP" "disabled by config"
-    Add-Result -Category $Category -Item $Item -Status "Skipped" -Details "Disabled by development configuration"
+    Add-Result -Category $Category -Item $Item -Status "Skipped" -Details "Disabled by configuration"
+}
+
+function Show-TransferSettingsMenu {
+    # These are the runtime counterparts of the switches in
+    # src\00-development-config.psd1.  Values start with the compiled
+    # defaults, but any changes made here apply only to the current transfer.
+    $settings = @(
+        @{ Section = "Backup"; Key = "UserData";          Label = "User data";          Detail = "Documents, Desktop, Downloads, and other user folders" }
+        @{ Section = "Backup"; Key = "AppData";           Label = "AppData";            Detail = "Bluebeam, signatures, Quick Access, and Lotus export" }
+        @{ Section = "Backup"; Key = "SystemSettings";    Label = "System settings";    Detail = "Power, drives, personalization, and related settings" }
+        @{ Section = "Backup"; Key = "InstalledPrograms"; Label = "Installed programs"; Detail = "Installed-program inventory" }
+        @{ Section = "Backup"; Key = "Printers";          Label = "Printers";           Detail = "PrintBRM package and printer connections" }
+        @{ Section = "Backup"; Key = "BrowserData";       Label = "Browser data";       Detail = "Edge and Firefox data; Chrome requires its own setting below" }
+        @{ Section = "Backup"; Key = "Chrome";            Label = "Chrome";             Detail = "Chrome bookmarks, profile archive, and password-export prompt" }
+        @{ Section = "Backup"; Key = "OneDrive";          Label = "OneDrive";           Detail = "Offline file availability check" }
+        @{ Section = "Import"; Key = "LotusNotes";        Label = "Import Lotus Notes"; Detail = "Restore exported Lotus local data on the new laptop" }
+        @{ Section = "Import"; Key = "Firefox";           Label = "Import Firefox";     Detail = "Restore Firefox profile and local companion data" }
+        @{ Section = "Import"; Key = "DeletePrintBrmAfterImport"; Label = "Delete PrintBRM after import"; Detail = "Remove the printer package after a successful restore" }
+        @{ Section = "Online"; Key = "CreateZipArchive";  Label = "Create ZIP archive"; Detail = "Create a ZIP beside the package (Online transfers only)" }
+        @{ Section = "Online"; Key = "StageNetworkTransfersLocally"; Label = "Stage network transfers locally"; Detail = "Build locally, then upload one ZIP to a network destination" }
+    )
+
+    while ($true) {
+        Clear-Host
+        Write-Banner -Title "Transfer Settings" -Subtitle "$($Script:Config.TransferMode) transfer - changes apply to this transfer only"
+        Write-Section "Backup settings"
+
+        for ($index = 0; $index -lt $settings.Count; $index++) {
+            $setting = $settings[$index]
+            if ($index -eq 8) {
+                Write-Section "Generated import settings"
+            }
+            if ($index -eq 11) {
+                Write-Section "Online transfer settings"
+            }
+
+            $isEnabled = [bool]$Script:Config[$setting.Section][$setting.Key]
+            $number = ($index + 1).ToString().PadLeft(2)
+            $state = if ($isEnabled) { "ON " } else { "OFF" }
+            $color = if ($isEnabled) { "Green" } else { "DarkGray" }
+
+            Write-Host "  [$number] " -ForegroundColor Cyan -NoNewline
+            Write-Host "$state " -ForegroundColor $color -NoNewline
+            Write-Host $setting.Label.PadRight(30) -ForegroundColor White -NoNewline
+            Write-Host $setting.Detail -ForegroundColor DarkGray
+        }
+
+        Write-Host ""
+        Write-Host "  Select a number to toggle it." -ForegroundColor Gray
+        Write-Host "  Chrome is ignored when Browser data is OFF." -ForegroundColor DarkGray
+        Write-Host "  ZIP archive is ignored for Local transfers." -ForegroundColor DarkGray
+        Write-Host "  Import settings are written into the transfer package's generated import script." -ForegroundColor DarkGray
+        $selection = (Read-Host "  [S] Start transfer  [Q] Cancel").Trim()
+
+        if ($selection -match "^[Ss]$") { return $true }
+        if ($selection -match "^[Qq]$") { return $false }
+
+        $selectedIndex = 0
+        if ([int]::TryParse($selection, [ref]$selectedIndex) -and
+            $selectedIndex -ge 1 -and $selectedIndex -le $settings.Count) {
+            $setting = $settings[$selectedIndex - 1]
+            $Script:Config[$setting.Section][$setting.Key] = -not [bool]$Script:Config[$setting.Section][$setting.Key]
+        }
+        else {
+            Write-Host "  Enter a setting number, S, or Q." -ForegroundColor Yellow
+            Start-Sleep -Seconds 1
+        }
+    }
 }
 
 # ============================================================================
@@ -488,6 +627,19 @@ function Format-FileSize {
     return "$Bytes B"
 }
 
+function Format-RemainingTime {
+    param([double]$Seconds)
+
+    if ($Seconds -lt 0 -or [double]::IsInfinity($Seconds) -or [double]::IsNaN($Seconds)) {
+        return "calculating..."
+    }
+
+    $remaining = [int][math]::Ceiling($Seconds)
+    if ($remaining -lt 60) { return "$remaining sec" }
+    if ($remaining -lt 3600) { return "$([math]::Floor($remaining / 60)) min $($remaining % 60) sec" }
+    return "$([math]::Floor($remaining / 3600)) hr $([math]::Floor(($remaining % 3600) / 60)) min"
+}
+
 function Copy-WithProgress {
     param(
         [string]$Source,
@@ -524,32 +676,44 @@ function Copy-WithProgress {
     # Build full argument string for robocopy
     $robocopyArgString = ($RobocopyArgs -join " ")
     
-    # Run robocopy as a background job to capture all output
-    $robocopyScript = {
-        param($src, $dst, $argString, $log)
-        $fullArgs = "$argString /LOG:`"$log`""
-        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-        $pinfo.FileName = "robocopy.exe"
-        $pinfo.Arguments = "`"$src`" `"$dst`" $fullArgs"
-        $pinfo.RedirectStandardOutput = $true
-        $pinfo.RedirectStandardError = $true
-        $pinfo.UseShellExecute = $false
-        $pinfo.CreateNoWindow = $true
-        
-        $process = New-Object System.Diagnostics.Process
-        $process.StartInfo = $pinfo
-        $process.Start() | Out-Null
-        $process.WaitForExit()
-        return $process.ExitCode
+    # Keep a direct handle to the Robocopy process.  This lets the technician
+    # stop only the current copy instead of terminating the whole export.
+    $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pinfo.FileName = "robocopy.exe"
+    $pinfo.Arguments = "`"$Source`" `"$Destination`" $robocopyArgString /LOG:`"$LogPath`""
+    $pinfo.UseShellExecute = $false
+    $pinfo.CreateNoWindow = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $pinfo
+    if (-not $process.Start()) {
+        return @{ ExitCode = -1; FilesCopied = 0; BytesCopied = 0; Status = "Warning"; Duration = [TimeSpan]::Zero }
     }
-    
-    $job = Start-Job -ScriptBlock $robocopyScript -ArgumentList $Source, $Destination, $robocopyArgString, $LogPath
+
+    $abortedByOperator = $false
+    Write-Host "    Press S to stop this copy and continue with the next step." -ForegroundColor DarkGray
     
     # Monitor progress while robocopy runs.
     # Poll less aggressively than before (recursive sizing of a large USB dest
     # every 500ms competes with the copy itself); spinner keeps it feeling live.
-    while ($job.State -eq 'Running') {
+    while (-not $process.HasExited) {
         Start-Sleep -Milliseconds 750
+
+        # Console input is optional because the script may be run with a host
+        # that does not expose a physical console (for example, remoting).
+        try {
+            if ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                if ($key.Key -eq [ConsoleKey]::S) {
+                    $abortedByOperator = $true
+                    Write-Host "`r$(' ' * 120)`r    Stopping $FolderName and continuing..." -ForegroundColor Yellow
+                    $process.Kill()
+                    $process.WaitForExit()
+                    break
+                }
+            }
+        }
+        catch { }
         
         # Get current destination size
         $destFiles = Get-ChildItem $Destination -Recurse -File -Force -ErrorAction SilentlyContinue
@@ -574,18 +738,18 @@ function Copy-WithProgress {
         # Calculate speed
         $elapsed = (Get-Date) - $startTime
         $speed = if ($elapsed.TotalSeconds -gt 0) { $copiedSize / $elapsed.TotalSeconds } else { 0 }
+        $remainingBytes = [math]::Max(0, $totalSize - $copiedSize)
+        $eta = if ($speed -gt 0 -and $copiedSize -gt 0) {
+            Format-RemainingTime ($remainingBytes / $speed)
+        }
+        else { "calculating..." }
         
         # Build + write status line (carriage return to overwrite)
-        $statusLine = "    $spin $progressBar $($percent.ToString().PadLeft(3))%  $(Format-FileSize $copiedSize) / $(Format-FileSize $totalSize)  $(Format-FileSize $speed)/s   "
+        $statusLine = "    $spin $progressBar $($percent.ToString().PadLeft(3))%  $(Format-FileSize $copiedSize) / $(Format-FileSize $totalSize)  $(Format-FileSize $speed)/s  ETA $eta   "
         Write-Host "`r$statusLine" -NoNewline
     }
     
-    # Get the exit code from the job
-    $exitCode = Receive-Job -Job $job -ErrorAction SilentlyContinue
-    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-    
-    # If exit code is null, check the log file for success indicators
-    if ($null -eq $exitCode) { $exitCode = 0 }
+    $exitCode = $process.ExitCode
     
     # Final update
     $destFiles = Get-ChildItem $Destination -Recurse -File -Force -ErrorAction SilentlyContinue
@@ -597,8 +761,23 @@ function Copy-WithProgress {
     $avgSpeed = if ($elapsed.TotalSeconds -gt 0) { $copiedSize / $elapsed.TotalSeconds } else { 0 }
     
     # Complete the progress bar (clear the line first, then draw the final state)
+    if ($abortedByOperator) {
+        Write-Host "`r$(' ' * 140)" -NoNewline
+        Write-Host "`r    " -NoNewline
+        Write-Host "$($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
+        Write-Host "Skipped by operator after $([math]::Round($elapsed.TotalSeconds, 1))s; partial files may remain." -ForegroundColor Yellow
+        return @{
+            ExitCode = $exitCode
+            FilesCopied = $copiedFiles
+            BytesCopied = $copiedSize
+            Status = "Skipped"
+            Aborted = $true
+            Duration = $elapsed
+        }
+    }
+
     $progressBar = [string]$Script:Theme.Bar.Full * $progressBarWidth
-    Write-Host "`r$(' ' * 90)" -NoNewline
+    Write-Host "`r$(' ' * 140)" -NoNewline
     Write-Host "`r    " -NoNewline
     Write-Host "$($Script:Theme.Glyphs.OK) " -ForegroundColor Green -NoNewline
     Write-Host $progressBar -ForegroundColor Green -NoNewline
@@ -806,6 +985,75 @@ function Get-DestinationFreeSpaceBytes {
     return $null
 }
 
+function Test-NetworkDestination {
+    param([string]$Path)
+
+    # UNC paths are always network destinations. For mapped drives, consult
+    # the logical-drive type instead of assuming every drive letter is local.
+    if ($Path -like "\\*") { return $true }
+
+    try {
+        $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+        if ($item.PSDrive -and $item.PSDrive.Root -like "\\*") { return $true }
+
+        if ($item.PSDrive -and $item.PSDrive.Name -match "^[A-Za-z]$") {
+            $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$($item.PSDrive.Name):'" -ErrorAction Stop
+            return $disk.DriveType -eq 4
+        }
+    }
+    catch { }
+
+    return $false
+}
+
+function Publish-TransferArchive {
+    param(
+        [string]$ArchivePath,
+        [string]$DestinationFolder,
+        [string]$LogPath
+    )
+
+    if (-not (Test-Path -LiteralPath $ArchivePath -PathType Leaf)) {
+        Write-Log "Cannot upload ZIP archive because it was not created: $ArchivePath" -Level Error
+        return $null
+    }
+
+    $archiveName = Split-Path -Path $ArchivePath -Leaf
+    $destinationArchive = Join-Path $DestinationFolder $archiveName
+    if (Test-Path -LiteralPath $destinationArchive) {
+        Write-Log "Network ZIP upload skipped because the target already exists: $destinationArchive" -Level Warning
+        Add-Result -Category "Package" -Item "Network ZIP Upload" -Status "Warning" -Details "Target already exists: $destinationArchive"
+        return $null
+    }
+
+    try {
+        $sourceFolder = Split-Path -Path $ArchivePath -Parent
+        $arguments = "`"$sourceFolder`" `"$DestinationFolder`" `"$archiveName`" /Z /J /R:2 /W:3 /NP /NDL /NFL /NJH /NJS /LOG:`"$LogPath`""
+        Write-Host "`n  Uploading ZIP archive to network destination..." -ForegroundColor Cyan
+        Write-Log "Uploading ZIP archive to network destination: $destinationArchive" -Level Info
+        $process = Start-Process -FilePath "robocopy.exe" -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+
+        $sourceSize = (Get-Item -LiteralPath $ArchivePath -ErrorAction Stop).Length
+        $destinationSize = if (Test-Path -LiteralPath $destinationArchive -PathType Leaf) {
+            (Get-Item -LiteralPath $destinationArchive -ErrorAction Stop).Length
+        }
+        else { -1 }
+
+        if ($process.ExitCode -lt 8 -and $sourceSize -eq $destinationSize) {
+            Write-Log "ZIP archive uploaded and size verified: $destinationArchive" -Level Success
+            Add-Result -Category "Package" -Item "Network ZIP Upload" -Status "Success" -Details "Uploaded and size verified: $archiveName"
+            return $destinationArchive
+        }
+
+        throw "Robocopy exit code $($process.ExitCode); source size $sourceSize, destination size $destinationSize"
+    }
+    catch {
+        Write-Log "Could not upload ZIP archive to network destination: $_" -Level Error
+        Add-Result -Category "Package" -Item "Network ZIP Upload" -Status "Error" -Details $_.Exception.Message
+        return $null
+    }
+}
+
 function New-TransferArchive {
     param([string]$TransferBase)
 
@@ -935,6 +1183,10 @@ function Copy-UserFolders {
                     Write-Log "$folder completed: $($result.FilesCopied) files, $(Format-FileSize $result.BytesCopied)" -Level Success
                     Add-Result -Category "User Folders" -Item $folder -Status "Success" -Details "$($result.FilesCopied) files copied"
                 }
+                elseif ($result.Aborted) {
+                    Write-Log "$folder copy stopped by operator" -Level Warning
+                    Add-Result -Category "User Folders" -Item $folder -Status "Skipped" -Details "Stopped by operator; partial files may remain and can be resumed by rerunning the export"
+                }
                 elseif ($result.Status -eq "Skipped") {
                     Write-Log "$folder has no copyable files (junctions only)" -Level Info
                     Add-Result -Category "User Folders" -Item $folder -Status "Skipped" -Details "No files to copy"
@@ -1000,6 +1252,10 @@ function Copy-UserFolders {
             if ($result.Status -eq "Success") {
                 Write-Log "Additional folder $($folder.Name) copied: $($result.FilesCopied) files" -Level Success
                 Add-Result -Category "Additional Folders" -Item $folder.Name -Status "Success" -Details "$($result.FilesCopied) files"
+            }
+            elseif ($result.Aborted) {
+                Write-Log "Additional folder $($folder.Name) copy stopped by operator" -Level Warning
+                Add-Result -Category "Additional Folders" -Item $folder.Name -Status "Skipped" -Details "Stopped by operator; partial files may remain"
             }
             Write-Host ""
         }
@@ -1072,6 +1328,10 @@ function Copy-UserFolders {
             Write-Log "OCS Documents copied: $($result.FilesCopied) files" -Level Success
             Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Success" -Details "$($result.FilesCopied) files from C:\OCS Documents"
         }
+        elseif ($result.Aborted) {
+            Write-Log "OCS Documents copy stopped by operator" -Level Warning
+            Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Skipped" -Details "Stopped by operator; partial files may remain"
+        }
         else {
             Write-Log "OCS Documents copy had issues" -Level Warning
             Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Warning" -Details "Check log for details"
@@ -1116,6 +1376,10 @@ function Copy-AppData {
             if ($result.Status -eq "Success") {
                 Write-Log "Bluebeam copied: $($result.FilesCopied) files" -Level Success
                 Add-Result -Category "AppData" -Item "Bluebeam" -Status "Success" -Details "$($result.FilesCopied) files from $bluebeamFolder"
+            }
+            elseif ($result.Aborted) {
+                Write-Log "Bluebeam copy stopped by operator" -Level Warning
+                Add-Result -Category "AppData" -Item "Bluebeam" -Status "Skipped" -Details "Stopped by operator; partial files may remain"
             }
             else {
                 Write-Log "Bluebeam copy had issues" -Level Warning
@@ -1203,16 +1467,22 @@ Right-click folder > 'Pin to Quick access'
                     }
                 }
                 else {
-                    # Copy entire folder with properly quoted paths
+                    # Copy the folder through the shared progress runner so
+                    # the technician can skip this individual transfer.
                     $robocopyLog = Join-Path $DestinationBase "Logs\robocopy_appdata_$($item.Key).log"
-                    $robocopyOptions = ($Script:Config.RobocopyArgs -join " ")
-                    $argString = "`"$sourcePath`" `"$destPath`" $robocopyOptions /LOG:`"$robocopyLog`""
+                    $result = Copy-WithProgress -Source $sourcePath `
+                                                -Destination $destPath `
+                                                -FolderName "$($item.Key) (Roaming AppData)" `
+                                                -LogPath $robocopyLog `
+                                                -RobocopyArgs $Script:Config.RobocopyArgs
                     
-                    $result = Start-Process -FilePath "robocopy.exe" -ArgumentList $argString -Wait -PassThru -WindowStyle Hidden
-                    
-                    if ($result.ExitCode -lt 8) {
+                    if ($result.Status -eq "Success") {
                         Write-Log "$($item.Key) copied successfully" -Level Success
                         Add-Result -Category "AppData" -Item $item.Key -Status "Success"
+                    }
+                    elseif ($result.Aborted) {
+                        Write-Log "$($item.Key) copy stopped by operator" -Level Warning
+                        Add-Result -Category "AppData" -Item $item.Key -Status "Skipped" -Details "Stopped by operator; partial files may remain"
                     }
                     else {
                         Write-Log "$($item.Key) copy had issues (exit: $($result.ExitCode))" -Level Warning
@@ -1269,6 +1539,10 @@ Right-click folder > 'Pin to Quick access'
                 if ($result.Status -eq "Success") {
                     Write-Log "$($item.Key) (Local) copied: $($result.FilesCopied) files" -Level Success
                     Add-Result -Category "AppData Local" -Item $item.Key -Status "Success" -Details "$($result.FilesCopied) files"
+                }
+                elseif ($result.Aborted) {
+                    Write-Log "$($item.Key) (Local) copy stopped by operator" -Level Warning
+                    Add-Result -Category "AppData Local" -Item $item.Key -Status "Skipped" -Details "Stopped by operator; partial files may remain"
                 }
                 else {
                     Write-Log "$($item.Key) (Local) copy had issues" -Level Warning
@@ -1982,7 +2256,10 @@ function Copy-BrowserData {
     # archive with common disposable cache directories excluded, then export each profile's
     # bookmarks into Chrome's portable HTML format for reliable import.
     $chromeUserDataPath = Join-Path $localAppData "Google\Chrome\User Data"
-    if (Test-Path -LiteralPath $chromeUserDataPath) {
+    if (-not $Script:Config.Backup.Chrome) {
+        Add-DisabledBackupResult -Item "Chrome" -Category "Browser"
+    }
+    elseif (Test-Path -LiteralPath $chromeUserDataPath) {
         [void](Request-BrowserClose -ProcessName "chrome" -DisplayName "Google Chrome")
         [void](Export-ChromeBookmarks -ChromeUserDataPath $chromeUserDataPath -BrowserPath $browserPath)
 
@@ -2000,13 +2277,19 @@ function Copy-BrowserData {
             Write-Log "Chrome profile archive copied: $($result.FilesCopied) files" -Level Success
             Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Success" -Details "$($result.FilesCopied) files; common caches excluded; credentials remain Windows-protected"
         }
+        elseif ($result.Aborted) {
+            Write-Log "Chrome profile archive copy stopped by operator" -Level Warning
+            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Skipped" -Details "Stopped by operator; partial files may remain and can be resumed by rerunning the export"
+        }
         else {
             Write-Log "Chrome profile archive copy completed with warnings" -Level Warning
             Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Warning" -Details "Check robocopy_chrome_user_data.log"
         }
 
-        $canLaunchChromeForOriginalUser = (-not $Script:IsAdmin) -or ($Script:OriginalUserProfile -eq $env:USERPROFILE)
-        Invoke-ChromePasswordExportPrompt -BrowserPath $browserPath -CanLaunchChromeForOriginalUser $canLaunchChromeForOriginalUser
+        if (-not $result.Aborted) {
+            $canLaunchChromeForOriginalUser = (-not $Script:IsAdmin) -or ($Script:OriginalUserProfile -eq $env:USERPROFILE)
+            Invoke-ChromePasswordExportPrompt -BrowserPath $browserPath -CanLaunchChromeForOriginalUser $canLaunchChromeForOriginalUser
+        }
     }
     else {
         Write-Log "Chrome not installed or no user data found" -Level Info
@@ -2024,9 +2307,13 @@ function Copy-BrowserData {
     $firefoxPackagePath = Join-Path $browserPath "Firefox"
     $firefoxFound = $false
 
-    [void](Request-BrowserClose -ProcessName "firefox" -DisplayName "Firefox")
+    # Unlike Chromium bookmark files, Firefox's SQLite databases and key
+    # material are not safe to capture while the process still owns them.
+    # Do not create a package that looks successful but contains a torn or
+    # locked Firefox profile; the operator can close Firefox and rerun.
+    $firefoxClosed = Request-BrowserClose -ProcessName "firefox" -DisplayName "Firefox"
 
-    if (Test-Path $firefoxRoamingSource) {
+    if ($firefoxClosed -and (Test-Path $firefoxRoamingSource)) {
         $firefoxFound = $true
         $firefoxRoamingDest = Join-Path $firefoxPackagePath "Roaming"
         $firefoxRoamingLog = Join-Path $DestinationBase "Logs\robocopy_firefox_roaming.log"
@@ -2040,13 +2327,17 @@ function Copy-BrowserData {
             Write-Log "Firefox roaming profile copied: $($result.FilesCopied) files" -Level Success
             Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Success" -Details "$($result.FilesCopied) files; bookmarks, history, logins, extensions, and settings"
         }
+        elseif ($result.Aborted) {
+            Write-Log "Firefox roaming profile copy stopped by operator" -Level Warning
+            Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Skipped" -Details "Stopped by operator; partial files may remain"
+        }
         else {
             Write-Log "Firefox roaming profile copy completed with warnings" -Level Warning
             Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Warning" -Details "Check robocopy_firefox_roaming.log"
         }
     }
 
-    if (Test-Path $firefoxLocalSource) {
+    if ($firefoxClosed -and (Test-Path $firefoxLocalSource)) {
         $firefoxFound = $true
         $firefoxLocalDest = Join-Path $firefoxPackagePath "Local"
         $firefoxLocalLog = Join-Path $DestinationBase "Logs\robocopy_firefox_local.log"
@@ -2060,32 +2351,75 @@ function Copy-BrowserData {
             Write-Log "Firefox local data copied: $($result.FilesCopied) files" -Level Success
             Add-Result -Category "Browser" -Item "Firefox Local Data" -Status "Success" -Details "$($result.FilesCopied) files"
         }
+        elseif ($result.Aborted) {
+            Write-Log "Firefox local data copy stopped by operator" -Level Warning
+            Add-Result -Category "Browser" -Item "Firefox Local Data" -Status "Skipped" -Details "Stopped by operator; partial files may remain"
+        }
         else {
             Write-Log "Firefox local data copy completed with warnings" -Level Warning
             Add-Result -Category "Browser" -Item "Firefox Local Data" -Status "Warning" -Details "Check robocopy_firefox_local.log"
         }
     }
 
-    if (-not $firefoxFound) {
+    if ($firefoxClosed -and -not $firefoxFound) {
         Write-Log "Firefox not installed or no profile data found" -Level Info
         Add-Result -Category "Browser" -Item "Firefox" -Status "Skipped" -Details "Not found"
     }
-    
-    # ========== EDGE BOOKMARKS ==========
-    $edgePath = Join-Path $localAppData "Microsoft\Edge\User Data\Default"
-    $edgeBookmarks = Join-Path $edgePath "Bookmarks"
-    
-    if (Test-Path $edgeBookmarks) {
-        Write-Log "Edge bookmarks found" -Level Info
-        
-        $edgeHtml = Join-Path $browserPath "Edge_Bookmarks.html"
-        if (Convert-ChromeBookmarksToHtml -JsonPath $edgeBookmarks -HtmlPath $edgeHtml) {
-            Write-Log "Edge bookmarks exported as HTML" -Level Success
-            Add-Result -Category "Browser" -Item "Edge Bookmarks" -Status "Success" -Details "HTML file ready for import"
+    elseif (-not $firefoxClosed) {
+        Write-Log "Firefox export skipped because Firefox is still running" -Level Warning
+        Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Skipped" -Details "Firefox must be closed; rerun the export to capture a consistent profile"
+    }
+
+    # ========== MICROSOFT EDGE ==========
+    # Edge uses the same Chromium profile layout as Chrome.  The previous
+    # implementation looked only in Default and exported only HTML, leaving
+    # Profile N favorites with nothing the import script could restore.  Keep
+    # the portable HTML copies and also preserve each raw Bookmarks file so
+    # the generated importer can restore matching Edge profiles automatically.
+    $edgeUserDataPath = Join-Path $localAppData "Microsoft\Edge\User Data"
+    if (Test-Path -LiteralPath $edgeUserDataPath) {
+        [void](Request-BrowserClose -ProcessName "msedge" -DisplayName "Microsoft Edge")
+        $edgeProfiles = @(Get-ChromeProfileDirectories -UserDataPath $edgeUserDataPath)
+        $edgeBookmarkPath = Join-Path $browserPath "Edge\Bookmarks"
+        $exportedEdgeProfiles = 0
+
+        foreach ($profile in $edgeProfiles) {
+            $bookmarksJson = Join-Path $profile.FullName "Bookmarks"
+            if (-not (Test-Path -LiteralPath $bookmarksJson)) { continue }
+
+            $safeProfileName = $profile.Name -replace '[^a-zA-Z0-9_.-]', '_'
+            if (-not (Test-Path -LiteralPath $edgeBookmarkPath)) {
+                New-Item -ItemType Directory -Path $edgeBookmarkPath -Force | Out-Null
+            }
+
+            $edgeHtml = Join-Path $edgeBookmarkPath "Edge_Bookmarks_$safeProfileName.html"
+            if (Convert-ChromeBookmarksToHtml -JsonPath $bookmarksJson -HtmlPath $edgeHtml) {
+                $rawProfileDestination = Join-Path $browserPath "Edge\User Data\$($profile.Name)"
+                New-Item -ItemType Directory -Path $rawProfileDestination -Force | Out-Null
+                Copy-Item -LiteralPath $bookmarksJson -Destination (Join-Path $rawProfileDestination "Bookmarks") -Force
+                $exportedEdgeProfiles++
+                Write-Log "Edge bookmarks exported for profile '$($profile.Name)'" -Level Success
+
+                # Preserve the legacy filename for older import packages and
+                # technicians who expect a single Default-profile HTML file.
+                if ($profile.Name -eq "Default") {
+                    Copy-Item -LiteralPath $edgeHtml -Destination (Join-Path $browserPath "Edge_Bookmarks.html") -Force
+                }
+            }
+            else {
+                Write-Log "Could not convert Edge bookmarks for profile '$($profile.Name)'" -Level Warning
+            }
+        }
+
+        if ($exportedEdgeProfiles -gt 0) {
+            Add-Result -Category "Browser" -Item "Edge Bookmarks" -Status "Success" -Details "$exportedEdgeProfiles Edge profile(s) exported; matching profiles can be restored automatically"
+        }
+        else {
+            Add-Result -Category "Browser" -Item "Edge Bookmarks" -Status "Skipped" -Details "No Edge bookmark files found"
         }
     }
     else {
-        Write-Log "Edge not installed or no bookmarks" -Level Info
+        Write-Log "Edge not installed or no user data found" -Level Info
         Add-Result -Category "Browser" -Item "Edge" -Status "Skipped" -Details "Not found"
     }
     
@@ -2364,6 +2698,8 @@ $Script:Results = @{
 $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $userProfile = $env:USERPROFILE
 $logFile = Join-Path $scriptPath "ImportLog.txt"
+$importLotusNotes = [bool]::Parse('{IMPORT_LOTUS_NOTES}')
+$importFirefox = [bool]::Parse('{IMPORT_FIREFOX}')
 $deletePrintBrmAfterImport = [bool]::Parse('{DELETE_PRINTBRM_AFTER_IMPORT}')
 $printBrmRestoreSucceeded = $false
 
@@ -2420,6 +2756,19 @@ function Format-FileSize {
     if ($Bytes -ge 1MB) { return "{0:N2} MB" -f ($Bytes / 1MB) }
     if ($Bytes -ge 1KB) { return "{0:N2} KB" -f ($Bytes / 1KB) }
     return "$Bytes B"
+}
+
+function Format-RemainingTime {
+    param([double]$Seconds)
+
+    if ($Seconds -lt 0 -or [double]::IsInfinity($Seconds) -or [double]::IsNaN($Seconds)) {
+        return "calculating..."
+    }
+
+    $remaining = [int][math]::Ceiling($Seconds)
+    if ($remaining -lt 60) { return "$remaining sec" }
+    if ($remaining -lt 3600) { return "$([math]::Floor($remaining / 60)) min $($remaining % 60) sec" }
+    return "$([math]::Floor($remaining / 3600)) hr $([math]::Floor(($remaining % 3600) / 60)) min"
 }
 
 function Copy-WithProgress {
@@ -2492,8 +2841,13 @@ function Copy-WithProgress {
         
         $elapsed = (Get-Date) - $startTime
         $speed = if ($elapsed.TotalSeconds -gt 0) { $copiedSize / $elapsed.TotalSeconds } else { 0 }
+        $remainingBytes = [math]::Max(0, $totalSize - $copiedSize)
+        $eta = if ($speed -gt 0 -and $copiedSize -gt 0) {
+            Format-RemainingTime ($remainingBytes / $speed)
+        }
+        else { "calculating..." }
         
-        Write-Host "`r    $spin $progressBar $($percent.ToString().PadLeft(3))%  $(Format-FileSize $copiedSize) / $(Format-FileSize $totalSize)  $(Format-FileSize $speed)/s   " -NoNewline
+        Write-Host "`r    $spin $progressBar $($percent.ToString().PadLeft(3))%  $(Format-FileSize $copiedSize) / $(Format-FileSize $totalSize)  $(Format-FileSize $speed)/s  ETA $eta   " -NoNewline
     }
     
     # Get the exit code from the job
@@ -2511,7 +2865,7 @@ function Copy-WithProgress {
     
     $elapsed = (Get-Date) - $startTime
     $progressBar = [string]$Script:Theme.Bar.Full * $progressBarWidth
-    Write-Host "`r$(' ' * 90)" -NoNewline
+    Write-Host "`r$(' ' * 140)" -NoNewline
     Write-Host "`r    " -NoNewline
     Write-Host "$($Script:Theme.Glyphs.OK) " -ForegroundColor Green -NoNewline
     Write-Host $progressBar -ForegroundColor Green -NoNewline
@@ -2799,7 +3153,11 @@ if (Test-Path $bluebeamSource) {
 
 # Lotus Notes - Local AppData
 $lotusSource = Join-Path $scriptPath "AppData\Lotus_Local"
-if (Test-Path $lotusSource) {
+if ((Test-Path $lotusSource) -and -not $importLotusNotes) {
+    Write-Log "Lotus Notes import disabled by configuration" -Level "Info"
+    Add-Result -Category "AppData" -Item "Lotus Notes" -Status "Skipped" -Details "Disabled by configuration"
+}
+elseif (Test-Path $lotusSource) {
     $lotusDest = Join-Path $env:LOCALAPPDATA "Lotus"
     if ($TestMode) {
         Write-Log "Lotus Notes - Would restore" -Level "Info"
@@ -3342,6 +3700,86 @@ Write-Host ""
 # Windows-protected credential material safely.
 $browserDataPath = Join-Path $scriptPath "BrowserData"
 
+function Restore-ChromiumProfileBookmarks {
+    param(
+        [string]$BrowserName,
+        [string]$ProcessName,
+        [string]$PackageUserDataPath,
+        [string]$TargetUserDataPath
+    )
+
+    if (-not (Test-Path -LiteralPath $PackageUserDataPath)) { return }
+
+    $sourceProfiles = @(Get-ChildItem -LiteralPath $PackageUserDataPath -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq "Default" -or $_.Name -like "Profile *" } |
+        Sort-Object Name)
+    if ($sourceProfiles.Count -eq 0) { return }
+
+    if ($TestMode) {
+        $bookmarkCount = @($sourceProfiles | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "Bookmarks") }).Count
+        Add-Result -Category "Browser" -Item "$BrowserName Bookmarks" -Status "TestMode" -Details "$bookmarkCount profile(s) would be restored when matching target profiles are available"
+        return
+    }
+
+    $running = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+    if ($running.Count -gt 0) {
+        Write-Host "  $BrowserName must be closed before bookmarks can be restored." -ForegroundColor Yellow
+        [void](Read-Host "  Close $BrowserName, then press Enter to continue (S to skip)")
+        $running = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+    }
+    if ($running.Count -gt 0) {
+        Write-Log "$BrowserName bookmark restore skipped because the browser is still running" -Level "Warning"
+        Add-Result -Category "Browser" -Item "$BrowserName Bookmarks" -Status "Skipped" -Details "Close $BrowserName and re-run the import script"
+        return
+    }
+
+    $backupRoot = Join-Path $env:LOCALAPPDATA "LaptopTransferBrowserBackups\$BrowserName\$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $restored = 0
+    $manual = 0
+    foreach ($sourceProfile in $sourceProfiles) {
+        $sourceBookmarks = Join-Path $sourceProfile.FullName "Bookmarks"
+        if (-not (Test-Path -LiteralPath $sourceBookmarks)) { continue }
+
+        $targetProfile = Join-Path $TargetUserDataPath $sourceProfile.Name
+        # A Default profile can be safely created for a newly installed browser.
+        # Additional profiles require an existing matching target profile, since
+        # Chromium maps their display names in Local State.
+        if ($sourceProfile.Name -ne "Default" -and -not (Test-Path -LiteralPath $targetProfile)) {
+            $manual++
+            Write-Log "$BrowserName profile '$($sourceProfile.Name)' has no matching target profile; its HTML export remains available for import" -Level "Warning"
+            continue
+        }
+
+        try {
+            if (-not (Test-Path -LiteralPath $targetProfile)) {
+                New-Item -ItemType Directory -Path $targetProfile -Force | Out-Null
+            }
+
+            $targetBookmarks = Join-Path $targetProfile "Bookmarks"
+            if (Test-Path -LiteralPath $targetBookmarks) {
+                $backupProfile = Join-Path $backupRoot $sourceProfile.Name
+                New-Item -ItemType Directory -Path $backupProfile -Force | Out-Null
+                Copy-Item -LiteralPath $targetBookmarks -Destination (Join-Path $backupProfile "Bookmarks") -Force -ErrorAction Stop
+            }
+
+            Copy-Item -LiteralPath $sourceBookmarks -Destination $targetBookmarks -Force -ErrorAction Stop
+            $restored++
+        }
+        catch {
+            Write-Log "$BrowserName bookmark restore failed for profile '$($sourceProfile.Name)': $_" -Level "Warning"
+            Add-Result -Category "Browser" -Item "$BrowserName $($sourceProfile.Name) Bookmarks" -Status "Warning" -Details $_.Exception.Message
+        }
+    }
+
+    if ($restored -gt 0) {
+        Write-Log "$BrowserName bookmarks restored for $restored profile(s)" -Level "Success"
+        Add-Result -Category "Browser" -Item "$BrowserName Bookmarks" -Status "Success" -Details "$restored profile(s) restored; any replaced target bookmarks are backed up under $backupRoot"
+    }
+    if ($manual -gt 0) {
+        Add-Result -Category "Browser" -Item "$BrowserName Additional Profiles" -Status "Manual" -Details "$manual profile(s) have no matching target profile; import the supplied HTML files"
+    }
+}
+
 # Chrome bookmarks HTML (one file per old Chrome profile)
 $chromeBookmarksPath = Join-Path $browserDataPath "Chrome\Bookmarks"
 $chromeBookmarkFiles = @(Get-ChildItem -LiteralPath $chromeBookmarksPath -Filter "*.html" -File -Force -ErrorAction SilentlyContinue)
@@ -3360,18 +3798,18 @@ if ($chromeBookmarkFiles.Count -gt 0) {
     Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Ready" -Details "$($chromeBookmarkFiles.Count) HTML file(s) for manual import"
 }
 
-# Chrome profile archive. It contains useful browser state and encrypted
-# database files from every profile, but it is intentionally not copied over
-# a new Chrome profile: Chrome passwords/cookies use keys tied to the old
-# Windows installation, and overwriting a new profile can make Chrome fail to
-# start or lose the new machine's sign-in state.
+# Chrome profile archive. Credentials and cookies remain encrypted to the old
+# Windows installation, so they are deliberately not restored.  Bookmarks are
+# portable, however, and are restored below without replacing the rest of the
+# Chrome profile.
 $chromeProfileArchive = Join-Path $browserDataPath "Chrome\User Data"
 if (Test-Path -LiteralPath $chromeProfileArchive) {
     $chromeArchiveFiles = (Get-ChildItem -LiteralPath $chromeProfileArchive -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object).Count
-    Write-Log "Chrome profile archive retained ($chromeArchiveFiles files; not auto-restored)" -Level "Info"
+    Write-Log "Chrome profile archive retained ($chromeArchiveFiles files; only portable bookmarks are restored)" -Level "Info"
     Write-Host "    Chrome profile archive: $chromeProfileArchive" -ForegroundColor Gray
-    Write-Host "    Bookmarks and native password CSV import are the supported cross-PC restore paths." -ForegroundColor Gray
-    Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Info" -Details "$chromeArchiveFiles files retained; not safe to auto-restore across Windows installations"
+    Write-Host "    Bookmarks are restored automatically when Chrome is closed; credentials remain protected." -ForegroundColor Gray
+    Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Info" -Details "$chromeArchiveFiles files retained; credentials and cookies are not restored"
+    Restore-ChromiumProfileBookmarks -BrowserName "Chrome" -ProcessName "chrome" -PackageUserDataPath $chromeProfileArchive -TargetUserDataPath (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data")
 }
 
 # Chrome's native Password Manager export produces a plaintext CSV after the
@@ -3421,21 +3859,75 @@ if ($chromePasswordCsvs.Count -gt 0) {
     }
 }
 
-# Edge bookmarks HTML
-$edgeHtml = Join-Path $browserDataPath "Edge_Bookmarks.html"
-if (Test-Path $edgeHtml) {
-    Write-Log "Edge bookmarks HTML file available" -Level "Success"
-    Write-Host "    File: $edgeHtml" -ForegroundColor Gray
-    Write-Host "    To import: Edge > Favorites > Import favorites > HTML file" -ForegroundColor Gray
-    Add-Result -Category "Browser" -Item "Edge Bookmarks" -Status "Ready" -Details "HTML file for manual import"
+# Edge bookmarks HTML (one file per old Edge profile)
+$edgeBookmarksPath = Join-Path $browserDataPath "Edge\Bookmarks"
+$edgeBookmarkFiles = @(Get-ChildItem -LiteralPath $edgeBookmarksPath -Filter "*.html" -File -Force -ErrorAction SilentlyContinue)
+if ($edgeBookmarkFiles.Count -eq 0) {
+    $legacyEdgeHtml = Join-Path $browserDataPath "Edge_Bookmarks.html"
+    if (Test-Path -LiteralPath $legacyEdgeHtml) { $edgeBookmarkFiles = @(Get-Item -LiteralPath $legacyEdgeHtml) }
+}
+if ($edgeBookmarkFiles.Count -gt 0) {
+    Write-Log "Edge bookmark HTML files available for $($edgeBookmarkFiles.Count) profile(s)" -Level "Success"
+    foreach ($edgeBookmarkFile in $edgeBookmarkFiles) {
+        Write-Host "    File: $($edgeBookmarkFile.FullName)" -ForegroundColor Gray
+    }
+    Write-Host "    Additional profiles: Edge > Favorites > Import favorites > HTML file" -ForegroundColor Gray
+    Add-Result -Category "Browser" -Item "Edge Bookmark HTML" -Status "Ready" -Details "$($edgeBookmarkFiles.Count) HTML file(s) available for manual import"
+}
+
+$edgeProfileArchive = Join-Path $browserDataPath "Edge\User Data"
+if (Test-Path -LiteralPath $edgeProfileArchive) {
+    Restore-ChromiumProfileBookmarks -BrowserName "Microsoft Edge" -ProcessName "msedge" -PackageUserDataPath $edgeProfileArchive -TargetUserDataPath (Join-Path $env:LOCALAPPDATA "Microsoft\Edge\User Data")
 }
 
 # Firefox profile data
+function Remove-FirefoxProfileLocks {
+    param([string]$FirefoxRoot)
+
+    # A lock copied from an interrupted/forced-close session can make Firefox
+    # report that the profile is already in use on the new computer.  These
+    # are transient lock markers only; never remove profile databases or user
+    # preferences here.
+    $profilesRoot = Join-Path $FirefoxRoot "Profiles"
+    $lockFiles = @(Get-ChildItem -LiteralPath $profilesRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in @("parent.lock", ".parentlock") })
+    foreach ($lockFile in $lockFiles) {
+        try {
+            Remove-Item -LiteralPath $lockFile.FullName -Force -ErrorAction Stop
+            Write-Log "Removed stale Firefox profile lock: $($lockFile.FullName)" -Level "Info"
+        }
+        catch {
+            Write-Log "Could not remove Firefox profile lock '$($lockFile.FullName)': $_" -Level "Warning"
+        }
+    }
+}
+
 $firefoxRoamingSource = Join-Path $browserDataPath "Firefox\Roaming"
 $firefoxLocalSource = Join-Path $browserDataPath "Firefox\Local"
-if ((Test-Path $firefoxRoamingSource) -or (Test-Path $firefoxLocalSource)) {
+if (-not $importFirefox) {
+    if ((Test-Path -LiteralPath $firefoxRoamingSource) -or (Test-Path -LiteralPath $firefoxLocalSource)) {
+        Write-Log "Firefox import disabled by configuration" -Level "Info"
+        Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Skipped" -Details "Disabled by configuration"
+    }
+}
+else {
+    $firefoxProfilesRoot = Join-Path $firefoxRoamingSource "Profiles"
+    $firefoxProfileFolders = @(Get-ChildItem -LiteralPath $firefoxProfilesRoot -Directory -Force -ErrorAction SilentlyContinue)
+
+    # A valid standard Firefox backup always includes one or more profile folders
+    # beneath Roaming\Profiles.  Refuse to move aside an existing new-machine
+    # profile when this essential payload is missing or incomplete.
+    if ((Test-Path -LiteralPath $firefoxRoamingSource) -and $firefoxProfileFolders.Count -eq 0) {
+        Write-Log "Firefox package has no Roaming\Profiles payload; existing Firefox data was left untouched" -Level "Warning"
+        Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Warning" -Details "Package is missing Roaming\Profiles; existing Firefox data was not replaced"
+        $firefoxRoamingSource = $null
+        $firefoxLocalSource = $null
+    }
+
+    if (($firefoxRoamingSource -and (Test-Path -LiteralPath $firefoxRoamingSource)) -or
+        ($firefoxLocalSource -and (Test-Path -LiteralPath $firefoxLocalSource))) {
     if ($TestMode) {
-        $firefoxFileCount = ((Get-ChildItem $firefoxRoamingSource -Recurse -File -Force -ErrorAction SilentlyContinue) + (Get-ChildItem $firefoxLocalSource -Recurse -File -Force -ErrorAction SilentlyContinue) | Measure-Object).Count
+        $firefoxFileCount = ((Get-ChildItem -LiteralPath $firefoxRoamingSource -Recurse -File -Force -ErrorAction SilentlyContinue) + (Get-ChildItem -LiteralPath $firefoxLocalSource -Recurse -File -Force -ErrorAction SilentlyContinue) | Measure-Object).Count
         Write-Log "Firefox profile - Would restore $firefoxFileCount files" -Level "Info"
         Add-Result -Category "Browser" -Item "Firefox Profile" -Status "TestMode" -Details "$firefoxFileCount files"
     }
@@ -3459,7 +3951,7 @@ if ((Test-Path $firefoxRoamingSource) -or (Test-Path $firefoxLocalSource)) {
             )
 
             foreach ($target in $firefoxRestoreTargets) {
-                if (-not (Test-Path $target.Source)) { continue }
+                if (-not $target.Source -or -not (Test-Path -LiteralPath $target.Source)) { continue }
 
                 $destination = Join-Path $target.Parent "Firefox"
                 $backup = Join-Path $target.Parent "Firefox_Backup_$backupStamp"
@@ -3475,6 +3967,9 @@ if ((Test-Path $firefoxRoamingSource) -or (Test-Path $firefoxLocalSource)) {
                                                -Destination $destination `
                                                -FolderName "Firefox $($target.Name) data" `
                                                -LogPath $logPath
+                    if ($target.Name -eq "Roaming" -and $result.FilesCopied -gt 0) {
+                        Remove-FirefoxProfileLocks -FirefoxRoot $destination
+                    }
                     if ($result.Status -eq "Success") {
                         Write-Log "Firefox $($target.Name) data restored: $($result.FilesCopied) files" -Level "Success"
                         Add-Result -Category "Browser" -Item "Firefox $($target.Name) Data" -Status "Success" -Details "$($result.FilesCopied) files"
@@ -3542,6 +4037,7 @@ if ($deletePrintBrmAfterImport -and $printBrmRestoreSucceeded) {
         Write-Log "Could not delete PrintBRM package: $_" -Level "Warning"
         Add-Result -Category "Printers" -Item "PrintBRM Package Cleanup" -Status "Warning" -Details $_.Exception.Message
     }
+    }
 }
 
 if ($Script:Results.Warnings.Count -gt 0) {
@@ -3578,6 +4074,8 @@ Read-Host "  Press Enter to exit"
     $importScript = $importScript -replace '\{TIMESTAMP\}', (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
     $importScript = $importScript -replace '\{USERNAME\}', $Script:OriginalUserName
     $importScript = $importScript -replace '\{COMPUTERNAME\}', $env:COMPUTERNAME
+    $importScript = $importScript -replace '\{IMPORT_LOTUS_NOTES\}', $Script:Config.Import.LotusNotes.ToString().ToLowerInvariant()
+    $importScript = $importScript -replace '\{IMPORT_FIREFOX\}', $Script:Config.Import.Firefox.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{DELETE_PRINTBRM_AFTER_IMPORT\}', $Script:Config.Import.DeletePrintBrmAfterImport.ToString().ToLowerInvariant()
     
     $importScriptPath = Join-Path $DestinationBase "Import-LaptopData.ps1"
@@ -4098,6 +4596,12 @@ function Start-LaptopExport {
         Resolve-TransferMode
     }
 
+    Apply-OnlineImportDefaults
+    if (-not (Show-TransferSettingsMenu)) {
+        Write-Host "`n  Transfer cancelled." -ForegroundColor Yellow
+        return
+    }
+
     # Online exports use the Windows folder picker. Local exports retain the
     # external/secondary-drive selector and do not open the picker.
     if ($Script:Config.TransferMode -eq "Local") {
@@ -4108,6 +4612,26 @@ function Start-LaptopExport {
     }
     if (-not $destinationFolder) {
         return
+    }
+
+    $createsZipArchive = $Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.CreateZipArchive
+    $isNetworkDestination = $Script:Config.TransferMode -eq "Online" -and (Test-NetworkDestination -Path $destinationFolder)
+    $useLocalStaging = $isNetworkDestination -and $createsZipArchive -and $Script:Config.Online.StageNetworkTransfersLocally
+    $stagingRoot = Join-Path $env:SystemDrive "LaptopTransferStaging"
+    $workingFolder = $destinationFolder
+    if ($useLocalStaging) {
+        try {
+            New-Item -ItemType Directory -Path $stagingRoot -Force -ErrorAction Stop | Out-Null
+            $workingFolder = $stagingRoot
+            Write-Section "Network transfer staging"
+            Write-KeyValue "Network destination" $destinationFolder
+            Write-KeyValue "Local staging" $stagingRoot
+            Write-Host "  Files will be collected and zipped locally before one ZIP is uploaded." -ForegroundColor DarkGray
+        }
+        catch {
+            Write-Host "Could not create local staging folder '$stagingRoot': $_" -ForegroundColor Red
+            return
+        }
     }
 
     # ---- Pre-scan + free-space check ----
@@ -4128,19 +4652,33 @@ function Start-LaptopExport {
     Write-KeyValue "Estimated size" (Format-FileSize $estBytes)
 
     try {
-        $freeBytes = Get-DestinationFreeSpaceBytes -Path $destinationFolder
+        $freeBytes = Get-DestinationFreeSpaceBytes -Path $workingFolder
         if ($null -ne $freeBytes) {
-            Write-KeyValue "Free at destination" (Format-FileSize $freeBytes)
+            $freeLabel = if ($useLocalStaging) { "Free in local staging" } else { "Free at destination" }
+            Write-KeyValue $freeLabel (Format-FileSize $freeBytes)
         }
-        # Online mode keeps the folder while creating a ZIP; Local mode keeps
-        # only the folder, so it needs substantially less destination space.
-        $spaceMultiplier = if ($Script:Config.TransferMode -eq "Online") { 2.15 } else { 1.15 }
+        # Online mode needs extra space only when it will also create a ZIP.
+        $spaceMultiplier = if ($createsZipArchive) { 2.15 } else { 1.15 }
         $requiredFreeBytes = [math]::Ceiling($estBytes * $spaceMultiplier)
+        $spaceWarnings = @()
         if ($freeBytes -gt 0 -and $freeBytes -lt $requiredFreeBytes) {
+            $spaceLocation = if ($useLocalStaging) { "local staging location" } else { "destination" }
+            $spaceDetail = if ($createsZipArchive) { "the package and ZIP archive" } else { "the transfer package" }
+            $spaceWarnings += "The $spaceLocation may not have enough space for $spaceDetail."
+        }
+        if ($useLocalStaging) {
+            $networkFreeBytes = Get-DestinationFreeSpaceBytes -Path $destinationFolder
+            if ($null -ne $networkFreeBytes) {
+                Write-KeyValue "Free at network destination" (Format-FileSize $networkFreeBytes)
+            }
+            if ($networkFreeBytes -gt 0 -and $networkFreeBytes -lt [math]::Ceiling($estBytes * 1.15)) {
+                $spaceWarnings += "The network destination may not have enough space for the ZIP archive."
+            }
+        }
+        if ($spaceWarnings.Count -gt 0) {
             Write-Host ""
             Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
-            $spaceDetail = if ($Script:Config.TransferMode -eq "Online") { "the package and its ZIP archive" } else { "the transfer package" }
-            Write-Host "Destination may not have enough free space for $spaceDetail." -ForegroundColor White
+            Write-Host ($spaceWarnings -join " ") -ForegroundColor White
             $go = Read-Host "    Continue anyway? (Y/N)"
             if ($go -notmatch "^[Yy]") { Write-Host "  Cancelled." -ForegroundColor Yellow; return }
         }
@@ -4150,7 +4688,7 @@ function Start-LaptopExport {
     }
 
     # Create transfer folder structure
-    $transferBase = Join-Path $destinationFolder $Script:Config.TransferFolderName
+    $transferBase = Join-Path $workingFolder $Script:Config.TransferFolderName
     
     Write-KeyValue "Transfer folder" $transferBase
     
@@ -4217,6 +4755,11 @@ function Start-LaptopExport {
     # 10. Generate quick import batch file
     New-QuickImportBatch -DestinationBase $transferBase
 
+    if ($Script:Config.TransferMode -eq "Online" -and -not $Script:Config.Online.CreateZipArchive) {
+        Write-Log "ZIP archive creation disabled by configuration" -Level Info
+        Add-Result -Category "Package" -Item "ZIP Archive" -Status "Skipped" -Details "Disabled by configuration"
+    }
+
     # Save log
     $logPath = Join-Path $transferBase "Logs\ExportLog.txt"
     $Script:Log | Out-File $logPath -Encoding UTF8
@@ -4224,8 +4767,13 @@ function Start-LaptopExport {
     # Local transfers stay as folders for a removable drive. Online transfers
     # also produce a portable ZIP beside the package.
     $archivePath = $null
-    if ($Script:Config.TransferMode -eq "Online") {
+    $publishedArchivePath = $null
+    if ($Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.CreateZipArchive) {
         $archivePath = New-TransferArchive -TransferBase $transferBase
+        if ($archivePath -and $useLocalStaging) {
+            $uploadLog = Join-Path $transferBase "Logs\robocopy_network_zip_upload.log"
+            $publishedArchivePath = Publish-TransferArchive -ArchivePath $archivePath -DestinationFolder $destinationFolder -LogPath $uploadLog
+        }
     }
     
     # Summary
@@ -4239,8 +4787,10 @@ function Start-LaptopExport {
     Write-Banner -Title "Export Complete"
     Write-SummaryCard -Success $sc -Warning $wc -Errors $ec -Skipped $kc -Duration "$([math]::Round($dur.TotalMinutes, 1)) min"
 
-    Write-KeyValue "Package" $transferBase
-    if ($archivePath) { Write-KeyValue "ZIP archive" $archivePath }
+    $packageLabel = if ($useLocalStaging) { "Local staging package" } else { "Package" }
+    Write-KeyValue $packageLabel $transferBase
+    if ($publishedArchivePath) { Write-KeyValue "Network ZIP" $publishedArchivePath }
+    elseif ($archivePath) { Write-KeyValue "ZIP archive" $archivePath }
     Write-Section "Package contents"
     Write-Status "UserData"               "INFO" "Documents, Desktop, loose files"
     Write-Status "AppData"                "INFO" "Bluebeam, signatures, Quick Access"
@@ -4250,7 +4800,10 @@ function Start-LaptopExport {
     Write-Status "Import-LaptopData.ps1"  "OK"   "run on new machine"
     Write-Status "QuickImport.bat"        "OK"   "double-click (choose admin or standard)"
     Write-Status "TransferReport.html"    "OK"   "full report"
-    if ($archivePath) {
+    if ($publishedArchivePath) {
+        Write-Status "$(Split-Path -Path $publishedArchivePath -Leaf)" "OK" "uploaded ZIP archive"
+    }
+    elseif ($archivePath) {
         Write-Status "$(Split-Path -Path $archivePath -Leaf)" "OK" "portable compressed package"
     }
 

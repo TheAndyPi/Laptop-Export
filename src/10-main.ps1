@@ -71,6 +71,12 @@ function Start-LaptopExport {
         Resolve-TransferMode
     }
 
+    Apply-OnlineImportDefaults
+    if (-not (Show-TransferSettingsMenu)) {
+        Write-Host "`n  Transfer cancelled." -ForegroundColor Yellow
+        return
+    }
+
     # Online exports use the Windows folder picker. Local exports retain the
     # external/secondary-drive selector and do not open the picker.
     if ($Script:Config.TransferMode -eq "Local") {
@@ -81,6 +87,26 @@ function Start-LaptopExport {
     }
     if (-not $destinationFolder) {
         return
+    }
+
+    $createsZipArchive = $Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.CreateZipArchive
+    $isNetworkDestination = $Script:Config.TransferMode -eq "Online" -and (Test-NetworkDestination -Path $destinationFolder)
+    $useLocalStaging = $isNetworkDestination -and $createsZipArchive -and $Script:Config.Online.StageNetworkTransfersLocally
+    $stagingRoot = Join-Path $env:SystemDrive "LaptopTransferStaging"
+    $workingFolder = $destinationFolder
+    if ($useLocalStaging) {
+        try {
+            New-Item -ItemType Directory -Path $stagingRoot -Force -ErrorAction Stop | Out-Null
+            $workingFolder = $stagingRoot
+            Write-Section "Network transfer staging"
+            Write-KeyValue "Network destination" $destinationFolder
+            Write-KeyValue "Local staging" $stagingRoot
+            Write-Host "  Files will be collected and zipped locally before one ZIP is uploaded." -ForegroundColor DarkGray
+        }
+        catch {
+            Write-Host "Could not create local staging folder '$stagingRoot': $_" -ForegroundColor Red
+            return
+        }
     }
 
     # ---- Pre-scan + free-space check ----
@@ -101,19 +127,33 @@ function Start-LaptopExport {
     Write-KeyValue "Estimated size" (Format-FileSize $estBytes)
 
     try {
-        $freeBytes = Get-DestinationFreeSpaceBytes -Path $destinationFolder
+        $freeBytes = Get-DestinationFreeSpaceBytes -Path $workingFolder
         if ($null -ne $freeBytes) {
-            Write-KeyValue "Free at destination" (Format-FileSize $freeBytes)
+            $freeLabel = if ($useLocalStaging) { "Free in local staging" } else { "Free at destination" }
+            Write-KeyValue $freeLabel (Format-FileSize $freeBytes)
         }
-        # Online mode keeps the folder while creating a ZIP; Local mode keeps
-        # only the folder, so it needs substantially less destination space.
-        $spaceMultiplier = if ($Script:Config.TransferMode -eq "Online") { 2.15 } else { 1.15 }
+        # Online mode needs extra space only when it will also create a ZIP.
+        $spaceMultiplier = if ($createsZipArchive) { 2.15 } else { 1.15 }
         $requiredFreeBytes = [math]::Ceiling($estBytes * $spaceMultiplier)
+        $spaceWarnings = @()
         if ($freeBytes -gt 0 -and $freeBytes -lt $requiredFreeBytes) {
+            $spaceLocation = if ($useLocalStaging) { "local staging location" } else { "destination" }
+            $spaceDetail = if ($createsZipArchive) { "the package and ZIP archive" } else { "the transfer package" }
+            $spaceWarnings += "The $spaceLocation may not have enough space for $spaceDetail."
+        }
+        if ($useLocalStaging) {
+            $networkFreeBytes = Get-DestinationFreeSpaceBytes -Path $destinationFolder
+            if ($null -ne $networkFreeBytes) {
+                Write-KeyValue "Free at network destination" (Format-FileSize $networkFreeBytes)
+            }
+            if ($networkFreeBytes -gt 0 -and $networkFreeBytes -lt [math]::Ceiling($estBytes * 1.15)) {
+                $spaceWarnings += "The network destination may not have enough space for the ZIP archive."
+            }
+        }
+        if ($spaceWarnings.Count -gt 0) {
             Write-Host ""
             Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
-            $spaceDetail = if ($Script:Config.TransferMode -eq "Online") { "the package and its ZIP archive" } else { "the transfer package" }
-            Write-Host "Destination may not have enough free space for $spaceDetail." -ForegroundColor White
+            Write-Host ($spaceWarnings -join " ") -ForegroundColor White
             $go = Read-Host "    Continue anyway? (Y/N)"
             if ($go -notmatch "^[Yy]") { Write-Host "  Cancelled." -ForegroundColor Yellow; return }
         }
@@ -123,7 +163,7 @@ function Start-LaptopExport {
     }
 
     # Create transfer folder structure
-    $transferBase = Join-Path $destinationFolder $Script:Config.TransferFolderName
+    $transferBase = Join-Path $workingFolder $Script:Config.TransferFolderName
     
     Write-KeyValue "Transfer folder" $transferBase
     
@@ -190,6 +230,11 @@ function Start-LaptopExport {
     # 10. Generate quick import batch file
     New-QuickImportBatch -DestinationBase $transferBase
 
+    if ($Script:Config.TransferMode -eq "Online" -and -not $Script:Config.Online.CreateZipArchive) {
+        Write-Log "ZIP archive creation disabled by configuration" -Level Info
+        Add-Result -Category "Package" -Item "ZIP Archive" -Status "Skipped" -Details "Disabled by configuration"
+    }
+
     # Save log
     $logPath = Join-Path $transferBase "Logs\ExportLog.txt"
     $Script:Log | Out-File $logPath -Encoding UTF8
@@ -197,8 +242,13 @@ function Start-LaptopExport {
     # Local transfers stay as folders for a removable drive. Online transfers
     # also produce a portable ZIP beside the package.
     $archivePath = $null
-    if ($Script:Config.TransferMode -eq "Online") {
+    $publishedArchivePath = $null
+    if ($Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.CreateZipArchive) {
         $archivePath = New-TransferArchive -TransferBase $transferBase
+        if ($archivePath -and $useLocalStaging) {
+            $uploadLog = Join-Path $transferBase "Logs\robocopy_network_zip_upload.log"
+            $publishedArchivePath = Publish-TransferArchive -ArchivePath $archivePath -DestinationFolder $destinationFolder -LogPath $uploadLog
+        }
     }
     
     # Summary
@@ -212,8 +262,10 @@ function Start-LaptopExport {
     Write-Banner -Title "Export Complete"
     Write-SummaryCard -Success $sc -Warning $wc -Errors $ec -Skipped $kc -Duration "$([math]::Round($dur.TotalMinutes, 1)) min"
 
-    Write-KeyValue "Package" $transferBase
-    if ($archivePath) { Write-KeyValue "ZIP archive" $archivePath }
+    $packageLabel = if ($useLocalStaging) { "Local staging package" } else { "Package" }
+    Write-KeyValue $packageLabel $transferBase
+    if ($publishedArchivePath) { Write-KeyValue "Network ZIP" $publishedArchivePath }
+    elseif ($archivePath) { Write-KeyValue "ZIP archive" $archivePath }
     Write-Section "Package contents"
     Write-Status "UserData"               "INFO" "Documents, Desktop, loose files"
     Write-Status "AppData"                "INFO" "Bluebeam, signatures, Quick Access"
@@ -223,7 +275,10 @@ function Start-LaptopExport {
     Write-Status "Import-LaptopData.ps1"  "OK"   "run on new machine"
     Write-Status "QuickImport.bat"        "OK"   "double-click (choose admin or standard)"
     Write-Status "TransferReport.html"    "OK"   "full report"
-    if ($archivePath) {
+    if ($publishedArchivePath) {
+        Write-Status "$(Split-Path -Path $publishedArchivePath -Leaf)" "OK" "uploaded ZIP archive"
+    }
+    elseif ($archivePath) {
         Write-Status "$(Split-Path -Path $archivePath -Leaf)" "OK" "portable compressed package"
     }
 

@@ -116,6 +116,16 @@ $Script:Config = @{
         # Skip the OneDrive force-hydration step (it would re-download everything
         # over the same constrained link).
         SkipOneDriveHydration = $true
+        # Create a portable ZIP beside the transfer folder after an online export.
+        CreateZipArchive = $true
+        # Avoid direct file-by-file exports to a network destination.
+        StageNetworkTransfersLocally = $true
+        # Import defaults used only when the selected transfer mode is Online.
+        Import = @{
+            LotusNotes = $true
+            Firefox = $true
+            DeletePrintBrmAfterImport = $true
+        }
     }
 
     # These switches are supplied by src\00-development-config.psd1 at build
@@ -127,9 +137,12 @@ $Script:Config = @{
         InstalledPrograms = $true
         Printers          = $true
         BrowserData       = $true
+        Chrome            = $true
         OneDrive          = $true
     }
     Import = @{
+        LotusNotes = $true
+        Firefox = $true
         DeletePrintBrmAfterImport = $true
     }
 }
@@ -151,15 +164,115 @@ foreach ($sectionName in @("Backup", "Import")) {
     }
 }
 
+# Online transfer behavior has a nested import-default section. Keep its
+# allowlist separate so config-file additions cannot alter unrelated settings.
+if ($Script:DevelopmentConfig -is [hashtable] -and
+    $Script:DevelopmentConfig.ContainsKey("Online") -and
+    $Script:DevelopmentConfig.Online -is [hashtable]) {
+    $developmentOnline = $Script:DevelopmentConfig.Online
+    foreach ($switchName in @("CreateZipArchive", "StageNetworkTransfersLocally")) {
+        if ($developmentOnline.ContainsKey($switchName) -and
+            $developmentOnline[$switchName] -is [bool]) {
+            $Script:Config.Online[$switchName] = $developmentOnline[$switchName]
+        }
+    }
+
+    if ($developmentOnline.ContainsKey("Import") -and
+        $developmentOnline.Import -is [hashtable]) {
+        foreach ($switchName in $Script:Config.Online.Import.Keys) {
+            if ($developmentOnline.Import.ContainsKey($switchName) -and
+                $developmentOnline.Import[$switchName] -is [bool]) {
+                $Script:Config.Online.Import[$switchName] = $developmentOnline.Import[$switchName]
+            }
+        }
+    }
+}
+
+function Apply-OnlineImportDefaults {
+    if ($Script:Config.TransferMode -ne "Online") { return }
+
+    foreach ($switchName in $Script:Config.Online.Import.Keys) {
+        $Script:Config.Import[$switchName] = $Script:Config.Online.Import[$switchName]
+    }
+}
+
 function Add-DisabledBackupResult {
     param(
         [string]$Item,
         [string]$Category = "Backup"
     )
 
-    Write-Log "$Item backup disabled by development configuration" -Level Info
+    Write-Log "$Item backup disabled by configuration" -Level Info
     Write-Status $Item "SKIP" "disabled by config"
-    Add-Result -Category $Category -Item $Item -Status "Skipped" -Details "Disabled by development configuration"
+    Add-Result -Category $Category -Item $Item -Status "Skipped" -Details "Disabled by configuration"
+}
+
+function Show-TransferSettingsMenu {
+    # These are the runtime counterparts of the switches in
+    # src\00-development-config.psd1.  Values start with the compiled
+    # defaults, but any changes made here apply only to the current transfer.
+    $settings = @(
+        @{ Section = "Backup"; Key = "UserData";          Label = "User data";          Detail = "Documents, Desktop, Downloads, and other user folders" }
+        @{ Section = "Backup"; Key = "AppData";           Label = "AppData";            Detail = "Bluebeam, signatures, Quick Access, and Lotus export" }
+        @{ Section = "Backup"; Key = "SystemSettings";    Label = "System settings";    Detail = "Power, drives, personalization, and related settings" }
+        @{ Section = "Backup"; Key = "InstalledPrograms"; Label = "Installed programs"; Detail = "Installed-program inventory" }
+        @{ Section = "Backup"; Key = "Printers";          Label = "Printers";           Detail = "PrintBRM package and printer connections" }
+        @{ Section = "Backup"; Key = "BrowserData";       Label = "Browser data";       Detail = "Edge and Firefox data; Chrome requires its own setting below" }
+        @{ Section = "Backup"; Key = "Chrome";            Label = "Chrome";             Detail = "Chrome bookmarks, profile archive, and password-export prompt" }
+        @{ Section = "Backup"; Key = "OneDrive";          Label = "OneDrive";           Detail = "Offline file availability check" }
+        @{ Section = "Import"; Key = "LotusNotes";        Label = "Import Lotus Notes"; Detail = "Restore exported Lotus local data on the new laptop" }
+        @{ Section = "Import"; Key = "Firefox";           Label = "Import Firefox";     Detail = "Restore Firefox profile and local companion data" }
+        @{ Section = "Import"; Key = "DeletePrintBrmAfterImport"; Label = "Delete PrintBRM after import"; Detail = "Remove the printer package after a successful restore" }
+        @{ Section = "Online"; Key = "CreateZipArchive";  Label = "Create ZIP archive"; Detail = "Create a ZIP beside the package (Online transfers only)" }
+        @{ Section = "Online"; Key = "StageNetworkTransfersLocally"; Label = "Stage network transfers locally"; Detail = "Build locally, then upload one ZIP to a network destination" }
+    )
+
+    while ($true) {
+        Clear-Host
+        Write-Banner -Title "Transfer Settings" -Subtitle "$($Script:Config.TransferMode) transfer - changes apply to this transfer only"
+        Write-Section "Backup settings"
+
+        for ($index = 0; $index -lt $settings.Count; $index++) {
+            $setting = $settings[$index]
+            if ($index -eq 8) {
+                Write-Section "Generated import settings"
+            }
+            if ($index -eq 11) {
+                Write-Section "Online transfer settings"
+            }
+
+            $isEnabled = [bool]$Script:Config[$setting.Section][$setting.Key]
+            $number = ($index + 1).ToString().PadLeft(2)
+            $state = if ($isEnabled) { "ON " } else { "OFF" }
+            $color = if ($isEnabled) { "Green" } else { "DarkGray" }
+
+            Write-Host "  [$number] " -ForegroundColor Cyan -NoNewline
+            Write-Host "$state " -ForegroundColor $color -NoNewline
+            Write-Host $setting.Label.PadRight(30) -ForegroundColor White -NoNewline
+            Write-Host $setting.Detail -ForegroundColor DarkGray
+        }
+
+        Write-Host ""
+        Write-Host "  Select a number to toggle it." -ForegroundColor Gray
+        Write-Host "  Chrome is ignored when Browser data is OFF." -ForegroundColor DarkGray
+        Write-Host "  ZIP archive is ignored for Local transfers." -ForegroundColor DarkGray
+        Write-Host "  Import settings are written into the transfer package's generated import script." -ForegroundColor DarkGray
+        $selection = (Read-Host "  [S] Start transfer  [Q] Cancel").Trim()
+
+        if ($selection -match "^[Ss]$") { return $true }
+        if ($selection -match "^[Qq]$") { return $false }
+
+        $selectedIndex = 0
+        if ([int]::TryParse($selection, [ref]$selectedIndex) -and
+            $selectedIndex -ge 1 -and $selectedIndex -le $settings.Count) {
+            $setting = $settings[$selectedIndex - 1]
+            $Script:Config[$setting.Section][$setting.Key] = -not [bool]$Script:Config[$setting.Section][$setting.Key]
+        }
+        else {
+            Write-Host "  Enter a setting number, S, or Q." -ForegroundColor Yellow
+            Start-Sleep -Seconds 1
+        }
+    }
 }
 
 # ============================================================================
@@ -226,6 +339,19 @@ function Format-FileSize {
     return "$Bytes B"
 }
 
+function Format-RemainingTime {
+    param([double]$Seconds)
+
+    if ($Seconds -lt 0 -or [double]::IsInfinity($Seconds) -or [double]::IsNaN($Seconds)) {
+        return "calculating..."
+    }
+
+    $remaining = [int][math]::Ceiling($Seconds)
+    if ($remaining -lt 60) { return "$remaining sec" }
+    if ($remaining -lt 3600) { return "$([math]::Floor($remaining / 60)) min $($remaining % 60) sec" }
+    return "$([math]::Floor($remaining / 3600)) hr $([math]::Floor(($remaining % 3600) / 60)) min"
+}
+
 function Copy-WithProgress {
     param(
         [string]$Source,
@@ -262,32 +388,44 @@ function Copy-WithProgress {
     # Build full argument string for robocopy
     $robocopyArgString = ($RobocopyArgs -join " ")
     
-    # Run robocopy as a background job to capture all output
-    $robocopyScript = {
-        param($src, $dst, $argString, $log)
-        $fullArgs = "$argString /LOG:`"$log`""
-        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-        $pinfo.FileName = "robocopy.exe"
-        $pinfo.Arguments = "`"$src`" `"$dst`" $fullArgs"
-        $pinfo.RedirectStandardOutput = $true
-        $pinfo.RedirectStandardError = $true
-        $pinfo.UseShellExecute = $false
-        $pinfo.CreateNoWindow = $true
-        
-        $process = New-Object System.Diagnostics.Process
-        $process.StartInfo = $pinfo
-        $process.Start() | Out-Null
-        $process.WaitForExit()
-        return $process.ExitCode
+    # Keep a direct handle to the Robocopy process.  This lets the technician
+    # stop only the current copy instead of terminating the whole export.
+    $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pinfo.FileName = "robocopy.exe"
+    $pinfo.Arguments = "`"$Source`" `"$Destination`" $robocopyArgString /LOG:`"$LogPath`""
+    $pinfo.UseShellExecute = $false
+    $pinfo.CreateNoWindow = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $pinfo
+    if (-not $process.Start()) {
+        return @{ ExitCode = -1; FilesCopied = 0; BytesCopied = 0; Status = "Warning"; Duration = [TimeSpan]::Zero }
     }
-    
-    $job = Start-Job -ScriptBlock $robocopyScript -ArgumentList $Source, $Destination, $robocopyArgString, $LogPath
+
+    $abortedByOperator = $false
+    Write-Host "    Press S to stop this copy and continue with the next step." -ForegroundColor DarkGray
     
     # Monitor progress while robocopy runs.
     # Poll less aggressively than before (recursive sizing of a large USB dest
     # every 500ms competes with the copy itself); spinner keeps it feeling live.
-    while ($job.State -eq 'Running') {
+    while (-not $process.HasExited) {
         Start-Sleep -Milliseconds 750
+
+        # Console input is optional because the script may be run with a host
+        # that does not expose a physical console (for example, remoting).
+        try {
+            if ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                if ($key.Key -eq [ConsoleKey]::S) {
+                    $abortedByOperator = $true
+                    Write-Host "`r$(' ' * 120)`r    Stopping $FolderName and continuing..." -ForegroundColor Yellow
+                    $process.Kill()
+                    $process.WaitForExit()
+                    break
+                }
+            }
+        }
+        catch { }
         
         # Get current destination size
         $destFiles = Get-ChildItem $Destination -Recurse -File -Force -ErrorAction SilentlyContinue
@@ -312,18 +450,18 @@ function Copy-WithProgress {
         # Calculate speed
         $elapsed = (Get-Date) - $startTime
         $speed = if ($elapsed.TotalSeconds -gt 0) { $copiedSize / $elapsed.TotalSeconds } else { 0 }
+        $remainingBytes = [math]::Max(0, $totalSize - $copiedSize)
+        $eta = if ($speed -gt 0 -and $copiedSize -gt 0) {
+            Format-RemainingTime ($remainingBytes / $speed)
+        }
+        else { "calculating..." }
         
         # Build + write status line (carriage return to overwrite)
-        $statusLine = "    $spin $progressBar $($percent.ToString().PadLeft(3))%  $(Format-FileSize $copiedSize) / $(Format-FileSize $totalSize)  $(Format-FileSize $speed)/s   "
+        $statusLine = "    $spin $progressBar $($percent.ToString().PadLeft(3))%  $(Format-FileSize $copiedSize) / $(Format-FileSize $totalSize)  $(Format-FileSize $speed)/s  ETA $eta   "
         Write-Host "`r$statusLine" -NoNewline
     }
     
-    # Get the exit code from the job
-    $exitCode = Receive-Job -Job $job -ErrorAction SilentlyContinue
-    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-    
-    # If exit code is null, check the log file for success indicators
-    if ($null -eq $exitCode) { $exitCode = 0 }
+    $exitCode = $process.ExitCode
     
     # Final update
     $destFiles = Get-ChildItem $Destination -Recurse -File -Force -ErrorAction SilentlyContinue
@@ -335,8 +473,23 @@ function Copy-WithProgress {
     $avgSpeed = if ($elapsed.TotalSeconds -gt 0) { $copiedSize / $elapsed.TotalSeconds } else { 0 }
     
     # Complete the progress bar (clear the line first, then draw the final state)
+    if ($abortedByOperator) {
+        Write-Host "`r$(' ' * 140)" -NoNewline
+        Write-Host "`r    " -NoNewline
+        Write-Host "$($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
+        Write-Host "Skipped by operator after $([math]::Round($elapsed.TotalSeconds, 1))s; partial files may remain." -ForegroundColor Yellow
+        return @{
+            ExitCode = $exitCode
+            FilesCopied = $copiedFiles
+            BytesCopied = $copiedSize
+            Status = "Skipped"
+            Aborted = $true
+            Duration = $elapsed
+        }
+    }
+
     $progressBar = [string]$Script:Theme.Bar.Full * $progressBarWidth
-    Write-Host "`r$(' ' * 90)" -NoNewline
+    Write-Host "`r$(' ' * 140)" -NoNewline
     Write-Host "`r    " -NoNewline
     Write-Host "$($Script:Theme.Glyphs.OK) " -ForegroundColor Green -NoNewline
     Write-Host $progressBar -ForegroundColor Green -NoNewline

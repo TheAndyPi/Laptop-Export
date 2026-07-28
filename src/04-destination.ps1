@@ -164,6 +164,75 @@ function Get-DestinationFreeSpaceBytes {
     return $null
 }
 
+function Test-NetworkDestination {
+    param([string]$Path)
+
+    # UNC paths are always network destinations. For mapped drives, consult
+    # the logical-drive type instead of assuming every drive letter is local.
+    if ($Path -like "\\*") { return $true }
+
+    try {
+        $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+        if ($item.PSDrive -and $item.PSDrive.Root -like "\\*") { return $true }
+
+        if ($item.PSDrive -and $item.PSDrive.Name -match "^[A-Za-z]$") {
+            $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$($item.PSDrive.Name):'" -ErrorAction Stop
+            return $disk.DriveType -eq 4
+        }
+    }
+    catch { }
+
+    return $false
+}
+
+function Publish-TransferArchive {
+    param(
+        [string]$ArchivePath,
+        [string]$DestinationFolder,
+        [string]$LogPath
+    )
+
+    if (-not (Test-Path -LiteralPath $ArchivePath -PathType Leaf)) {
+        Write-Log "Cannot upload ZIP archive because it was not created: $ArchivePath" -Level Error
+        return $null
+    }
+
+    $archiveName = Split-Path -Path $ArchivePath -Leaf
+    $destinationArchive = Join-Path $DestinationFolder $archiveName
+    if (Test-Path -LiteralPath $destinationArchive) {
+        Write-Log "Network ZIP upload skipped because the target already exists: $destinationArchive" -Level Warning
+        Add-Result -Category "Package" -Item "Network ZIP Upload" -Status "Warning" -Details "Target already exists: $destinationArchive"
+        return $null
+    }
+
+    try {
+        $sourceFolder = Split-Path -Path $ArchivePath -Parent
+        $arguments = "`"$sourceFolder`" `"$DestinationFolder`" `"$archiveName`" /Z /J /R:2 /W:3 /NP /NDL /NFL /NJH /NJS /LOG:`"$LogPath`""
+        Write-Host "`n  Uploading ZIP archive to network destination..." -ForegroundColor Cyan
+        Write-Log "Uploading ZIP archive to network destination: $destinationArchive" -Level Info
+        $process = Start-Process -FilePath "robocopy.exe" -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+
+        $sourceSize = (Get-Item -LiteralPath $ArchivePath -ErrorAction Stop).Length
+        $destinationSize = if (Test-Path -LiteralPath $destinationArchive -PathType Leaf) {
+            (Get-Item -LiteralPath $destinationArchive -ErrorAction Stop).Length
+        }
+        else { -1 }
+
+        if ($process.ExitCode -lt 8 -and $sourceSize -eq $destinationSize) {
+            Write-Log "ZIP archive uploaded and size verified: $destinationArchive" -Level Success
+            Add-Result -Category "Package" -Item "Network ZIP Upload" -Status "Success" -Details "Uploaded and size verified: $archiveName"
+            return $destinationArchive
+        }
+
+        throw "Robocopy exit code $($process.ExitCode); source size $sourceSize, destination size $destinationSize"
+    }
+    catch {
+        Write-Log "Could not upload ZIP archive to network destination: $_" -Level Error
+        Add-Result -Category "Package" -Item "Network ZIP Upload" -Status "Error" -Details $_.Exception.Message
+        return $null
+    }
+}
+
 function New-TransferArchive {
     param([string]$TransferBase)
 

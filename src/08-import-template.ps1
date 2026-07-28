@@ -183,6 +183,8 @@ $Script:Results = @{
 $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $userProfile = $env:USERPROFILE
 $logFile = Join-Path $scriptPath "ImportLog.txt"
+$importLotusNotes = [bool]::Parse('{IMPORT_LOTUS_NOTES}')
+$importFirefox = [bool]::Parse('{IMPORT_FIREFOX}')
 $deletePrintBrmAfterImport = [bool]::Parse('{DELETE_PRINTBRM_AFTER_IMPORT}')
 $printBrmRestoreSucceeded = $false
 
@@ -239,6 +241,19 @@ function Format-FileSize {
     if ($Bytes -ge 1MB) { return "{0:N2} MB" -f ($Bytes / 1MB) }
     if ($Bytes -ge 1KB) { return "{0:N2} KB" -f ($Bytes / 1KB) }
     return "$Bytes B"
+}
+
+function Format-RemainingTime {
+    param([double]$Seconds)
+
+    if ($Seconds -lt 0 -or [double]::IsInfinity($Seconds) -or [double]::IsNaN($Seconds)) {
+        return "calculating..."
+    }
+
+    $remaining = [int][math]::Ceiling($Seconds)
+    if ($remaining -lt 60) { return "$remaining sec" }
+    if ($remaining -lt 3600) { return "$([math]::Floor($remaining / 60)) min $($remaining % 60) sec" }
+    return "$([math]::Floor($remaining / 3600)) hr $([math]::Floor(($remaining % 3600) / 60)) min"
 }
 
 function Copy-WithProgress {
@@ -311,8 +326,13 @@ function Copy-WithProgress {
         
         $elapsed = (Get-Date) - $startTime
         $speed = if ($elapsed.TotalSeconds -gt 0) { $copiedSize / $elapsed.TotalSeconds } else { 0 }
+        $remainingBytes = [math]::Max(0, $totalSize - $copiedSize)
+        $eta = if ($speed -gt 0 -and $copiedSize -gt 0) {
+            Format-RemainingTime ($remainingBytes / $speed)
+        }
+        else { "calculating..." }
         
-        Write-Host "`r    $spin $progressBar $($percent.ToString().PadLeft(3))%  $(Format-FileSize $copiedSize) / $(Format-FileSize $totalSize)  $(Format-FileSize $speed)/s   " -NoNewline
+        Write-Host "`r    $spin $progressBar $($percent.ToString().PadLeft(3))%  $(Format-FileSize $copiedSize) / $(Format-FileSize $totalSize)  $(Format-FileSize $speed)/s  ETA $eta   " -NoNewline
     }
     
     # Get the exit code from the job
@@ -330,7 +350,7 @@ function Copy-WithProgress {
     
     $elapsed = (Get-Date) - $startTime
     $progressBar = [string]$Script:Theme.Bar.Full * $progressBarWidth
-    Write-Host "`r$(' ' * 90)" -NoNewline
+    Write-Host "`r$(' ' * 140)" -NoNewline
     Write-Host "`r    " -NoNewline
     Write-Host "$($Script:Theme.Glyphs.OK) " -ForegroundColor Green -NoNewline
     Write-Host $progressBar -ForegroundColor Green -NoNewline
@@ -618,7 +638,11 @@ if (Test-Path $bluebeamSource) {
 
 # Lotus Notes - Local AppData
 $lotusSource = Join-Path $scriptPath "AppData\Lotus_Local"
-if (Test-Path $lotusSource) {
+if ((Test-Path $lotusSource) -and -not $importLotusNotes) {
+    Write-Log "Lotus Notes import disabled by configuration" -Level "Info"
+    Add-Result -Category "AppData" -Item "Lotus Notes" -Status "Skipped" -Details "Disabled by configuration"
+}
+elseif (Test-Path $lotusSource) {
     $lotusDest = Join-Path $env:LOCALAPPDATA "Lotus"
     if ($TestMode) {
         Write-Log "Lotus Notes - Would restore" -Level "Info"
@@ -1161,6 +1185,86 @@ Write-Host ""
 # Windows-protected credential material safely.
 $browserDataPath = Join-Path $scriptPath "BrowserData"
 
+function Restore-ChromiumProfileBookmarks {
+    param(
+        [string]$BrowserName,
+        [string]$ProcessName,
+        [string]$PackageUserDataPath,
+        [string]$TargetUserDataPath
+    )
+
+    if (-not (Test-Path -LiteralPath $PackageUserDataPath)) { return }
+
+    $sourceProfiles = @(Get-ChildItem -LiteralPath $PackageUserDataPath -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq "Default" -or $_.Name -like "Profile *" } |
+        Sort-Object Name)
+    if ($sourceProfiles.Count -eq 0) { return }
+
+    if ($TestMode) {
+        $bookmarkCount = @($sourceProfiles | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "Bookmarks") }).Count
+        Add-Result -Category "Browser" -Item "$BrowserName Bookmarks" -Status "TestMode" -Details "$bookmarkCount profile(s) would be restored when matching target profiles are available"
+        return
+    }
+
+    $running = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+    if ($running.Count -gt 0) {
+        Write-Host "  $BrowserName must be closed before bookmarks can be restored." -ForegroundColor Yellow
+        [void](Read-Host "  Close $BrowserName, then press Enter to continue (S to skip)")
+        $running = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+    }
+    if ($running.Count -gt 0) {
+        Write-Log "$BrowserName bookmark restore skipped because the browser is still running" -Level "Warning"
+        Add-Result -Category "Browser" -Item "$BrowserName Bookmarks" -Status "Skipped" -Details "Close $BrowserName and re-run the import script"
+        return
+    }
+
+    $backupRoot = Join-Path $env:LOCALAPPDATA "LaptopTransferBrowserBackups\$BrowserName\$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $restored = 0
+    $manual = 0
+    foreach ($sourceProfile in $sourceProfiles) {
+        $sourceBookmarks = Join-Path $sourceProfile.FullName "Bookmarks"
+        if (-not (Test-Path -LiteralPath $sourceBookmarks)) { continue }
+
+        $targetProfile = Join-Path $TargetUserDataPath $sourceProfile.Name
+        # A Default profile can be safely created for a newly installed browser.
+        # Additional profiles require an existing matching target profile, since
+        # Chromium maps their display names in Local State.
+        if ($sourceProfile.Name -ne "Default" -and -not (Test-Path -LiteralPath $targetProfile)) {
+            $manual++
+            Write-Log "$BrowserName profile '$($sourceProfile.Name)' has no matching target profile; its HTML export remains available for import" -Level "Warning"
+            continue
+        }
+
+        try {
+            if (-not (Test-Path -LiteralPath $targetProfile)) {
+                New-Item -ItemType Directory -Path $targetProfile -Force | Out-Null
+            }
+
+            $targetBookmarks = Join-Path $targetProfile "Bookmarks"
+            if (Test-Path -LiteralPath $targetBookmarks) {
+                $backupProfile = Join-Path $backupRoot $sourceProfile.Name
+                New-Item -ItemType Directory -Path $backupProfile -Force | Out-Null
+                Copy-Item -LiteralPath $targetBookmarks -Destination (Join-Path $backupProfile "Bookmarks") -Force -ErrorAction Stop
+            }
+
+            Copy-Item -LiteralPath $sourceBookmarks -Destination $targetBookmarks -Force -ErrorAction Stop
+            $restored++
+        }
+        catch {
+            Write-Log "$BrowserName bookmark restore failed for profile '$($sourceProfile.Name)': $_" -Level "Warning"
+            Add-Result -Category "Browser" -Item "$BrowserName $($sourceProfile.Name) Bookmarks" -Status "Warning" -Details $_.Exception.Message
+        }
+    }
+
+    if ($restored -gt 0) {
+        Write-Log "$BrowserName bookmarks restored for $restored profile(s)" -Level "Success"
+        Add-Result -Category "Browser" -Item "$BrowserName Bookmarks" -Status "Success" -Details "$restored profile(s) restored; any replaced target bookmarks are backed up under $backupRoot"
+    }
+    if ($manual -gt 0) {
+        Add-Result -Category "Browser" -Item "$BrowserName Additional Profiles" -Status "Manual" -Details "$manual profile(s) have no matching target profile; import the supplied HTML files"
+    }
+}
+
 # Chrome bookmarks HTML (one file per old Chrome profile)
 $chromeBookmarksPath = Join-Path $browserDataPath "Chrome\Bookmarks"
 $chromeBookmarkFiles = @(Get-ChildItem -LiteralPath $chromeBookmarksPath -Filter "*.html" -File -Force -ErrorAction SilentlyContinue)
@@ -1179,18 +1283,18 @@ if ($chromeBookmarkFiles.Count -gt 0) {
     Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Ready" -Details "$($chromeBookmarkFiles.Count) HTML file(s) for manual import"
 }
 
-# Chrome profile archive. It contains useful browser state and encrypted
-# database files from every profile, but it is intentionally not copied over
-# a new Chrome profile: Chrome passwords/cookies use keys tied to the old
-# Windows installation, and overwriting a new profile can make Chrome fail to
-# start or lose the new machine's sign-in state.
+# Chrome profile archive. Credentials and cookies remain encrypted to the old
+# Windows installation, so they are deliberately not restored.  Bookmarks are
+# portable, however, and are restored below without replacing the rest of the
+# Chrome profile.
 $chromeProfileArchive = Join-Path $browserDataPath "Chrome\User Data"
 if (Test-Path -LiteralPath $chromeProfileArchive) {
     $chromeArchiveFiles = (Get-ChildItem -LiteralPath $chromeProfileArchive -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object).Count
-    Write-Log "Chrome profile archive retained ($chromeArchiveFiles files; not auto-restored)" -Level "Info"
+    Write-Log "Chrome profile archive retained ($chromeArchiveFiles files; only portable bookmarks are restored)" -Level "Info"
     Write-Host "    Chrome profile archive: $chromeProfileArchive" -ForegroundColor Gray
-    Write-Host "    Bookmarks and native password CSV import are the supported cross-PC restore paths." -ForegroundColor Gray
-    Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Info" -Details "$chromeArchiveFiles files retained; not safe to auto-restore across Windows installations"
+    Write-Host "    Bookmarks are restored automatically when Chrome is closed; credentials remain protected." -ForegroundColor Gray
+    Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Info" -Details "$chromeArchiveFiles files retained; credentials and cookies are not restored"
+    Restore-ChromiumProfileBookmarks -BrowserName "Chrome" -ProcessName "chrome" -PackageUserDataPath $chromeProfileArchive -TargetUserDataPath (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data")
 }
 
 # Chrome's native Password Manager export produces a plaintext CSV after the
@@ -1240,21 +1344,75 @@ if ($chromePasswordCsvs.Count -gt 0) {
     }
 }
 
-# Edge bookmarks HTML
-$edgeHtml = Join-Path $browserDataPath "Edge_Bookmarks.html"
-if (Test-Path $edgeHtml) {
-    Write-Log "Edge bookmarks HTML file available" -Level "Success"
-    Write-Host "    File: $edgeHtml" -ForegroundColor Gray
-    Write-Host "    To import: Edge > Favorites > Import favorites > HTML file" -ForegroundColor Gray
-    Add-Result -Category "Browser" -Item "Edge Bookmarks" -Status "Ready" -Details "HTML file for manual import"
+# Edge bookmarks HTML (one file per old Edge profile)
+$edgeBookmarksPath = Join-Path $browserDataPath "Edge\Bookmarks"
+$edgeBookmarkFiles = @(Get-ChildItem -LiteralPath $edgeBookmarksPath -Filter "*.html" -File -Force -ErrorAction SilentlyContinue)
+if ($edgeBookmarkFiles.Count -eq 0) {
+    $legacyEdgeHtml = Join-Path $browserDataPath "Edge_Bookmarks.html"
+    if (Test-Path -LiteralPath $legacyEdgeHtml) { $edgeBookmarkFiles = @(Get-Item -LiteralPath $legacyEdgeHtml) }
+}
+if ($edgeBookmarkFiles.Count -gt 0) {
+    Write-Log "Edge bookmark HTML files available for $($edgeBookmarkFiles.Count) profile(s)" -Level "Success"
+    foreach ($edgeBookmarkFile in $edgeBookmarkFiles) {
+        Write-Host "    File: $($edgeBookmarkFile.FullName)" -ForegroundColor Gray
+    }
+    Write-Host "    Additional profiles: Edge > Favorites > Import favorites > HTML file" -ForegroundColor Gray
+    Add-Result -Category "Browser" -Item "Edge Bookmark HTML" -Status "Ready" -Details "$($edgeBookmarkFiles.Count) HTML file(s) available for manual import"
+}
+
+$edgeProfileArchive = Join-Path $browserDataPath "Edge\User Data"
+if (Test-Path -LiteralPath $edgeProfileArchive) {
+    Restore-ChromiumProfileBookmarks -BrowserName "Microsoft Edge" -ProcessName "msedge" -PackageUserDataPath $edgeProfileArchive -TargetUserDataPath (Join-Path $env:LOCALAPPDATA "Microsoft\Edge\User Data")
 }
 
 # Firefox profile data
+function Remove-FirefoxProfileLocks {
+    param([string]$FirefoxRoot)
+
+    # A lock copied from an interrupted/forced-close session can make Firefox
+    # report that the profile is already in use on the new computer.  These
+    # are transient lock markers only; never remove profile databases or user
+    # preferences here.
+    $profilesRoot = Join-Path $FirefoxRoot "Profiles"
+    $lockFiles = @(Get-ChildItem -LiteralPath $profilesRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in @("parent.lock", ".parentlock") })
+    foreach ($lockFile in $lockFiles) {
+        try {
+            Remove-Item -LiteralPath $lockFile.FullName -Force -ErrorAction Stop
+            Write-Log "Removed stale Firefox profile lock: $($lockFile.FullName)" -Level "Info"
+        }
+        catch {
+            Write-Log "Could not remove Firefox profile lock '$($lockFile.FullName)': $_" -Level "Warning"
+        }
+    }
+}
+
 $firefoxRoamingSource = Join-Path $browserDataPath "Firefox\Roaming"
 $firefoxLocalSource = Join-Path $browserDataPath "Firefox\Local"
-if ((Test-Path $firefoxRoamingSource) -or (Test-Path $firefoxLocalSource)) {
+if (-not $importFirefox) {
+    if ((Test-Path -LiteralPath $firefoxRoamingSource) -or (Test-Path -LiteralPath $firefoxLocalSource)) {
+        Write-Log "Firefox import disabled by configuration" -Level "Info"
+        Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Skipped" -Details "Disabled by configuration"
+    }
+}
+else {
+    $firefoxProfilesRoot = Join-Path $firefoxRoamingSource "Profiles"
+    $firefoxProfileFolders = @(Get-ChildItem -LiteralPath $firefoxProfilesRoot -Directory -Force -ErrorAction SilentlyContinue)
+
+    # A valid standard Firefox backup always includes one or more profile folders
+    # beneath Roaming\Profiles.  Refuse to move aside an existing new-machine
+    # profile when this essential payload is missing or incomplete.
+    if ((Test-Path -LiteralPath $firefoxRoamingSource) -and $firefoxProfileFolders.Count -eq 0) {
+        Write-Log "Firefox package has no Roaming\Profiles payload; existing Firefox data was left untouched" -Level "Warning"
+        Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Warning" -Details "Package is missing Roaming\Profiles; existing Firefox data was not replaced"
+        $firefoxRoamingSource = $null
+        $firefoxLocalSource = $null
+    }
+
+    if (($firefoxRoamingSource -and (Test-Path -LiteralPath $firefoxRoamingSource)) -or
+        ($firefoxLocalSource -and (Test-Path -LiteralPath $firefoxLocalSource))) {
     if ($TestMode) {
-        $firefoxFileCount = ((Get-ChildItem $firefoxRoamingSource -Recurse -File -Force -ErrorAction SilentlyContinue) + (Get-ChildItem $firefoxLocalSource -Recurse -File -Force -ErrorAction SilentlyContinue) | Measure-Object).Count
+        $firefoxFileCount = ((Get-ChildItem -LiteralPath $firefoxRoamingSource -Recurse -File -Force -ErrorAction SilentlyContinue) + (Get-ChildItem -LiteralPath $firefoxLocalSource -Recurse -File -Force -ErrorAction SilentlyContinue) | Measure-Object).Count
         Write-Log "Firefox profile - Would restore $firefoxFileCount files" -Level "Info"
         Add-Result -Category "Browser" -Item "Firefox Profile" -Status "TestMode" -Details "$firefoxFileCount files"
     }
@@ -1278,7 +1436,7 @@ if ((Test-Path $firefoxRoamingSource) -or (Test-Path $firefoxLocalSource)) {
             )
 
             foreach ($target in $firefoxRestoreTargets) {
-                if (-not (Test-Path $target.Source)) { continue }
+                if (-not $target.Source -or -not (Test-Path -LiteralPath $target.Source)) { continue }
 
                 $destination = Join-Path $target.Parent "Firefox"
                 $backup = Join-Path $target.Parent "Firefox_Backup_$backupStamp"
@@ -1294,6 +1452,9 @@ if ((Test-Path $firefoxRoamingSource) -or (Test-Path $firefoxLocalSource)) {
                                                -Destination $destination `
                                                -FolderName "Firefox $($target.Name) data" `
                                                -LogPath $logPath
+                    if ($target.Name -eq "Roaming" -and $result.FilesCopied -gt 0) {
+                        Remove-FirefoxProfileLocks -FirefoxRoot $destination
+                    }
                     if ($result.Status -eq "Success") {
                         Write-Log "Firefox $($target.Name) data restored: $($result.FilesCopied) files" -Level "Success"
                         Add-Result -Category "Browser" -Item "Firefox $($target.Name) Data" -Status "Success" -Details "$($result.FilesCopied) files"
@@ -1361,6 +1522,7 @@ if ($deletePrintBrmAfterImport -and $printBrmRestoreSucceeded) {
         Write-Log "Could not delete PrintBRM package: $_" -Level "Warning"
         Add-Result -Category "Printers" -Item "PrintBRM Package Cleanup" -Status "Warning" -Details $_.Exception.Message
     }
+    }
 }
 
 if ($Script:Results.Warnings.Count -gt 0) {
@@ -1397,6 +1559,8 @@ Read-Host "  Press Enter to exit"
     $importScript = $importScript -replace '\{TIMESTAMP\}', (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
     $importScript = $importScript -replace '\{USERNAME\}', $Script:OriginalUserName
     $importScript = $importScript -replace '\{COMPUTERNAME\}', $env:COMPUTERNAME
+    $importScript = $importScript -replace '\{IMPORT_LOTUS_NOTES\}', $Script:Config.Import.LotusNotes.ToString().ToLowerInvariant()
+    $importScript = $importScript -replace '\{IMPORT_FIREFOX\}', $Script:Config.Import.Firefox.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{DELETE_PRINTBRM_AFTER_IMPORT\}', $Script:Config.Import.DeletePrintBrmAfterImport.ToString().ToLowerInvariant()
     
     $importScriptPath = Join-Path $DestinationBase "Import-LaptopData.ps1"

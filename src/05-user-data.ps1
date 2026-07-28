@@ -68,6 +68,10 @@ function Copy-UserFolders {
                     Write-Log "$folder completed: $($result.FilesCopied) files, $(Format-FileSize $result.BytesCopied)" -Level Success
                     Add-Result -Category "User Folders" -Item $folder -Status "Success" -Details "$($result.FilesCopied) files copied"
                 }
+                elseif ($result.Aborted) {
+                    Write-Log "$folder copy stopped by operator" -Level Warning
+                    Add-Result -Category "User Folders" -Item $folder -Status "Skipped" -Details "Stopped by operator; partial files may remain and can be resumed by rerunning the export"
+                }
                 elseif ($result.Status -eq "Skipped") {
                     Write-Log "$folder has no copyable files (junctions only)" -Level Info
                     Add-Result -Category "User Folders" -Item $folder -Status "Skipped" -Details "No files to copy"
@@ -133,6 +137,10 @@ function Copy-UserFolders {
             if ($result.Status -eq "Success") {
                 Write-Log "Additional folder $($folder.Name) copied: $($result.FilesCopied) files" -Level Success
                 Add-Result -Category "Additional Folders" -Item $folder.Name -Status "Success" -Details "$($result.FilesCopied) files"
+            }
+            elseif ($result.Aborted) {
+                Write-Log "Additional folder $($folder.Name) copy stopped by operator" -Level Warning
+                Add-Result -Category "Additional Folders" -Item $folder.Name -Status "Skipped" -Details "Stopped by operator; partial files may remain"
             }
             Write-Host ""
         }
@@ -205,6 +213,10 @@ function Copy-UserFolders {
             Write-Log "OCS Documents copied: $($result.FilesCopied) files" -Level Success
             Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Success" -Details "$($result.FilesCopied) files from C:\OCS Documents"
         }
+        elseif ($result.Aborted) {
+            Write-Log "OCS Documents copy stopped by operator" -Level Warning
+            Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Skipped" -Details "Stopped by operator; partial files may remain"
+        }
         else {
             Write-Log "OCS Documents copy had issues" -Level Warning
             Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Warning" -Details "Check log for details"
@@ -249,6 +261,10 @@ function Copy-AppData {
             if ($result.Status -eq "Success") {
                 Write-Log "Bluebeam copied: $($result.FilesCopied) files" -Level Success
                 Add-Result -Category "AppData" -Item "Bluebeam" -Status "Success" -Details "$($result.FilesCopied) files from $bluebeamFolder"
+            }
+            elseif ($result.Aborted) {
+                Write-Log "Bluebeam copy stopped by operator" -Level Warning
+                Add-Result -Category "AppData" -Item "Bluebeam" -Status "Skipped" -Details "Stopped by operator; partial files may remain"
             }
             else {
                 Write-Log "Bluebeam copy had issues" -Level Warning
@@ -336,16 +352,22 @@ Right-click folder > 'Pin to Quick access'
                     }
                 }
                 else {
-                    # Copy entire folder with properly quoted paths
+                    # Copy the folder through the shared progress runner so
+                    # the technician can skip this individual transfer.
                     $robocopyLog = Join-Path $DestinationBase "Logs\robocopy_appdata_$($item.Key).log"
-                    $robocopyOptions = ($Script:Config.RobocopyArgs -join " ")
-                    $argString = "`"$sourcePath`" `"$destPath`" $robocopyOptions /LOG:`"$robocopyLog`""
+                    $result = Copy-WithProgress -Source $sourcePath `
+                                                -Destination $destPath `
+                                                -FolderName "$($item.Key) (Roaming AppData)" `
+                                                -LogPath $robocopyLog `
+                                                -RobocopyArgs $Script:Config.RobocopyArgs
                     
-                    $result = Start-Process -FilePath "robocopy.exe" -ArgumentList $argString -Wait -PassThru -WindowStyle Hidden
-                    
-                    if ($result.ExitCode -lt 8) {
+                    if ($result.Status -eq "Success") {
                         Write-Log "$($item.Key) copied successfully" -Level Success
                         Add-Result -Category "AppData" -Item $item.Key -Status "Success"
+                    }
+                    elseif ($result.Aborted) {
+                        Write-Log "$($item.Key) copy stopped by operator" -Level Warning
+                        Add-Result -Category "AppData" -Item $item.Key -Status "Skipped" -Details "Stopped by operator; partial files may remain"
                     }
                     else {
                         Write-Log "$($item.Key) copy had issues (exit: $($result.ExitCode))" -Level Warning
@@ -402,6 +424,10 @@ Right-click folder > 'Pin to Quick access'
                 if ($result.Status -eq "Success") {
                     Write-Log "$($item.Key) (Local) copied: $($result.FilesCopied) files" -Level Success
                     Add-Result -Category "AppData Local" -Item $item.Key -Status "Success" -Details "$($result.FilesCopied) files"
+                }
+                elseif ($result.Aborted) {
+                    Write-Log "$($item.Key) (Local) copy stopped by operator" -Level Warning
+                    Add-Result -Category "AppData Local" -Item $item.Key -Status "Skipped" -Details "Stopped by operator; partial files may remain"
                 }
                 else {
                     Write-Log "$($item.Key) (Local) copy had issues" -Level Warning

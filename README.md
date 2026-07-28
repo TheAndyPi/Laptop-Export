@@ -12,7 +12,11 @@ The deployed `Export-LaptopData.ps1` remains a single, self-contained script. Fo
 powershell -ExecutionPolicy Bypass -File ".\Build-Deployment.ps1"
 ```
 
-For development, [`src/00-development-config.psd1`](src/00-development-config.psd1) controls each export stage. All switches default to `$true`; rebuild after changing a value. The config is embedded in the generated deployment script, so it is not a separate technician-side dependency. Its import setting also defaults to deleting a successfully restored `Printers.printerExport` file after the import finishes.
+For development, [`src/00-development-config.psd1`](src/00-development-config.psd1) controls each export stage. All switches default to `$true`; rebuild after changing a value. The config is embedded in the generated deployment script, so it is not a separate technician-side dependency. Set `Backup.Chrome` to `$false` to skip Chrome while still exporting Edge and Firefox. Under `Import`, disable only the Lotus Notes or Firefox restore as needed. Under `Online`, set `CreateZipArchive` to `$false` to retain only the transfer folder, set `StageNetworkTransfersLocally` to `$false` to disable local staging, and set `Online.Import` values to the defaults that should apply whenever an Online transfer is selected.
+
+When running the export script, a **Transfer Settings** master panel shows the backup, import, and Online ZIP switches. Enter a setting number to toggle it, then press `S` to start. Those menu choices affect only the current transfer and do not change the compiled defaults.
+
+For an Online export to a network share, the default workflow stages the package under `C:\LaptopTransferStaging`, creates the ZIP locally, then uploads and size-verifies the single ZIP at the selected network destination. The local staging package is retained for recovery.
 
 ## Deploy / Run
 
@@ -53,7 +57,7 @@ It then runs the export and opens the HTML report when finished. **Online** tran
 - **System settings** — power scheme, lid-close actions (AC/DC), mapped network drives, personalization (colors, dark mode, taskbar), wallpaper
 - **Installed programs** — documented to a list
 - **Printers** — a `Printers.printerExport` PrintBRM migration file is attempted for every run, plus a driverless network-connection list. Windows may require elevation to create a full PrintBRM package; the package log records the exact result.
-- **Browser data** — Chrome bookmarks from every profile (HTML), a Chrome profile archive with common cache directories excluded for recovery/reference, and an optional native Chrome Password Manager CSV export that requires Windows authentication; Edge bookmarks (HTML); full Firefox profile data, including bookmarks, saved logins, history, extensions, settings, and companion local data
+- **Browser data** — Chrome and Edge bookmarks from every profile (automatic restore for Default/matching profiles plus portable HTML), a Chrome profile archive with common cache directories excluded for recovery/reference, and an optional native Chrome Password Manager CSV export that requires Windows authentication; full Firefox profile data, including bookmarks, saved logins, history, extensions, settings, and companion local data
 - **OneDrive** — sync-state handling
 
 ## Output package
@@ -65,7 +69,7 @@ LaptopTransfer_<timestamp>\
 ├── UserData\              # user folders + loose files
 ├── AppData\               # Bluebeam, signatures, Quick Access, Lotus
 ├── Settings\              # power, drives, personalization
-├── BrowserData\           # Chrome bookmark HTML/profile archive/password CSV (if chosen), Edge HTML, Firefox profile data
+├── BrowserData\           # Chrome/Edge bookmark HTML + portable bookmark records, Chrome archive/password CSV (if chosen), Firefox profile data
 ├── Printers\              # PrintBRM package
 ├── Logs\                  # ExportLog.txt
 ├── Import-LaptopData.ps1  # run on the NEW machine to restore
@@ -87,7 +91,9 @@ powershell -ExecutionPolicy Bypass -File ".\Import-LaptopData.ps1"
 
 If Firefox data is present, the import script restores it automatically. Close Firefox when prompted; any existing Firefox data on the new laptop is moved to a timestamped `Firefox_Backup_*` folder beside the restored profile.
 
-Chrome bookmarks are exported as one HTML file per Chrome profile and are imported manually through Chrome's bookmark import. The raw Chrome profile archive is retained for recovery/reference but is deliberately not copied over the new Chrome profile: password and cookie encryption is tied to the old Windows installation. During export, the tool can open Chrome Password Manager so the original user can complete Chrome's Windows-authenticated password export. Save that resulting plaintext CSV in the requested `BrowserData\Chrome\PasswordExport` folder. The generated import script guides the native Chrome CSV import and offers to delete the CSV only after you confirm the import succeeded.
+With Chrome and Edge closed, the import script restores bookmarks automatically for each `Default` profile and any matching `Profile N` profiles. It backs up any target bookmark file first. Profiles that do not yet exist on the new machine remain available as portable HTML files for native browser import. The raw Chrome profile archive is retained for recovery/reference but credentials and cookies are deliberately not copied over: their encryption is tied to the old Windows installation. During export, the tool can open Chrome Password Manager so the original user can complete Chrome's Windows-authenticated password export. Save that resulting plaintext CSV in the requested `BrowserData\Chrome\PasswordExport` folder. The generated import script guides the native Chrome CSV import and offers to delete the CSV only after you confirm the import succeeded.
+
+During any file-copy step, press `S` to stop that copy and continue the export. The transfer report records the step as skipped; partially copied files remain in place so a later export can resume the copy.
 
 ## Command-line parameters
 
