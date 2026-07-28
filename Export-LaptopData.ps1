@@ -19,7 +19,7 @@
     The username to export. Used when running elevated to preserve original user context.
 
 .NOTES
-    Version: 0.2
+    Version: 0.6
     Author: STO IT
     Run as: The user being transferred (IT admin logged in as user)
 #>
@@ -32,7 +32,10 @@ param(
     [string]$TargetAppDataRoaming = "",
     [string]$TargetAppDataLocal = "",
     [ValidateSet("", "Local", "Online")]
-    [string]$TransferMode = ""
+    [string]$TransferMode = "",
+    # Parent folder for the transfer package. When omitted, Windows displays a
+    # folder picker after the transfer mode is selected.
+    [string]$DestinationPath = ""
 )
 
 # ============================================================================
@@ -255,8 +258,8 @@ else {
 
 if (-not $Script:IsAdmin) {
     Write-Banner -Title "Administrator Privileges Recommended"
-    Write-Host "  Some features (power scheme + printer export/restore) require admin rights." -ForegroundColor Gray
-    Write-Host "  If you skip, those items are added to the manual checklist.`n" -ForegroundColor DarkGray
+    Write-Host "  Some features (power scheme and a full PrintBRM package) require admin rights." -ForegroundColor Gray
+    Write-Host "  PrintBRM is still attempted if you skip; its result is recorded in the package.`n" -ForegroundColor DarkGray
     
     $choice = Read-Host "  Run as Administrator? (Y/N, or S to skip)"
     
@@ -267,6 +270,7 @@ if (-not $Script:IsAdmin) {
         # Pass the current user's profile info to the elevated script
         $elevatedArgs = "-ExecutionPolicy Bypass -File `"$scriptPath`" -TargetUserProfile `"$env:USERPROFILE`" -TargetUserName `"$env:USERNAME`" -TargetAppDataRoaming `"$env:APPDATA`" -TargetAppDataLocal `"$env:LOCALAPPDATA`""
         if ($TransferMode) { $elevatedArgs += " -TransferMode `"$TransferMode`"" }
+        if ($DestinationPath) { $elevatedArgs += " -DestinationPath `"$DestinationPath`"" }
         
         try {
             $process = Start-Process PowerShell -Verb RunAs -ArgumentList $elevatedArgs -PassThru -ErrorAction Stop
@@ -291,13 +295,13 @@ if (-not $Script:IsAdmin) {
 # ============================================================================
 
 $Script:Config = @{
-    Version = "0.5"
+    Version = "0.6"
     TransferFolderName = "LaptopTransfer_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 
-    # Printer driver binaries in the PrintBRM package. Network printers now use
-    # a driverless, non-admin connection restore; this flag only affects the
-    # admin-only fallback that captures LOCAL/direct-IP printers. TRUE bundles
-    # drivers (safer for offline restore); FALSE (-NOBIN) makes a smaller package.
+    # Printer driver binaries in the PrintBRM package. Network printers also
+    # have a driverless, non-admin connection restore. TRUE bundles drivers
+    # when PrintBRM is permitted to create the package; FALSE (-NOBIN) makes a
+    # smaller package.
     IncludePrinterDrivers = $true
     
     # User profile folders to copy (relative to user profile)
@@ -568,10 +572,77 @@ function Add-ManualTask {
 }
 
 # ============================================================================
-# DRIVE SELECTION
+# DESTINATION SELECTION
 # ============================================================================
 
+function Test-DestinationIsWithinSourceProfile {
+    param([string]$Path)
+
+    try {
+        $destination = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+        $profile = [System.IO.Path]::GetFullPath($Script:OriginalUserProfile).TrimEnd('\')
+        return $destination.Equals($profile, [System.StringComparison]::OrdinalIgnoreCase) -or
+               $destination.StartsWith("$profile\", [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Select-TargetDrive {
+    Write-StoLogo
+    Write-Banner -Title "Laptop Transfer  -  Export Tool" -Subtitle "v$($Script:Config.Version)"
+    Write-KeyValue "Transferring" $Script:OriginalUserName
+    Write-KeyValue "Computer" $env:COMPUTERNAME
+    Write-KeyValue "Transfer" $Script:Config.TransferMode
+    Write-Section "Select external or secondary drive"
+
+    # Local mode keeps the existing drive selector rather than opening the
+    # Windows folder picker. C: is deliberately excluded.
+    $drives = @(Get-WmiObject Win32_LogicalDisk | Where-Object {
+        $_.DriveType -in @(2, 3) -and $_.DeviceID -ne $env:SystemDrive -and $_.Size -gt 0
+    } | ForEach-Object {
+        $freeGB = [math]::Round($_.FreeSpace / 1GB, 2)
+        $totalGB = [math]::Round($_.Size / 1GB, 2)
+        $type = if ($_.DriveType -eq 2) { "Removable" } else { "Fixed" }
+        [PSCustomObject]@{
+            Letter = $_.DeviceID
+            Type = $type
+            Display = "$($_.DeviceID) [$($_.VolumeName)] - $type - $freeGB GB free of $totalGB GB"
+        }
+    })
+
+    if (-not $drives) {
+        Write-Host "`nNo external or secondary drives found." -ForegroundColor Red
+        Write-Host "Connect an external drive and try again." -ForegroundColor Yellow
+        return $null
+    }
+
+    Write-Host ""
+    for ($i = 0; $i -lt $drives.Count; $i++) {
+        $color = if ($drives[$i].Type -eq "Removable") { "Cyan" } else { "White" }
+        Write-Host "  [$($i + 1)] $($drives[$i].Display)" -ForegroundColor $color
+    }
+    Write-Host "`n  [0] Cancel`n" -ForegroundColor Gray
+
+    do {
+        $selection = Read-Host "Select target drive (1-$($drives.Count))"
+        if ($selection -eq "0") { return $null }
+
+        $index = 0
+        if ([int]::TryParse($selection, [ref]$index)) {
+            $index--
+            if ($index -ge 0 -and $index -lt $drives.Count) {
+                $selectedDrive = $drives[$index]
+                $confirm = Read-Host "Proceed with $($selectedDrive.Display)? (Y/N)"
+                if ($confirm -match "^[Yy]") { return $selectedDrive.Letter }
+            }
+        }
+        Write-Host "Invalid selection. Please try again." -ForegroundColor Red
+    } while ($true)
+}
+
+function Select-TargetDestination {
     Write-StoLogo
     Write-Banner -Title "Laptop Transfer  -  Export Tool" -Subtitle "v$($Script:Config.Version)"
     Write-KeyValue "Transferring" $Script:OriginalUserName
@@ -585,71 +656,53 @@ function Select-TargetDrive {
     if ($Script:IsAdmin -and $Script:OriginalUserName -ne $env:USERNAME) {
         Write-KeyValue "Running as" "$env:USERNAME (elevated)"
     }
-    
-    Write-Section "Scanning for available drives"
-    
-    # Get removable and fixed drives (excluding C:)
-    # Wrap in @() to ensure it's always an array even with single result
-    $drives = @(Get-WmiObject Win32_LogicalDisk | Where-Object {
-        $_.DriveType -in @(2, 3) -and  # 2=Removable, 3=Fixed
-        $_.DeviceID -ne "C:" -and
-        $_.Size -gt 0
-    } | ForEach-Object {
-        $freeGB = [math]::Round($_.FreeSpace / 1GB, 2)
-        $totalGB = [math]::Round($_.Size / 1GB, 2)
-        $type = if ($_.DriveType -eq 2) { "Removable" } else { "Fixed" }
-        
-        [PSCustomObject]@{
-            Letter = $_.DeviceID
-            Label = if ($_.VolumeName) { $_.VolumeName } else { "No Label" }
-            Type = $type
-            FreeGB = $freeGB
-            TotalGB = $totalGB
-            Display = "$($_.DeviceID) [$($_.VolumeName)] - $type - $freeGB GB free of $totalGB GB"
+
+    Write-Section "Choose export destination"
+    Write-Host "Select a network share, cloud-synced folder, or local folder for the zipped export." -ForegroundColor Gray
+
+    $selectedPath = $DestinationPath
+    if (-not $selectedPath) {
+        try {
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+            $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+            $dialog.Description = "Choose the folder that will receive the laptop transfer package"
+            $dialog.ShowNewFolderButton = $true
+            if (Test-Path $env:USERPROFILE) { $dialog.SelectedPath = $env:USERPROFILE }
+
+            if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+                Write-Host "Operation cancelled." -ForegroundColor Yellow
+                return $null
+            }
+            $selectedPath = $dialog.SelectedPath
         }
-    })
-    
-    if (-not $drives) {
-        Write-Host "`nNo suitable drives found!" -ForegroundColor Red
-        Write-Host "Please connect an external drive and try again." -ForegroundColor Yellow
+        catch {
+            # FolderBrowserDialog should be available on supported Windows builds,
+            # but keep a console fallback for constrained PowerShell hosts.
+            Write-Host "Could not open the Windows folder picker: $_" -ForegroundColor Yellow
+            $selectedPath = Read-Host "Enter destination folder path (blank to cancel)"
+            if (-not $selectedPath) { return $null }
+        }
+    }
+
+    try {
+        if (-not (Test-Path -LiteralPath $selectedPath -PathType Container)) {
+            New-Item -ItemType Directory -Path $selectedPath -Force -ErrorAction Stop | Out-Null
+        }
+        $selectedPath = (Resolve-Path -LiteralPath $selectedPath -ErrorAction Stop).Path
+    }
+    catch {
+        Write-Host "Unable to use destination folder '$selectedPath': $_" -ForegroundColor Red
         return $null
     }
-    
-    Write-Host "`nAvailable Drives:`n" -ForegroundColor Green
-    
-    $i = 1
-    foreach ($drive in $drives) {
-        $color = if ($drive.Type -eq "Removable") { "Cyan" } else { "White" }
-        Write-Host "  [$i] $($drive.Display)" -ForegroundColor $color
-        $i++
+
+    if (Test-DestinationIsWithinSourceProfile -Path $selectedPath) {
+        Write-Host "The destination cannot be inside the profile being exported." -ForegroundColor Red
+        Write-Host "Choose a different folder to avoid copying the export into itself." -ForegroundColor Yellow
+        return $null
     }
-    
-    Write-Host "`n  [0] Cancel`n" -ForegroundColor Gray
-    
-    do {
-        $selection = Read-Host "Select target drive (1-$($drives.Count))"
-        
-        if ($selection -eq "0") {
-            Write-Host "Operation cancelled." -ForegroundColor Yellow
-            return $null
-        }
-        
-        $index = [int]$selection - 1
-        if ($index -ge 0 -and $index -lt $drives.Count) {
-            $selectedDrive = $drives[$index]
-            
-            # Confirm selection
-            Write-Host "`nYou selected: $($selectedDrive.Display)" -ForegroundColor Yellow
-            $confirm = Read-Host "Proceed with this drive? (Y/N)"
-            
-            if ($confirm -eq "Y" -or $confirm -eq "y") {
-                return $selectedDrive.Letter
-            }
-        }
-        else {
-            Write-Host "Invalid selection. Please try again." -ForegroundColor Red
-        }
-    } while ($true)
+
+    Write-KeyValue "Destination" $selectedPath
+    return $selectedPath
 }
 
 # ============================================================================
@@ -664,6 +717,64 @@ function Get-FolderSizeBytes {
         Measure-Object -Property Length -Sum).Sum
     if ($null -eq $sum) { return 0 }
     return [long]$sum
+}
+
+function Get-DestinationFreeSpaceBytes {
+    param([string]$Path)
+
+    # PSDrive exposes capacity for local, mapped, and most UNC destinations.
+    # It is intentionally best-effort because some cloud providers do not report it.
+    $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if ($item.PSDrive -and $null -ne $item.PSDrive.Free) {
+        return [long]$item.PSDrive.Free
+    }
+
+    $root = [System.IO.Path]::GetPathRoot($item.FullName)
+    if ($root) {
+        return [long]([System.IO.DriveInfo]::new($root).AvailableFreeSpace)
+    }
+
+    return $null
+}
+
+function New-TransferArchive {
+    param([string]$TransferBase)
+
+    if ($Script:Config.TransferMode -ne "Online") {
+        Write-Log "Skipping ZIP archive for Local transfer" -Level Info
+        return $null
+    }
+
+    $parentFolder = Split-Path -Path $TransferBase -Parent
+    $archiveName = "$(Split-Path -Path $TransferBase -Leaf).zip"
+    $archivePath = Join-Path $parentFolder $archiveName
+
+    if (Test-Path -LiteralPath $archivePath) {
+        Write-Log "ZIP archive already exists: $archivePath" -Level Warning
+        Write-Host "A ZIP archive already exists: $archivePath" -ForegroundColor Yellow
+        return $null
+    }
+
+    try {
+        Write-Host "`n  Creating ZIP archive..." -ForegroundColor Cyan
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+        [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            $TransferBase,
+            $archivePath,
+            [System.IO.Compression.CompressionLevel]::Optimal,
+            $true
+        )
+
+        Write-Log "ZIP archive created: $archivePath" -Level Success
+        Add-Result -Category "Package" -Item $archiveName -Status "Success" -Details "Compressed transfer package"
+        return $archivePath
+    }
+    catch {
+        Write-Log "Could not create ZIP archive: $_" -Level Error
+        Add-Result -Category "Package" -Item $archiveName -Status "Error" -Details "ZIP creation failed: $_"
+        Write-Host "ZIP creation failed: $_" -ForegroundColor Red
+        return $null
+    }
 }
 
 function Resolve-TransferMode {
@@ -1444,9 +1555,17 @@ function Backup-Printers {
 
     $printerFolder = Join-Path $DestinationBase "Printers"
     $connectionsJson = Join-Path $printerFolder "PrinterConnections.json"
-    $printBrmPath  = "$env:WINDIR\System32\spool\tools\PrintBrm.exe"
     $exportFile    = Join-Path $printerFolder "Printers.printerExport"
     $brmLog        = Join-Path $DestinationBase "Logs\printbrm_backup.log"
+
+    # A 32-bit PowerShell host is redirected from System32 to SysWOW64.  Use
+    # Sysnative first in that case so we always call the native PrintBRM tool.
+    $printBrmCandidates = @()
+    if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+        $printBrmCandidates += (Join-Path $env:WINDIR "Sysnative\spool\tools\PrintBrm.exe")
+    }
+    $printBrmCandidates += (Join-Path $env:WINDIR "System32\spool\tools\PrintBrm.exe")
+    $printBrmPath = $printBrmCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 
     foreach ($p in @($printerFolder, (Split-Path $brmLog))) {
         if (-not (Test-Path $p)) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
@@ -1498,58 +1617,55 @@ function Backup-Printers {
         Write-KeyValue "Default printer" $defaultPrinter
     }
 
-    # ---- FALLBACK (admin only): local / direct-IP printers via PrintBRM ----
-    # Local printers carry their own drivers and genuinely need admin to restore.
-    # Only bother with PrintBRM if such printers actually exist.
+    # ---- PrintBRM package ----
+    # PrintBRM is the only source of a real .printerExport migration file.  Do
+    # not limit it to local printers: a package can also contain network queues,
+    # and users expect this artifact even when the JSON connection list is enough
+    # for a driverless restore.  Windows may reject the backup from a non-elevated
+    # session; we still attempt it and retain the tool output in the log.
     $localPrinters = @($allPrinters | Where-Object {
         $_.Type -eq 'Local' -and $_.Name -notlike '\\*' -and
         ($virtualPrinters -notcontains $_.Name)
     })
 
-    if ($localPrinters.Count -eq 0) {
-        Write-Log "No local/direct-IP printers to capture (connections cover everything)" -Level Info
+    if ($localPrinters.Count -gt 0) {
+        Write-Host "    $($Script:Theme.Glyphs.INFO) " -ForegroundColor Cyan -NoNewline
+        Write-Host "$($localPrinters.Count) local/direct-IP printer(s) detected" -ForegroundColor White
+    }
+
+    if (-not $printBrmPath) {
+        Write-Status "Printer migration file" "SKIP" "PrintBRM.exe not present"
+        Add-Result -Category "Printers" -Item "Printer Migration File" -Status "Skipped" -Details "PrintBRM.exe not found"
         return
     }
 
-    Write-Host "    $($Script:Theme.Glyphs.INFO) " -ForegroundColor Cyan -NoNewline
-    Write-Host "$($localPrinters.Count) local/direct-IP printer(s) detected" -ForegroundColor White
-
-    if (-not $Script:IsAdmin) {
-        # Non-admin: can't capture drivers. Surface as a manual task rather than fail.
-        Write-Log "Local printers need admin to capture drivers - noting as manual task" -Level Warning
-        Write-Status "Local printers" "SKIP" "$($localPrinters.Count) need admin (drivers)"
-        Add-Result -Category "Printers" -Item "Local Printers" -Status "Manual" -Details "$($localPrinters.Count) local printer(s) need admin to migrate drivers"
-        Add-ManualTask -Task "Re-add local/direct-IP printers" -Reason "$($localPrinters.Count) local printer(s) carry their own drivers; capturing them needs admin" -Instructions @"
-These local printers were not captured (network connections were):
-  $($localPrinters.Name -join "`n  ")
-On the new machine, re-add them via Settings > Printers, or re-run this tool as
-Administrator on the old machine to capture them (with drivers) automatically.
-"@
-        return
-    }
-
-    # Admin: use PrintBRM to grab local printers + their drivers.
-    if (-not (Test-Path $printBrmPath)) {
-        Write-Status "Local printers" "SKIP" "PrintBRM.exe not present"
-        Add-Result -Category "Printers" -Item "Local Printers" -Status "Skipped" -Details "PrintBRM.exe not found"
-        return
-    }
     try {
-        $brmArgs = @("-B", "-F", $exportFile, "-O", "FORCE")
+        # Do not let a stale file be mistaken for the result of this run.
+        if (Test-Path -LiteralPath $exportFile) {
+            Remove-Item -LiteralPath $exportFile -Force -ErrorAction Stop
+        }
+
+        $brmArgs = @("-B", "-F", $exportFile)
         if (-not $Script:Config.IncludePrinterDrivers) { $brmArgs += "-NOBIN" }
-        Write-Host "    $($Script:Theme.Glyphs.INFO) Capturing local printers + drivers (PrintBRM)" -ForegroundColor DarkGray
+        $accessMode = if ($Script:IsAdmin) { "elevated" } else { "standard-user attempt" }
+        Write-Host "    $($Script:Theme.Glyphs.INFO) Creating printer migration file (PrintBRM, $accessMode)" -ForegroundColor DarkGray
         & $printBrmPath @brmArgs *>&1 | Tee-Object -FilePath $brmLog | Out-Null
         $brmExit = $LASTEXITCODE
 
         if ((Test-Path $exportFile) -and ((Get-Item $exportFile).Length -gt 0)) {
             $file = Get-Item $exportFile
-            Write-Log "Local printer backup created ($(Format-FileSize $file.Length))" -Level Success
-            Write-Status "Local printers" "OK" "$(Format-FileSize $file.Length) (PrintBRM)"
-            Add-Result -Category "Printers" -Item "Local Printers" -Status "Success" -Details "$(Format-FileSize $file.Length), drivers=$($Script:Config.IncludePrinterDrivers)"
+            Write-Log "Printer migration file created ($(Format-FileSize $file.Length)); PrintBRM exit $brmExit" -Level Success
+            Write-Status "Printer migration file" "OK" "$(Format-FileSize $file.Length) (PrintBRM)"
+            Add-Result -Category "Printers" -Item "Printer Migration File" -Status "Success" -Details "$(Format-FileSize $file.Length), drivers=$($Script:Config.IncludePrinterDrivers), exit=$brmExit"
         }
         else {
-            Write-Status "Local printers" "WARN" "no package created (exit $brmExit)"
-            Add-Result -Category "Printers" -Item "Local Printers" -Status "Warning" -Details "Exit $brmExit, see printbrm_backup.log"
+            $elevationHint = if ($Script:IsAdmin) { "" } else { "; Windows commonly requires an elevated session" }
+            Write-Log "PrintBRM did not create Printers.printerExport (exit $brmExit)$elevationHint" -Level Warning
+            Write-Status "Printer migration file" "WARN" "not created (exit $brmExit)"
+            Add-Result -Category "Printers" -Item "Printer Migration File" -Status "Warning" -Details "Exit $brmExit$elevationHint; see printbrm_backup.log"
+            if (-not $Script:IsAdmin) {
+                Add-ManualTask -Task "Create PrintBRM printer migration file" -Reason "PrintBRM did not allow the standard-user export" -Instructions "Re-run Export-LaptopData.ps1 and select Y at the administrator prompt. The failed PrintBRM output is in Logs\\printbrm_backup.log."
+            }
         }
     }
     catch {
@@ -1868,7 +1984,10 @@ function New-ImportScript {
 #Requires -Version 5.1
 
 param(
-    [switch]$TestMode
+    [switch]$TestMode,
+    # Used by QuickImport.bat so a double-click restore stays in the current
+    # user's context and does not show a UAC elevation prompt.
+    [switch]$NoElevationPrompt
 )
 
 $ErrorActionPreference = "Continue"
@@ -2202,26 +2321,31 @@ if ($env:COMPUTERNAME -eq "{COMPUTERNAME}") {
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 if (-not $isAdmin) {
-    Write-Host "  Some features require Administrator rights:" -ForegroundColor Yellow
-    Write-Host "    - Power scheme import" -ForegroundColor Gray
-    Write-Host "    - Lid close action settings" -ForegroundColor Gray
-    Write-Host ""
-    $elevate = Read-Host "  Run as Administrator? (Y/N, or S to skip)"
-    
-    if ($elevate -match "^[Yy]") {
-        Write-Host "`n  Requesting elevation..." -ForegroundColor Cyan
-        try {
-            $scriptFullPath = $MyInvocation.MyCommand.Path
-            Start-Process powershell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$scriptFullPath`""
-            exit
-        }
-        catch {
-            Write-Host "  Could not elevate. Continuing without admin rights." -ForegroundColor Yellow
-            $isAdmin = $false
-        }
+    if ($NoElevationPrompt) {
+        Write-Host "  Running as the current user; admin-only restore steps will be skipped." -ForegroundColor DarkGray
     }
     else {
-        Write-Host "  Continuing without admin rights..." -ForegroundColor Gray
+        Write-Host "  Some features require Administrator rights:" -ForegroundColor Yellow
+        Write-Host "    - Power scheme import" -ForegroundColor Gray
+        Write-Host "    - Lid close action settings" -ForegroundColor Gray
+        Write-Host ""
+        $elevate = Read-Host "  Run as Administrator? (Y/N, or S to skip)"
+
+        if ($elevate -match "^[Yy]") {
+            Write-Host "`n  Requesting elevation..." -ForegroundColor Cyan
+            try {
+                $scriptFullPath = $MyInvocation.MyCommand.Path
+                Start-Process powershell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$scriptFullPath`""
+                exit
+            }
+            catch {
+                Write-Host "  Could not elevate. Continuing without admin rights." -ForegroundColor Yellow
+                $isAdmin = $false
+            }
+        }
+        else {
+            Write-Host "  Continuing without admin rights..." -ForegroundColor Gray
+        }
     }
 }
 else {
@@ -2789,7 +2913,7 @@ if (Test-Path $printerExportFile) {
         Write-Log "Local printer package present but restore needs admin" -Level "Warning"
         Write-Status "Local printers" "SKIP" "admin needed for local drivers"
         Add-Result -Category "Printers" -Item "Local Printers" -Status "Manual" -Details "Re-run elevated (or re-add via Settings) for local printers"
-        Add-ManualTask -Task "Restore local/direct-IP printers" -Reason "Local printers carry their own drivers and need admin" -Instructions "Re-run QuickImport.bat (it self-elevates) or run Import-LaptopData.ps1 as Administrator to install local printers."
+        Add-ManualTask -Task "Restore local/direct-IP printers" -Reason "Local printers carry their own drivers and need admin" -Instructions "Run Import-LaptopData.ps1 as Administrator to install local printers. QuickImport.bat intentionally runs without elevation."
     }
     elseif (-not (Test-Path $printBrmPath)) {
         Write-Status "Local printers" "SKIP" "PrintBRM.exe not present"
@@ -3528,29 +3652,38 @@ function New-QuickImportBatch {
 
     $batPath = Join-Path $DestinationBase "QuickImport.bat"
 
-    # Self-elevating launcher: printer + power restore need admin, so the
-    # convenience double-click must relaunch itself elevated (UAC prompt).
+    # Let the technician choose once: run normally for user-scoped data, or
+    # request elevation when power settings and local printer drivers matter.
     $batContent = @"
 @echo off
 title STO Laptop Transfer - Quick Import
-
-rem --- Self-elevate: re-launch this .bat as admin if not already ---
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Requesting administrator privileges...
-    powershell -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
-    exit /b
-)
 
 echo.
 echo ============================================
 echo    STO Laptop Transfer - Quick Import
 echo ============================================
 echo.
-echo Running import script (elevated)...
+if /I "%~1"=="--elevated" goto :Elevated
+
+set /p RUN_AS_ADMIN="Run with administrator rights? (Y/N) [N]: "
 echo.
 
+if /I "%RUN_AS_ADMIN%"=="Y" (
+    echo Requesting administrator privileges...
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -ArgumentList '--elevated'"
+    exit /b
+) else (
+    echo Running import script as the current user...
+    echo Admin-only restore steps will be skipped and listed in the report.
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Import-LaptopData.ps1" -NoElevationPrompt
+)
+goto :Complete
+
+:Elevated
+echo Running import script with administrator rights...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Import-LaptopData.ps1"
+
+:Complete
 set IMPORT_EXIT=%errorlevel%
 
 echo.
@@ -3585,9 +3718,15 @@ function Start-LaptopExport {
         Resolve-TransferMode
     }
 
-    # Select target drive
-    $targetDrive = Select-TargetDrive
-    if (-not $targetDrive) {
+    # Online exports use the Windows folder picker. Local exports retain the
+    # external/secondary-drive selector and do not open the picker.
+    if ($Script:Config.TransferMode -eq "Local") {
+        $destinationFolder = Select-TargetDrive
+    }
+    else {
+        $destinationFolder = Select-TargetDestination
+    }
+    if (-not $destinationFolder) {
         return
     }
 
@@ -3607,23 +3746,29 @@ function Start-LaptopExport {
     Write-KeyValue "Estimated size" (Format-FileSize $estBytes)
 
     try {
-        $freeBytes = (Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='$targetDrive'").FreeSpace
-        Write-KeyValue "Free on $targetDrive" (Format-FileSize $freeBytes)
-        # Require ~15% headroom over the estimate (robocopy overhead, other captures)
-        if ($freeBytes -gt 0 -and $freeBytes -lt ($estBytes * 1.15)) {
+        $freeBytes = Get-DestinationFreeSpaceBytes -Path $destinationFolder
+        if ($null -ne $freeBytes) {
+            Write-KeyValue "Free at destination" (Format-FileSize $freeBytes)
+        }
+        # Online mode keeps the folder while creating a ZIP; Local mode keeps
+        # only the folder, so it needs substantially less destination space.
+        $spaceMultiplier = if ($Script:Config.TransferMode -eq "Online") { 2.15 } else { 1.15 }
+        $requiredFreeBytes = [math]::Ceiling($estBytes * $spaceMultiplier)
+        if ($freeBytes -gt 0 -and $freeBytes -lt $requiredFreeBytes) {
             Write-Host ""
             Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
-            Write-Host "Target drive may not have enough free space for this transfer." -ForegroundColor White
+            $spaceDetail = if ($Script:Config.TransferMode -eq "Online") { "the package and its ZIP archive" } else { "the transfer package" }
+            Write-Host "Destination may not have enough free space for $spaceDetail." -ForegroundColor White
             $go = Read-Host "    Continue anyway? (Y/N)"
             if ($go -notmatch "^[Yy]") { Write-Host "  Cancelled." -ForegroundColor Yellow; return }
         }
     }
     catch {
-        Write-Log "Could not read free space on $targetDrive (continuing)" -Level Info
+        Write-Log "Could not read free space at $destinationFolder (continuing)" -Level Info
     }
 
     # Create transfer folder structure
-    $transferBase = Join-Path $targetDrive $Script:Config.TransferFolderName
+    $transferBase = Join-Path $destinationFolder $Script:Config.TransferFolderName
     
     Write-KeyValue "Transfer folder" $transferBase
     
@@ -3671,6 +3816,13 @@ function Start-LaptopExport {
     # Save log
     $logPath = Join-Path $transferBase "Logs\ExportLog.txt"
     $Script:Log | Out-File $logPath -Encoding UTF8
+
+    # Local transfers stay as folders for a removable drive. Online transfers
+    # also produce a portable ZIP beside the package.
+    $archivePath = $null
+    if ($Script:Config.TransferMode -eq "Online") {
+        $archivePath = New-TransferArchive -TransferBase $transferBase
+    }
     
     # Summary
     $Script:Results.EndTime = Get-Date
@@ -3684,6 +3836,7 @@ function Start-LaptopExport {
     Write-SummaryCard -Success $sc -Warning $wc -Errors $ec -Skipped $kc -Duration "$([math]::Round($dur.TotalMinutes, 1)) min"
 
     Write-KeyValue "Package" $transferBase
+    if ($archivePath) { Write-KeyValue "ZIP archive" $archivePath }
     Write-Section "Package contents"
     Write-Status "UserData"               "INFO" "Documents, Desktop, loose files"
     Write-Status "AppData"                "INFO" "Bluebeam, signatures, Quick Access"
@@ -3691,8 +3844,11 @@ function Start-LaptopExport {
     Write-Status "Printers"               "INFO" "PrintBRM package"
     Write-Status "BrowserData"            "INFO" "bookmarks"
     Write-Status "Import-LaptopData.ps1"  "OK"   "run on new machine"
-    Write-Status "QuickImport.bat"        "OK"   "double-click (self-elevates)"
+    Write-Status "QuickImport.bat"        "OK"   "double-click (choose admin or standard)"
     Write-Status "TransferReport.html"    "OK"   "full report"
+    if ($archivePath) {
+        Write-Status "$(Split-Path -Path $archivePath -Leaf)" "OK" "portable compressed package"
+    }
 
     # Open report
     Write-Host ""

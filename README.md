@@ -1,8 +1,8 @@
 # Laptop Export
 
-**STO Building Group – Laptop Transfer / Export Tool** (`Export-LaptopData.ps1`, v0.5)
+**STO Building Group – Laptop Transfer / Export Tool** (`Export-LaptopData.ps1`, v0.6)
 
-A single-file PowerShell tool that automates the **data-collection phase** of a laptop refresh. An IT technician runs it on the **old** laptop (logged in as, or on behalf of, the user being transferred). It copies the user's data and settings into a self-contained transfer package on an external drive, then generates a matching **Import** script, a **QuickImport.bat**, and an **HTML report** to run on the new machine.
+A single-file PowerShell tool that automates the **data-collection phase** of a laptop refresh. An IT technician runs it on the **old** laptop (logged in as, or on behalf of, the user being transferred). It creates a self-contained transfer package, ZIPs it for handoff, and generates a matching **Import** script, a **QuickImport.bat**, and an **HTML report** to run on the new machine.
 
 ## Deploy / Run
 
@@ -16,22 +16,25 @@ The script is interactive. It will prompt you to:
 
 1. **Elevate to Administrator** (Y/N/Skip) — recommended. Accepting re-launches via UAC, preserving the original user's profile context.
 2. **Choose a transfer mode** — `Local` or `Online` (see below).
-3. **Select a target drive** — any removable or fixed drive except `C:`. It estimates the transfer size and warns if free space looks tight (~15% headroom required).
+3. **Choose a destination**:
+   - **Local:** Select an external or secondary drive from the console; the Windows folder picker is not opened.
+   - **Online:** A Windows folder picker opens. Choose a network share, cloud-synced folder, or any local folder.
 
-It then runs the export, saves everything to the drive, and opens the HTML report when finished.
+It then runs the export and opens the HTML report when finished. **Online** transfers also create `LaptopTransfer_<timestamp>.zip` beside the package folder; **Local** transfers keep only the folder.
 
 ## Requirements
 
 - **Windows PowerShell 5.1+** (`#Requires -Version 5.1`)
-- An **external/USB drive** (or second fixed drive) with enough free space
-- **Administrator rights** — *optional but recommended*. Needed only for the power scheme and printer export; without admin, those items are added to the manual checklist instead. The script offers to self-elevate.
+- An **external/USB drive** (or second fixed drive) with enough free space for **Local** transfers
+- For **Online** transfers, a writable destination folder (network share, cloud-synced folder, or local folder); no external drive is required
+- **Administrator rights** — *optional but recommended*. The script always attempts the printer export, but Windows can require elevation for a full PrintBRM package. The script offers to self-elevate and logs the precise PrintBRM result.
 
 ## Transfer modes
 
 | Mode | Use case | Behavior |
 |------|----------|----------|
-| **Local** | USB / on-site | Full copy of everything. |
-| **Online** | Slow / remote links | Trimmed: caps `Downloads` at 5 GB (omits if larger), skips Lotus Notes data, prompts on any folder over 10 GB, and skips OneDrive re-hydration. |
+| **Local** | USB / on-site | Full copy of everything; no ZIP is created. |
+| **Online** | Slow / remote links | Trimmed: caps `Downloads` at 5 GB (omits if larger), skips Lotus Notes data, prompts on any folder over 10 GB, skips OneDrive re-hydration, and creates a ZIP. |
 
 ## What it captures
 
@@ -39,13 +42,13 @@ It then runs the export, saves everything to the drive, and opens the HTML repor
 - **AppData** — Bluebeam, Outlook email signatures, Quick Access pins, Lotus Notes
 - **System settings** — power scheme, lid-close actions (AC/DC), mapped network drives, personalization (colors, dark mode, taskbar), wallpaper
 - **Installed programs** — documented to a list
-- **Printers** — PrintBRM package (network printers restore driverless / non-admin)
+- **Printers** — a `Printers.printerExport` PrintBRM migration file is attempted for every run, plus a driverless network-connection list. Windows may require elevation to create a full PrintBRM package; the package log records the exact result.
 - **Browser data** — Chrome & Edge bookmarks (HTML), Firefox reminder
 - **OneDrive** — sync-state handling
 
 ## Output package
 
-Written to the target drive under `LaptopTransfer_<yyyyMMdd_HHmmss>\`:
+Written to the chosen destination as a package folder. Online transfers also include a ZIP archive:
 
 ```
 LaptopTransfer_<timestamp>\
@@ -56,19 +59,21 @@ LaptopTransfer_<timestamp>\
 ├── Printers\              # PrintBRM package
 ├── Logs\                  # ExportLog.txt
 ├── Import-LaptopData.ps1  # run on the NEW machine to restore
-├── QuickImport.bat        # double-click launcher (self-elevates)
+├── QuickImport.bat        # double-click launcher (choose admin or standard)
 └── TransferReport.html    # full report of everything captured
+
+LaptopTransfer_<timestamp>.zip  # Online transfers only: portable copy of the package above
 ```
 
 ## On the new machine
 
-Copy the transfer folder to the new laptop and restore with **either**:
+Copy the transfer folder to the new laptop, or (for Online transfers) extract `LaptopTransfer_<timestamp>.zip`, then restore with **either**:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\Import-LaptopData.ps1"
 ```
 
-...or double-click **`QuickImport.bat`** (it self-elevates). Add `-TestMode` to the Import command to preview actions without making changes.
+...or double-click **`QuickImport.bat`** and choose whether to run with administrator rights. Standard mode restores user-scoped data and reports any admin-only steps for manual follow-up. Add `-TestMode` to the Import command to preview actions without making changes.
 
 ## Command-line parameters
 
@@ -77,4 +82,5 @@ Normally you don't pass any — the script prompts for everything. These exist m
 | Parameter | Purpose |
 |-----------|---------|
 | `-TransferMode Local\|Online` | Skip the mode prompt. |
+| `-DestinationPath <path>` | Skip the Online folder picker and write the package below this folder. |
 | `-TargetUserProfile`, `-TargetUserName`, `-TargetAppDataRoaming`, `-TargetAppDataLocal` | Preserve the original user's context when running elevated. Set automatically during self-elevation. |
