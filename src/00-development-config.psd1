@@ -5,21 +5,19 @@
     Backup = @{
         UserData          = $true
         AppData           = $true
+        LotusNotes        = $true
         SystemSettings    = $true
         InstalledPrograms = $true
         Printers          = $true
-        BrowserData       = $true
-        # Controls Chrome only; Edge and Firefox stay enabled when this is false.
         Chrome            = $true
+        Firefox           = $true
+        Edge              = $true
         OneDrive          = $true
     }
 
     Import = @{
         # Restores AppData\Lotus_Local when it is present in a transfer package.
         LotusNotes = $true
-
-        # Restores the Firefox profile and its local companion data.
-        Firefox = $true
 
         # Deletes Printers\Printers.printerExport only after a successful
         # PrintBRM restore and completion of the generated import script.
@@ -30,16 +28,19 @@
     # selects an Online transfer. They can still be changed for one transfer
     # in the runtime settings menu.
     Online = @{
+        # Online transfers warn before starting when selected payload exceeds this size.
+        MaxTransferGB = 5
+        # Set true only when the technician deliberately wants Downloads above the cap.
+        OverrideDownloadsCap = $false
         # Online transfers create a ZIP beside the transfer folder by default.
         CreateZipArchive = $true
 
-        # Build network-bound transfer packages on the local system drive, then
-        # upload one ZIP instead of thousands of small files over the network.
+        # Build network-bound packages in the transferring user's Local AppData,
+        # then upload one ZIP instead of thousands of small network writes.
         StageNetworkTransfersLocally = $true
 
         Import = @{
             LotusNotes                  = $true
-            Firefox                     = $true
             DeletePrintBrmAfterImport   = $true
         }
     }

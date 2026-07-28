@@ -8,7 +8,9 @@ function New-TransferReport {
     
     $successCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Success" }).Count
     $warningCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Warning" }).Count
-    $errorCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Error" }).Count
+    $errorCount = @($Script:Results.Actions | Where-Object {
+        $_.Status -eq "Error" -or $_.Status -like "NOT EXPORTED*"
+    }).Count
     $skippedCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Skipped" }).Count
     
     $html = @"
@@ -237,10 +239,11 @@ function New-TransferReport {
         </header>
 "@
 
-    # Add CRITICAL WARNING if not run as admin
-    if (-not $Script:IsAdmin) {
-        $adminRequiredTasks = $Script:Results.ManualTasks | Where-Object { $_.Reason -match "admin|Administrator|privileges" }
-        $adminTaskCount = ($adminRequiredTasks | Measure-Object).Count
+    # Only mark the export incomplete when a recorded task actually needs
+    # elevation. A standard-user export can otherwise be complete.
+    $adminRequiredTasks = @($Script:Results.ManualTasks | Where-Object { $_.Reason -match "admin|Administrator|privileges" })
+    $adminTaskCount = $adminRequiredTasks.Count
+    if (-not $Script:IsAdmin -and $adminTaskCount -gt 0) {
         
         $html += @"
         
@@ -273,7 +276,7 @@ function New-TransferReport {
         </div>
 "@
     }
-    else {
+    elseif ($Script:IsAdmin) {
         # Admin mode - show green success banner
         $html += @"
         

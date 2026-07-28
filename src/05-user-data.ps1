@@ -30,12 +30,17 @@ function Copy-UserFolders {
                     $folderGB = [math]::Round($folderBytes / 1GB, 2)
 
                     # Downloads has a hard cap: omit entirely if over the limit.
-                    if ($folder -eq "Downloads" -and $folderGB -gt $Script:Config.Online.DownloadsCapGB) {
+                    if ($folder -eq "Downloads" -and $folderGB -gt $Script:Config.Online.DownloadsCapGB -and
+                        -not $Script:Config.Online.OverrideDownloadsCap) {
                         Write-Log "Downloads is $folderGB GB (> $($Script:Config.Online.DownloadsCapGB) GB online cap) - omitting" -Level Warning
                         Write-Status "Downloads" "SKIP" "$folderGB GB exceeds $($Script:Config.Online.DownloadsCapGB)GB online cap"
                         Add-Result -Category "User Folders" -Item "Downloads" -Status "Skipped" -Details "Omitted (online mode): $folderGB GB > $($Script:Config.Online.DownloadsCapGB) GB cap"
                         Add-ManualTask -Task "Copy Downloads folder manually (if needed)" -Reason "Omitted in online transfer: $folderGB GB exceeds the $($Script:Config.Online.DownloadsCapGB) GB cap" -Instructions "If the user needs their Downloads, copy C:\Users\$($Script:OriginalUserName)\Downloads separately (external drive or a targeted OneDrive upload)."
                         continue
+                    }
+                    elseif ($folder -eq "Downloads" -and $folderGB -gt $Script:Config.Online.DownloadsCapGB) {
+                        Write-Log "Downloads cap overridden: copying $folderGB GB in Online mode" -Level Warning
+                        Write-Status "Downloads" "WARN" "$folderGB GB exceeds cap; override enabled"
                     }
 
                     # Any other large folder: ask the tech (skip / copy anyway).
@@ -394,6 +399,11 @@ Right-click folder > 'Pin to Quick access'
     foreach ($item in $Script:Config.AppDataLocal.GetEnumerator()) {
         $sourcePath = Join-Path $localPath $item.Value
         $destPath = Join-Path $destAppData "$($item.Key)_Local"
+
+        if ($item.Key -eq "Lotus" -and -not $Script:Config.Backup.LotusNotes) {
+            Add-DisabledBackupResult -Item "Lotus Notes" -Category "AppData Local"
+            continue
+        }
 
         # Online mode: skip Lotus Notes local data by default (usually very large,
         # and Notes is reconfigured manually on the new machine anyway).

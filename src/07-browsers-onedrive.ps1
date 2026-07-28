@@ -241,20 +241,26 @@ function Copy-BrowserData {
         Add-DisabledBackupResult -Item "Chrome" -Category "Browser"
     }
     elseif (Test-Path -LiteralPath $chromeUserDataPath) {
-        [void](Request-BrowserClose -ProcessName "chrome" -DisplayName "Google Chrome")
+        # Keep the result: a partial copy while Chrome is open must never be
+        # presented as a fully successful profile archive.
+        $chromeClosed = Request-BrowserClose -ProcessName "chrome" -DisplayName "Google Chrome"
         [void](Export-ChromeBookmarks -ChromeUserDataPath $chromeUserDataPath -BrowserPath $browserPath)
 
         $chromeRawDestination = Join-Path $browserPath "Chrome\User Data"
         $chromeRawLog = Join-Path $DestinationBase "Logs\robocopy_chrome_user_data.log"
         $chromeCopyArgs = @($Script:Config.RobocopyArgs) + @(
-            "/XD", "Cache", '"Code Cache"', "GPUCache", "ShaderCache", "GrShaderCache", "DawnCache", "Crashpad"
+            # These folders hold disposable cache data or Windows-encrypted
+            # network cookies. They add substantial size, are often locked
+            # while Chrome runs, and cannot be meaningfully moved to another
+            # Windows profile.
+            "/XD", "Cache", '"Code Cache"', "GPUCache", "GPUPersistentCache", "ShaderCache", "GrShaderCache", "DawnCache", "Crashpad", "Network", '"Safe Browsing Network"'
         )
         $result = Copy-WithProgress -Source $chromeUserDataPath `
                                     -Destination $chromeRawDestination `
                                     -FolderName "Chrome profile archive (all profiles)" `
                                     -LogPath $chromeRawLog `
                                     -RobocopyArgs $chromeCopyArgs
-        if ($result.Status -eq "Success") {
+        if ($result.Status -eq "Success" -and $chromeClosed) {
             Write-Log "Chrome profile archive copied: $($result.FilesCopied) files" -Level Success
             Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Success" -Details "$($result.FilesCopied) files; common caches excluded; credentials remain Windows-protected"
         }
@@ -263,8 +269,14 @@ function Copy-BrowserData {
             Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Skipped" -Details "Stopped by operator; partial files may remain and can be resumed by rerunning the export"
         }
         else {
+            $detail = if (-not $chromeClosed) {
+                "Chrome was open; active profile databases may be incomplete. Close Chrome and rerun before wiping the old laptop."
+            }
+            else {
+                "Check robocopy_chrome_user_data.log"
+            }
             Write-Log "Chrome profile archive copy completed with warnings" -Level Warning
-            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Warning" -Details "Check robocopy_chrome_user_data.log"
+            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Warning" -Details $detail
         }
 
         if (-not $result.Aborted) {
@@ -278,6 +290,10 @@ function Copy-BrowserData {
     }
     
     # ========== FIREFOX PROFILE ==========
+    if (-not $Script:Config.Backup.Firefox) {
+        Add-DisabledBackupResult -Item "Firefox" -Category "Browser"
+    }
+    else {
     # Firefox stores the portable profile (bookmarks, history, extensions,
     # saved logins, settings, and open tabs) in Roaming AppData. Local AppData
     # holds companion profile data such as offline storage and cache metadata.
@@ -351,12 +367,19 @@ function Copy-BrowserData {
         Add-Result -Category "Browser" -Item "Firefox Profile" -Status "Skipped" -Details "Firefox must be closed; rerun the export to capture a consistent profile"
     }
 
+    }
+
     # ========== MICROSOFT EDGE ==========
     # Edge uses the same Chromium profile layout as Chrome.  The previous
     # implementation looked only in Default and exported only HTML, leaving
     # Profile N favorites with nothing the import script could restore.  Keep
     # the portable HTML copies and also preserve each raw Bookmarks file so
     # the generated importer can restore matching Edge profiles automatically.
+    if (-not $Script:Config.Backup.Edge) {
+        Add-DisabledBackupResult -Item "Microsoft Edge" -Category "Browser"
+        return
+    }
+
     $edgeUserDataPath = Join-Path $localAppData "Microsoft\Edge\User Data"
     if (Test-Path -LiteralPath $edgeUserDataPath) {
         [void](Request-BrowserClose -ProcessName "msedge" -DisplayName "Microsoft Edge")

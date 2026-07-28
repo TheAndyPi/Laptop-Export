@@ -2,17 +2,142 @@
 # DESTINATION SELECTION
 # ============================================================================
 
-function Test-DestinationIsWithinSourceProfile {
-    param([string]$Path)
+function Test-PathIsSameOrChild {
+    param(
+        [string]$Path,
+        [string]$ParentPath
+    )
 
     try {
-        $destination = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
-        $profile = [System.IO.Path]::GetFullPath($Script:OriginalUserProfile).TrimEnd('\')
-        return $destination.Equals($profile, [System.StringComparison]::OrdinalIgnoreCase) -or
-               $destination.StartsWith("$profile\", [System.StringComparison]::OrdinalIgnoreCase)
+        $destination = [System.IO.Path]::GetFullPath($Path).TrimEnd([char]92)
+        $parent = [System.IO.Path]::GetFullPath($ParentPath).TrimEnd([char]92)
+        $parentPrefix = $parent + [System.IO.Path]::DirectorySeparatorChar
+        return $destination.Equals($parent, [System.StringComparison]::OrdinalIgnoreCase) -or
+               $destination.StartsWith($parentPrefix, [System.StringComparison]::OrdinalIgnoreCase)
     }
     catch {
         return $false
+    }
+}
+
+function Test-DestinationIsWithinSourceProfile {
+    param([string]$Path)
+
+    return Test-PathIsSameOrChild -Path $Path -ParentPath $Script:OriginalUserProfile
+}
+
+function Show-NativeWindowsFolderPicker {
+    param([string]$InitialPath = "")
+
+    # Use Windows' Common Item Dialog: the modern Explorer-style picker used
+    # by desktop applications, rather than the legacy Shell tree dialog.
+    try {
+        if (-not ("Sto.NativeFolderPicker" -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace Sto {
+    [Flags]
+    internal enum FOS : uint {
+        FORCEFILESYSTEM = 0x00000040,
+        PATHMUSTEXIST = 0x00000800,
+        PICKFOLDERS = 0x00000020
+    }
+
+    internal enum SIGDN : uint {
+        FILESYSPATH = 0x80058000
+    }
+
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IShellItem {
+        void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+        void GetParent(out IShellItem ppsi);
+        void GetDisplayName(SIGDN sigdnName, out IntPtr ppszName);
+        void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+        void Compare(IShellItem psi, uint hint, out int piOrder);
+    }
+
+    [ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IFileDialog {
+        [PreserveSig] int Show(IntPtr parent);
+        void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+        void SetFileTypeIndex(uint iFileType);
+        void GetFileTypeIndex(out uint piFileType);
+        void Advise(IntPtr pfde, out uint pdwCookie);
+        void Unadvise(uint dwCookie);
+        void SetOptions(FOS fos);
+        void GetOptions(out FOS pfos);
+        void SetDefaultFolder(IShellItem psi);
+        void SetFolder(IShellItem psi);
+        void GetFolder(out IShellItem ppsi);
+        void GetCurrentSelection(out IShellItem ppsi);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetFileName(out IntPtr pszName);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+        void GetResult(out IShellItem ppsi);
+        void AddPlace(IShellItem psi, int fdap);
+        void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
+        void Close(int hr);
+        void SetClientGuid(ref Guid guid);
+        void ClearClientData();
+        void SetFilter(IntPtr pFilter);
+    }
+
+    [ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
+    internal class FileOpenDialog { }
+
+    public static class NativeFolderPicker {
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+        private static extern int SHCreateItemFromParsingName(
+            string path, IntPtr pbc, ref Guid riid, out IShellItem shellItem);
+
+        public static string Pick(string initialPath) {
+            IFileDialog dialog = (IFileDialog)new FileOpenDialog();
+            try {
+                FOS options;
+                dialog.GetOptions(out options);
+                dialog.SetOptions(options | FOS.PICKFOLDERS | FOS.FORCEFILESYSTEM | FOS.PATHMUSTEXIST);
+                dialog.SetTitle("Choose the laptop transfer destination");
+                dialog.SetOkButtonLabel("Select Folder");
+
+                if (!String.IsNullOrEmpty(initialPath)) {
+                    IShellItem initialFolder;
+                    Guid iid = typeof(IShellItem).GUID;
+                    if (SHCreateItemFromParsingName(initialPath, IntPtr.Zero, ref iid, out initialFolder) == 0) {
+                        try { dialog.SetFolder(initialFolder); }
+                        finally { Marshal.ReleaseComObject(initialFolder); }
+                    }
+                }
+
+                const int ERROR_CANCELLED = unchecked((int)0x800704C7);
+                int result = dialog.Show(IntPtr.Zero);
+                if (result == ERROR_CANCELLED) return null;
+                if (result != 0) Marshal.ThrowExceptionForHR(result);
+
+                IShellItem selected;
+                dialog.GetResult(out selected);
+                try {
+                    IntPtr path;
+                    selected.GetDisplayName(SIGDN.FILESYSPATH, out path);
+                    try { return Marshal.PtrToStringUni(path); }
+                    finally { Marshal.FreeCoTaskMem(path); }
+                }
+                finally { Marshal.ReleaseComObject(selected); }
+            }
+            finally { Marshal.ReleaseComObject(dialog); }
+        }
+    }
+}
+'@ -ErrorAction Stop
+        }
+
+        return [Sto.NativeFolderPicker]::Pick($InitialPath)
+    }
+    catch {
+        throw "Windows folder picker could not be opened: $($_.Exception.Message)"
     }
 }
 
@@ -26,7 +151,16 @@ function Select-TargetDrive {
 
     # Local mode keeps the existing drive selector rather than opening the
     # Windows folder picker. C: is deliberately excluded.
-    $drives = @(Get-WmiObject Win32_LogicalDisk | Where-Object {
+    try {
+        $logicalDisks = @(Get-CimInstance -ClassName Win32_LogicalDisk -ErrorAction Stop)
+    }
+    catch {
+        Write-Host "`nUnable to look for external drives: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "No files were copied. Resolve the Windows disk-service issue, then run the export again." -ForegroundColor Yellow
+        return $null
+    }
+
+    $drives = @($logicalDisks | Where-Object {
         $_.DriveType -in @(2, 3) -and $_.DeviceID -ne $env:SystemDrive -and $_.Size -gt 0
     } | ForEach-Object {
         $freeGB = [math]::Round($_.FreeSpace / 1GB, 2)
@@ -41,7 +175,7 @@ function Select-TargetDrive {
 
     if (-not $drives) {
         Write-Host "`nNo external or secondary drives found." -ForegroundColor Red
-        Write-Host "Connect an external drive and try again." -ForegroundColor Yellow
+        Write-Host "Connect an external drive and start the export again. No files were copied." -ForegroundColor Yellow
         return $null
     }
 
@@ -90,25 +224,27 @@ function Select-TargetDestination {
     $selectedPath = $DestinationPath
     if (-not $selectedPath) {
         try {
-            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-            $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-            $dialog.Description = "Choose the folder that will receive the laptop transfer package"
-            $dialog.ShowNewFolderButton = $true
-            if (Test-Path $env:USERPROFILE) { $dialog.SelectedPath = $env:USERPROFILE }
-
-            if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+            $initialPath = if (Test-Path $env:SystemDrive) { $env:SystemDrive } else { "" }
+            $selectedPath = Show-NativeWindowsFolderPicker -InitialPath $initialPath
+            if (-not $selectedPath) {
                 Write-Host "Operation cancelled." -ForegroundColor Yellow
                 return $null
             }
-            $selectedPath = $dialog.SelectedPath
         }
         catch {
-            # FolderBrowserDialog should be available on supported Windows builds,
-            # but keep a console fallback for constrained PowerShell hosts.
+            # Keep a console fallback for constrained PowerShell hosts.
             Write-Host "Could not open the Windows folder picker: $_" -ForegroundColor Yellow
             $selectedPath = Read-Host "Enter destination folder path (blank to cancel)"
             if (-not $selectedPath) { return $null }
         }
+    }
+
+    # Reject before creating anything. Otherwise a destination inside a source
+    # folder causes Robocopy to see its own transfer package.
+    if (Test-DestinationIsWithinSourceProfile -Path $selectedPath) {
+        Write-Host "The destination is inside the profile being exported." -ForegroundColor Red
+        Write-Host "Choose a folder outside the source profile to prevent a recursive export. No files were copied." -ForegroundColor Yellow
+        return $null
     }
 
     try {
@@ -124,7 +260,7 @@ function Select-TargetDestination {
 
     if (Test-DestinationIsWithinSourceProfile -Path $selectedPath) {
         Write-Host "The destination cannot be inside the profile being exported." -ForegroundColor Red
-        Write-Host "Choose a different folder to avoid copying the export into itself." -ForegroundColor Yellow
+        Write-Host "Choose a different folder to prevent a recursive export. No files were copied." -ForegroundColor Yellow
         return $null
     }
 
@@ -144,6 +280,54 @@ function Get-FolderSizeBytes {
         Measure-Object -Property Length -Sum).Sum
     if ($null -eq $sum) { return 0 }
     return [long]$sum
+}
+
+function Get-TransferPayloadEstimate {
+    $sizes = @{}
+    foreach ($key in @("UserData","AppData","LotusNotes","SystemSettings","InstalledPrograms","Printers","Chrome","Firefox","Edge","OneDrive")) {
+        $sizes[$key] = [long]0
+    }
+
+    if ($Script:Config.Backup.UserData) {
+        foreach ($folder in $Script:Config.UserFolders) {
+            $bytes = Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder)
+            if ($Script:Config.TransferMode -eq "Online" -and $folder -eq "Downloads" -and
+                -not $Script:Config.Online.OverrideDownloadsCap -and
+                ($bytes / 1GB) -gt $Script:Config.Online.DownloadsCapGB) {
+                continue
+            }
+            $sizes.UserData += $bytes
+        }
+    }
+
+    if ($Script:Config.Backup.AppData) {
+        foreach ($path in $Script:Config.BluebeamPaths) {
+            $candidate = Join-Path $Script:OriginalAppDataRoaming $path
+            if (Test-Path -LiteralPath $candidate) { $sizes.AppData += Get-FolderSizeBytes $candidate; break }
+        }
+        foreach ($path in $Script:Config.AppDataRoaming.Values) {
+            $sizes.AppData += Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataRoaming $path)
+        }
+    }
+
+    if ($Script:Config.Backup.LotusNotes -and $Script:Config.Backup.AppData -and
+        -not ($Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.SkipLotusNotes)) {
+        $sizes.LotusNotes = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Lotus")
+    }
+    if ($Script:Config.Backup.Chrome) { $sizes.Chrome = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Google\Chrome\User Data") }
+    if ($Script:Config.Backup.Firefox) {
+        $sizes.Firefox = (Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataRoaming "Mozilla\Firefox")) +
+                          (Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Mozilla\Firefox"))
+    }
+    if ($Script:Config.Backup.Edge) {
+        $edgeRoot = Join-Path $Script:OriginalAppDataLocal "Microsoft\Edge\User Data"
+        $sizes.Edge = [long]((Get-ChildItem -LiteralPath $edgeRoot -Recurse -File -Filter "Bookmarks" -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum)
+    }
+
+    [PSCustomObject]@{
+        ItemBytes = $sizes
+        TotalBytes = [long](($sizes.Values | Measure-Object -Sum).Sum)
+    }
 }
 
 function Get-DestinationFreeSpaceBytes {
@@ -185,6 +369,34 @@ function Test-NetworkDestination {
     return $false
 }
 
+function Test-ArchiveAbortRequested {
+    try {
+        if ([Console]::KeyAvailable) {
+            return ([Console]::ReadKey($true).Key -eq [ConsoleKey]::S)
+        }
+    }
+    catch { }
+    return $false
+}
+
+function Write-ArchiveProgress {
+    param([string]$Label, [long]$Completed, [long]$Total, [datetime]$StartedAt)
+
+    $percent = if ($Total -gt 0) { [math]::Min(100, [math]::Round(($Completed / $Total) * 100)) } else { 0 }
+    $width = 34
+    $filled = [math]::Round(($percent / 100) * $width)
+    $bar = ([string]$Script:Theme.Bar.Full * $filled) + ([string]$Script:Theme.Bar.Light * ($width - $filled))
+    $elapsed = (Get-Date) - $StartedAt
+    $speed = if ($elapsed.TotalSeconds -gt 0) { $Completed / $elapsed.TotalSeconds } else { 0 }
+    $remaining = [math]::Max([long]0, [long]($Total - $Completed))
+    $eta = if ($speed -gt 0) { Format-RemainingTime ($remaining / $speed) } else { "calculating..." }
+    Write-Host "`r    $Label  $bar $($percent.ToString().PadLeft(3))%  $(Format-FileSize $Completed) / $(Format-FileSize $Total)  $(Format-FileSize $speed)/s  ETA $eta   " -NoNewline
+}
+
+function Clear-ArchiveProgress {
+    Write-Host "`r$(' ' * 160)`r" -NoNewline
+}
+
 function Publish-TransferArchive {
     param(
         [string]$ArchivePath,
@@ -210,9 +422,45 @@ function Publish-TransferArchive {
         $arguments = "`"$sourceFolder`" `"$DestinationFolder`" `"$archiveName`" /Z /J /R:2 /W:3 /NP /NDL /NFL /NJH /NJS /LOG:`"$LogPath`""
         Write-Host "`n  Uploading ZIP archive to network destination..." -ForegroundColor Cyan
         Write-Log "Uploading ZIP archive to network destination: $destinationArchive" -Level Info
-        $process = Start-Process -FilePath "robocopy.exe" -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+        $sourceSize = [long](Get-Item -LiteralPath $ArchivePath -ErrorAction Stop).Length
+        Write-Host "    $(Format-FileSize $sourceSize). Press S to cancel the ZIP upload." -ForegroundColor DarkGray
+        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+        $pinfo.FileName = "robocopy.exe"
+        $pinfo.Arguments = $arguments
+        $pinfo.UseShellExecute = $false
+        $pinfo.CreateNoWindow = $true
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $pinfo
+        if (-not $process.Start()) { throw "Could not start ZIP upload." }
 
-        $sourceSize = (Get-Item -LiteralPath $ArchivePath -ErrorAction Stop).Length
+        $uploadStartedAt = Get-Date
+        $aborted = $false
+        while (-not $process.HasExited) {
+            Start-Sleep -Milliseconds 500
+            $uploadedBytes = if (Test-Path -LiteralPath $destinationArchive -PathType Leaf) {
+                [long](Get-Item -LiteralPath $destinationArchive -ErrorAction SilentlyContinue).Length
+            }
+            else { [long]0 }
+            Write-ArchiveProgress -Label "UPLOAD" -Completed $uploadedBytes -Total $sourceSize -StartedAt $uploadStartedAt
+            if (Test-ArchiveAbortRequested) {
+                $aborted = $true
+                $process.Kill()
+                $process.WaitForExit()
+                break
+            }
+        }
+        if (-not $aborted) {
+            Write-ArchiveProgress -Label "UPLOAD" -Completed $sourceSize -Total $sourceSize -StartedAt $uploadStartedAt
+        }
+        Clear-ArchiveProgress
+        if ($aborted) {
+            Remove-Item -LiteralPath $destinationArchive -Force -ErrorAction SilentlyContinue
+            Write-Host "    $($Script:Theme.Glyphs.WARN) ZIP upload cancelled; incomplete upload removed." -ForegroundColor Yellow
+            Write-Log "ZIP archive upload cancelled by operator; incomplete destination file removed" -Level Warning
+            Add-Result -Category "Package" -Item "Network ZIP Upload" -Status "Skipped" -Details "Cancelled by operator; incomplete upload removed"
+            return $null
+        }
+
         $destinationSize = if (Test-Path -LiteralPath $destinationArchive -PathType Leaf) {
             (Get-Item -LiteralPath $destinationArchive -ErrorAction Stop).Length
         }
@@ -253,13 +501,62 @@ function New-TransferArchive {
 
     try {
         Write-Host "`n  Creating ZIP archive..." -ForegroundColor Cyan
+        $files = @(Get-ChildItem -LiteralPath $TransferBase -Recurse -File -Force -ErrorAction Stop)
+        $totalBytes = [long](($files | Measure-Object -Property Length -Sum).Sum)
+        $startedAt = Get-Date
+        $completedBytes = [long]0
+        $lastProgressAt = [datetime]::MinValue
+        $aborted = $false
+        Write-Host "    $($files.Count) files / $(Format-FileSize $totalBytes). Press S to cancel ZIP creation." -ForegroundColor DarkGray
+        # ZipArchive/ZipArchiveMode live in System.IO.Compression, while the
+        # ZipFile helper lives in System.IO.Compression.FileSystem. Windows
+        # PowerShell does not always load the former when the latter is loaded.
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
         Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
-        [System.IO.Compression.ZipFile]::CreateFromDirectory(
-            $TransferBase,
-            $archivePath,
-            [System.IO.Compression.CompressionLevel]::Optimal,
-            $true
-        )
+        $archive = [System.IO.Compression.ZipFile]::Open($archivePath, [System.IO.Compression.ZipArchiveMode]::Create)
+        $buffer = New-Object byte[] 1048576
+        try {
+            foreach ($file in $files) {
+                $relativePath = $file.FullName.Substring($TransferBase.Length).TrimStart([char]92)
+                $entry = $archive.CreateEntry($relativePath, [System.IO.Compression.CompressionLevel]::Optimal)
+                $input = [System.IO.File]::Open($file.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+                $output = $entry.Open()
+                try {
+                    while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                        $output.Write($buffer, 0, $read)
+                        $completedBytes += $read
+                        if ((Get-Date) - $lastProgressAt -gt [TimeSpan]::FromMilliseconds(250)) {
+                            Write-ArchiveProgress -Label "ZIP" -Completed $completedBytes -Total $totalBytes -StartedAt $startedAt
+                            $lastProgressAt = Get-Date
+                        }
+                        if (Test-ArchiveAbortRequested) {
+                            $aborted = $true
+                            break
+                        }
+                    }
+                }
+                finally {
+                    $output.Dispose()
+                    $input.Dispose()
+                }
+                if ($aborted) { break }
+            }
+        }
+        finally {
+            $archive.Dispose()
+        }
+
+        if (-not $aborted) {
+            Write-ArchiveProgress -Label "ZIP" -Completed $totalBytes -Total $totalBytes -StartedAt $startedAt
+        }
+        Clear-ArchiveProgress
+        if ($aborted) {
+            Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+            Write-Host "    $($Script:Theme.Glyphs.WARN) ZIP creation cancelled. The transfer folder was kept." -ForegroundColor Yellow
+            Write-Log "ZIP creation cancelled by operator; transfer folder retained at $TransferBase" -Level Warning
+            Add-Result -Category "Package" -Item $archiveName -Status "Skipped" -Details "ZIP creation cancelled by operator; transfer folder retained"
+            return $null
+        }
 
         Write-Log "ZIP archive created: $archivePath" -Level Success
         Add-Result -Category "Package" -Item $archiveName -Status "Success" -Details "Compressed transfer package"

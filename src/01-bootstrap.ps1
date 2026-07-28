@@ -35,7 +35,12 @@ param(
     [string]$TransferMode = "",
     # Parent folder for the transfer package. When omitted, Windows displays a
     # folder picker after the transfer mode is selected.
-    [string]$DestinationPath = ""
+    [string]$DestinationPath = "",
+    # Optional override for the Online payload ceiling in GB (default: 5).
+    [double]$OnlineMaxTransferGB = 0,
+    # Intended for logged/automated validation. It keeps normal technician
+    # runs unchanged, skips prompts, and does not open the HTML report.
+    [switch]$NonInteractive
 )
 
 # ============================================================================

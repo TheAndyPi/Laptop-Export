@@ -25,7 +25,13 @@ if (-not $Script:IsAdmin) {
     Write-Host "  Some features (power scheme and a full PrintBRM package) require admin rights." -ForegroundColor Gray
     Write-Host "  PrintBRM is still attempted if you skip; its result is recorded in the package.`n" -ForegroundColor DarkGray
     
-    $choice = Read-Host "  Run as Administrator? (Y/N, or S to skip)"
+    $choice = if ($NonInteractive) {
+        Write-Host "  Non-interactive mode: continuing without elevation." -ForegroundColor DarkGray
+        "S"
+    }
+    else {
+        Read-Host "  Run as Administrator? (Y/N, or S to skip)"
+    }
     
     if ($choice -eq "Y" -or $choice -eq "y") {
         Write-Host "Requesting administrator privileges..." -ForegroundColor Yellow
@@ -35,6 +41,7 @@ if (-not $Script:IsAdmin) {
         $elevatedArgs = "-ExecutionPolicy Bypass -File `"$scriptPath`" -TargetUserProfile `"$env:USERPROFILE`" -TargetUserName `"$env:USERNAME`" -TargetAppDataRoaming `"$env:APPDATA`" -TargetAppDataLocal `"$env:LOCALAPPDATA`""
         if ($TransferMode) { $elevatedArgs += " -TransferMode `"$TransferMode`"" }
         if ($DestinationPath) { $elevatedArgs += " -DestinationPath `"$DestinationPath`"" }
+        if ($OnlineMaxTransferGB -gt 0) { $elevatedArgs += " -OnlineMaxTransferGB $OnlineMaxTransferGB" }
         
         try {
             $process = Start-Process PowerShell -Verb RunAs -ArgumentList $elevatedArgs -PassThru -ErrorAction Stop
@@ -109,6 +116,8 @@ $Script:Config = @{
         # Downloads is usually one of the two largest folders. Cap it: if it
         # exceeds this size, omit it entirely (per IT guidance) and log a manual task.
         DownloadsCapGB   = 5
+        MaxTransferGB    = 5
+        OverrideDownloadsCap = $false
         # Lotus Notes local data is the other usual heavy hitter; omit by default.
         SkipLotusNotes   = $true
         # Any other user folder above this size prompts the tech (skip / copy anyway).
@@ -123,7 +132,6 @@ $Script:Config = @{
         # Import defaults used only when the selected transfer mode is Online.
         Import = @{
             LotusNotes = $true
-            Firefox = $true
             DeletePrintBrmAfterImport = $true
         }
     }
@@ -133,16 +141,17 @@ $Script:Config = @{
     Backup = @{
         UserData          = $true
         AppData           = $true
+        LotusNotes        = $true
         SystemSettings    = $true
         InstalledPrograms = $true
         Printers          = $true
-        BrowserData       = $true
         Chrome            = $true
+        Firefox           = $true
+        Edge              = $true
         OneDrive          = $true
     }
     Import = @{
         LotusNotes = $true
-        Firefox = $true
         DeletePrintBrmAfterImport = $true
     }
 }
@@ -156,7 +165,9 @@ foreach ($sectionName in @("Backup", "Import")) {
         continue
     }
 
-    foreach ($switchName in $Script:Config[$sectionName].Keys) {
+    # Snapshot the keys before changing values. PowerShell's hashtable
+    # enumerator can treat a value assignment as a collection modification.
+    foreach ($switchName in @($Script:Config[$sectionName].Keys)) {
         if ($Script:DevelopmentConfig[$sectionName].ContainsKey($switchName) -and
             $Script:DevelopmentConfig[$sectionName][$switchName] -is [bool]) {
             $Script:Config[$sectionName][$switchName] = $Script:DevelopmentConfig[$sectionName][$switchName]
@@ -170,7 +181,7 @@ if ($Script:DevelopmentConfig -is [hashtable] -and
     $Script:DevelopmentConfig.ContainsKey("Online") -and
     $Script:DevelopmentConfig.Online -is [hashtable]) {
     $developmentOnline = $Script:DevelopmentConfig.Online
-    foreach ($switchName in @("CreateZipArchive", "StageNetworkTransfersLocally")) {
+    foreach ($switchName in @("CreateZipArchive", "StageNetworkTransfersLocally", "OverrideDownloadsCap")) {
         if ($developmentOnline.ContainsKey($switchName) -and
             $developmentOnline[$switchName] -is [bool]) {
             $Script:Config.Online[$switchName] = $developmentOnline[$switchName]
@@ -179,13 +190,20 @@ if ($Script:DevelopmentConfig -is [hashtable] -and
 
     if ($developmentOnline.ContainsKey("Import") -and
         $developmentOnline.Import -is [hashtable]) {
-        foreach ($switchName in $Script:Config.Online.Import.Keys) {
+        foreach ($switchName in @($Script:Config.Online.Import.Keys)) {
             if ($developmentOnline.Import.ContainsKey($switchName) -and
                 $developmentOnline.Import[$switchName] -is [bool]) {
                 $Script:Config.Online.Import[$switchName] = $developmentOnline.Import[$switchName]
             }
         }
     }
+    if ($developmentOnline.ContainsKey("MaxTransferGB") -and [double]$developmentOnline.MaxTransferGB -gt 0) {
+        $Script:Config.Online.MaxTransferGB = [double]$developmentOnline.MaxTransferGB
+    }
+}
+
+if ($OnlineMaxTransferGB -gt 0) {
+    $Script:Config.Online.MaxTransferGB = $OnlineMaxTransferGB
 }
 
 function Apply-OnlineImportDefaults {
@@ -213,48 +231,55 @@ function Show-TransferSettingsMenu {
     # defaults, but any changes made here apply only to the current transfer.
     $settings = @(
         @{ Section = "Backup"; Key = "UserData";          Label = "User data";          Detail = "Documents, Desktop, Downloads, and other user folders" }
-        @{ Section = "Backup"; Key = "AppData";           Label = "AppData";            Detail = "Bluebeam, signatures, Quick Access, and Lotus export" }
+        @{ Section = "Backup"; Key = "AppData";           Label = "AppData";            Detail = "Bluebeam, signatures, and Quick Access" }
+        @{ Section = "Backup"; Key = "LotusNotes";        Label = "Lotus Notes";        Detail = "Local Lotus Notes data from AppData\\Local" }
         @{ Section = "Backup"; Key = "SystemSettings";    Label = "System settings";    Detail = "Power, drives, personalization, and related settings" }
         @{ Section = "Backup"; Key = "InstalledPrograms"; Label = "Installed programs"; Detail = "Installed-program inventory" }
         @{ Section = "Backup"; Key = "Printers";          Label = "Printers";           Detail = "PrintBRM package and printer connections" }
-        @{ Section = "Backup"; Key = "BrowserData";       Label = "Browser data";       Detail = "Edge and Firefox data; Chrome requires its own setting below" }
-        @{ Section = "Backup"; Key = "Chrome";            Label = "Chrome";             Detail = "Chrome bookmarks, profile archive, and password-export prompt" }
+        @{ Section = "Backup"; Key = "Chrome";            Label = "Google Chrome";      Detail = "Bookmarks, profile archive, and password-export prompt" }
+        @{ Section = "Backup"; Key = "Firefox";           Label = "Firefox";            Detail = "Firefox profile, bookmarks, logins, extensions, and settings" }
+        @{ Section = "Backup"; Key = "Edge";              Label = "Microsoft Edge";     Detail = "Edge bookmarks and profile-specific favorites" }
         @{ Section = "Backup"; Key = "OneDrive";          Label = "OneDrive";           Detail = "Offline file availability check" }
         @{ Section = "Import"; Key = "LotusNotes";        Label = "Import Lotus Notes"; Detail = "Restore exported Lotus local data on the new laptop" }
-        @{ Section = "Import"; Key = "Firefox";           Label = "Import Firefox";     Detail = "Restore Firefox profile and local companion data" }
         @{ Section = "Import"; Key = "DeletePrintBrmAfterImport"; Label = "Delete PrintBRM after import"; Detail = "Remove the printer package after a successful restore" }
+        @{ Section = "Online"; Key = "MaxTransferGB"; Type = "Number"; Label = "Online payload limit"; Detail = "Warn before export when selected payload exceeds this many GB" }
+        @{ Section = "Online"; Key = "OverrideDownloadsCap"; Label = "Override Downloads cap"; Detail = "Allow Downloads above the $($Script:Config.Online.DownloadsCapGB) GB Online cap" }
         @{ Section = "Online"; Key = "CreateZipArchive";  Label = "Create ZIP archive"; Detail = "Create a ZIP beside the package (Online transfers only)" }
         @{ Section = "Online"; Key = "StageNetworkTransfersLocally"; Label = "Stage network transfers locally"; Detail = "Build locally, then upload one ZIP to a network destination" }
     )
 
     while ($true) {
-        Clear-Host
+        Clear-StoScreen
         Write-Banner -Title "Transfer Settings" -Subtitle "$($Script:Config.TransferMode) transfer - changes apply to this transfer only"
         Write-Section "Backup settings"
+        $estimate = Get-TransferPayloadEstimate
 
         for ($index = 0; $index -lt $settings.Count; $index++) {
             $setting = $settings[$index]
-            if ($index -eq 8) {
+            if ($index -eq 10) {
                 Write-Section "Generated import settings"
             }
-            if ($index -eq 11) {
+            if ($index -eq 12) {
                 Write-Section "Online transfer settings"
             }
 
-            $isEnabled = [bool]$Script:Config[$setting.Section][$setting.Key]
             $number = ($index + 1).ToString().PadLeft(2)
-            $state = if ($isEnabled) { "ON " } else { "OFF" }
-            $color = if ($isEnabled) { "Green" } else { "DarkGray" }
+            $isNumber = $setting.Type -eq "Number"
+            $isEnabled = if ($isNumber) { $false } else { [bool]$Script:Config[$setting.Section][$setting.Key] }
+            $state = if ($isNumber) { "$($Script:Config.Online.MaxTransferGB)GB" } elseif ($isEnabled) { "ON " } else { "OFF" }
+            $color = if ($isNumber) { "Yellow" } elseif ($isEnabled) { "Green" } else { "DarkGray" }
+            $sizeText = if ($setting.Section -eq "Backup") { "$(Format-FileSize ([long]$estimate.ItemBytes[$setting.Key]))" } else { "" }
 
             Write-Host "  [$number] " -ForegroundColor Cyan -NoNewline
             Write-Host "$state " -ForegroundColor $color -NoNewline
             Write-Host $setting.Label.PadRight(30) -ForegroundColor White -NoNewline
+            if ($sizeText) { Write-Host "$($sizeText.PadLeft(10)) " -ForegroundColor DarkCyan -NoNewline }
             Write-Host $setting.Detail -ForegroundColor DarkGray
         }
 
         Write-Host ""
-        Write-Host "  Select a number to toggle it." -ForegroundColor Gray
-        Write-Host "  Chrome is ignored when Browser data is OFF." -ForegroundColor DarkGray
+        Write-Host "  Select a number to toggle it; select Online payload limit to enter a GB value." -ForegroundColor Gray
+        Write-Host "  Chrome, Firefox, and Edge are independent backup toggles." -ForegroundColor DarkGray
         Write-Host "  ZIP archive is ignored for Local transfers." -ForegroundColor DarkGray
         Write-Host "  Import settings are written into the transfer package's generated import script." -ForegroundColor DarkGray
         $selection = (Read-Host "  [S] Start transfer  [Q] Cancel").Trim()
@@ -266,7 +291,13 @@ function Show-TransferSettingsMenu {
         if ([int]::TryParse($selection, [ref]$selectedIndex) -and
             $selectedIndex -ge 1 -and $selectedIndex -le $settings.Count) {
             $setting = $settings[$selectedIndex - 1]
-            $Script:Config[$setting.Section][$setting.Key] = -not [bool]$Script:Config[$setting.Section][$setting.Key]
+            if ($setting.Type -eq "Number") {
+                $value = 0.0
+                $entered = Read-Host "  Enter Online payload limit in GB (current: $($Script:Config.Online.MaxTransferGB))"
+                if ([double]::TryParse($entered, [ref]$value) -and $value -gt 0) { $Script:Config.Online.MaxTransferGB = $value }
+                else { Write-Host "  Enter a positive number of GB." -ForegroundColor Yellow; Start-Sleep -Seconds 1 }
+            }
+            else { $Script:Config[$setting.Section][$setting.Key] = -not [bool]$Script:Config[$setting.Section][$setting.Key] }
         }
         else {
             Write-Host "  Enter a setting number, S, or Q." -ForegroundColor Yellow
@@ -361,6 +392,15 @@ function Copy-WithProgress {
         [array]$RobocopyArgs
     )
     
+    # Never allow a copy target below its own source. This protects against a
+    # destination selected within the profile or behind a path alias/junction.
+    if (Test-PathIsSameOrChild -Path $Destination -ParentPath $Source) {
+        $message = "Skipped '$FolderName': destination is inside the source and would create a recursive copy."
+        Write-Log $message -Level Warning
+        Write-Host "  $($Script:Theme.Glyphs.WARN) $message" -ForegroundColor Yellow
+        return @{ ExitCode = -1; FilesCopied = 0; BytesCopied = 0; Status = "Warning"; Duration = [TimeSpan]::Zero }
+    }
+
     # Get source size and file count
     $sourceFiles = Get-ChildItem $Source -Recurse -File -Force -ErrorAction SilentlyContinue
     $totalFiles = ($sourceFiles | Measure-Object).Count
@@ -450,7 +490,9 @@ function Copy-WithProgress {
         # Calculate speed
         $elapsed = (Get-Date) - $startTime
         $speed = if ($elapsed.TotalSeconds -gt 0) { $copiedSize / $elapsed.TotalSeconds } else { 0 }
-        $remainingBytes = [math]::Max(0, $totalSize - $copiedSize)
+        # Force the Int64 overload. The untyped literal 0 selects Int32 and
+        # overflows once the copied bytes exceed 2 GB.
+        $remainingBytes = [math]::Max([long]0, [long]($totalSize - $copiedSize))
         $eta = if ($speed -gt 0 -and $copiedSize -gt 0) {
             Format-RemainingTime ($remainingBytes / $speed)
         }

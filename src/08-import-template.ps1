@@ -184,7 +184,9 @@ $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $userProfile = $env:USERPROFILE
 $logFile = Join-Path $scriptPath "ImportLog.txt"
 $importLotusNotes = [bool]::Parse('{IMPORT_LOTUS_NOTES}')
-$importFirefox = [bool]::Parse('{IMPORT_FIREFOX}')
+# Firefox is restored whenever its independently-selected backup payload is
+# present. There is no separate import toggle to keep in sync.
+$importFirefox = $true
 $deletePrintBrmAfterImport = [bool]::Parse('{DELETE_PRINTBRM_AFTER_IMPORT}')
 $printBrmRestoreSucceeded = $false
 
@@ -326,7 +328,9 @@ function Copy-WithProgress {
         
         $elapsed = (Get-Date) - $startTime
         $speed = if ($elapsed.TotalSeconds -gt 0) { $copiedSize / $elapsed.TotalSeconds } else { 0 }
-        $remainingBytes = [math]::Max(0, $totalSize - $copiedSize)
+        # Force the Int64 overload. The untyped literal 0 selects Int32 and
+        # overflows for folders larger than 2 GB.
+        $remainingBytes = [math]::Max([long]0, [long]($totalSize - $copiedSize))
         $eta = if ($speed -gt 0 -and $copiedSize -gt 0) {
             Format-RemainingTime ($remainingBytes / $speed)
         }
@@ -373,7 +377,9 @@ function Copy-WithProgress {
 # HEADER
 # ============================================================================
 
-Clear-Host
+# A log-capturing or remoted host may not expose RawUI. Do not let the
+# cosmetic screen clear prevent an import.
+try { Clear-Host -ErrorAction Stop } catch { }
 Write-StoLogo
 Write-Banner -Title "Laptop Transfer  -  Import Tool"
 Write-Host "  From (source)" -ForegroundColor DarkGray
@@ -1265,6 +1271,18 @@ function Restore-ChromiumProfileBookmarks {
     }
 }
 
+function Add-ManualTask {
+    param([string]$Task, [string]$Reason, [string]$Instructions = "")
+
+    # The generated importer records items that need manual follow-up, such
+    # as local printers that require elevation.
+    $Script:Results.ManualTasks += [PSCustomObject]@{
+        Task = $Task
+        Reason = $Reason
+        Instructions = $Instructions
+    }
+}
+
 # Chrome bookmarks HTML (one file per old Chrome profile)
 $chromeBookmarksPath = Join-Path $browserDataPath "Chrome\Bookmarks"
 $chromeBookmarkFiles = @(Get-ChildItem -LiteralPath $chromeBookmarksPath -Filter "*.html" -File -Force -ErrorAction SilentlyContinue)
@@ -1532,6 +1550,19 @@ if ($Script:Results.Warnings.Count -gt 0) {
     }
 }
 
+if ($Script:Results.ManualTasks.Count -gt 0) {
+    Write-Section "Items needing attention"
+    foreach ($task in $Script:Results.ManualTasks) {
+        Write-Host "  $([char]0x26A0) " -ForegroundColor Yellow -NoNewline
+        Write-Host $task.Task -ForegroundColor Yellow
+        Write-Host "    $($task.Reason)" -ForegroundColor DarkGray
+        if ($task.Instructions) {
+            Write-Host "    $($task.Instructions -replace '[\r\n]+', ' ')" -ForegroundColor Gray
+        }
+    }
+    Write-Host ""
+}
+
 Write-Section "Remaining manual steps"
 $manualSteps = @(
     "Sign into Microsoft 365 / Teams / Outlook",
@@ -1560,7 +1591,6 @@ Read-Host "  Press Enter to exit"
     $importScript = $importScript -replace '\{USERNAME\}', $Script:OriginalUserName
     $importScript = $importScript -replace '\{COMPUTERNAME\}', $env:COMPUTERNAME
     $importScript = $importScript -replace '\{IMPORT_LOTUS_NOTES\}', $Script:Config.Import.LotusNotes.ToString().ToLowerInvariant()
-    $importScript = $importScript -replace '\{IMPORT_FIREFOX\}', $Script:Config.Import.Firefox.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{DELETE_PRINTBRM_AFTER_IMPORT\}', $Script:Config.Import.DeletePrintBrmAfterImport.ToString().ToLowerInvariant()
     
     $importScriptPath = Join-Path $DestinationBase "Import-LaptopData.ps1"

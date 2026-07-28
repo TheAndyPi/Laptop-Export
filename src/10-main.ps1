@@ -61,7 +61,7 @@ pause >nul
 # ============================================================================
 
 function Start-LaptopExport {
-    Clear-Host
+    Clear-StoScreen
 
     # Resolve transfer mode: honor -TransferMode param, else prompt.
     if ($TransferMode -in @("Local", "Online")) {
@@ -72,7 +72,20 @@ function Start-LaptopExport {
     }
 
     Apply-OnlineImportDefaults
-    if (-not (Show-TransferSettingsMenu)) {
+    if ($NonInteractive) {
+        # Browsers can require a close/password-export prompt. Leave them out
+        # of unattended validation runs rather than hanging partway through.
+        $Script:Config.Backup.Chrome = $false
+        $Script:Config.Backup.Firefox = $false
+        $Script:Config.Backup.Edge = $false
+        # PrintBRM and ZIP compression can outlive automation time limits; the
+        # package and all generated artifacts are still exercised by validation
+        # runs. Normal technician exports retain both stages.
+        $Script:Config.Backup.Printers = $false
+        $Script:Config.Online.CreateZipArchive = $false
+        Write-Log "Non-interactive mode: browser collection, PrintBRM, and ZIP creation disabled" -Level Info
+    }
+    elseif (-not (Show-TransferSettingsMenu)) {
         Write-Host "`n  Transfer cancelled." -ForegroundColor Yellow
         return
     }
@@ -86,13 +99,16 @@ function Start-LaptopExport {
         $destinationFolder = Select-TargetDestination
     }
     if (-not $destinationFolder) {
+        Write-Host "`n  Export cancelled: no usable destination was selected. No files were copied." -ForegroundColor Yellow
+        if (-not $NonInteractive) { Read-Host "  Press Enter to exit" }
         return
     }
 
     $createsZipArchive = $Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.CreateZipArchive
     $isNetworkDestination = $Script:Config.TransferMode -eq "Online" -and (Test-NetworkDestination -Path $destinationFolder)
     $useLocalStaging = $isNetworkDestination -and $createsZipArchive -and $Script:Config.Online.StageNetworkTransfersLocally
-    $stagingRoot = Join-Path $env:SystemDrive "LaptopTransferStaging"
+    $stagingAppData = if ($Script:OriginalAppDataLocal) { $Script:OriginalAppDataLocal } else { $env:LOCALAPPDATA }
+    $stagingRoot = Join-Path $stagingAppData "STO Building Group\LaptopTransferStaging"
     $workingFolder = $destinationFolder
     if ($useLocalStaging) {
         try {
@@ -114,52 +130,63 @@ function Start-LaptopExport {
     # and (b) show the operator the size up front. In online mode this reflects
     # the trimmed set (Downloads over cap and Lotus are excluded from the estimate).
     Write-Section "Estimating transfer size"
-    $estBytes = 0
-    if ($Script:Config.Backup.UserData) {
-        foreach ($f in $Script:Config.UserFolders) {
-            $fp = Join-Path $Script:OriginalUserProfile $f
-            $fb = Get-FolderSizeBytes $fp
-            if ($Script:Config.TransferMode -eq "Online" -and $f -eq "Downloads" -and
-                ($fb / 1GB) -gt $Script:Config.Online.DownloadsCapGB) { continue }
-            $estBytes += $fb
+    $payloadEstimate = Get-TransferPayloadEstimate
+    $estBytes = $payloadEstimate.TotalBytes
+    Write-KeyValue "Estimated size" (Format-FileSize $estBytes)
+    if ($Script:Config.TransferMode -eq "Online") {
+        Write-KeyValue "Online payload limit" "$($Script:Config.Online.MaxTransferGB) GB"
+        if ($estBytes -gt ($Script:Config.Online.MaxTransferGB * 1GB)) {
+            $message = "Selected Online payload ($(Format-FileSize $estBytes)) exceeds the $($Script:Config.Online.MaxTransferGB) GB limit."
+            Write-Host ""; Write-Host "  $($Script:Theme.Glyphs.WARN) $message" -ForegroundColor Yellow
+            if ($NonInteractive) { throw "Non-interactive export stopped because: $message" }
+            $continueLargePayload = Read-Host "    Export anyway? (Y/N)"
+            if ($continueLargePayload -notmatch "^[Yy]") { Write-Host "  Cancelled. No files were copied." -ForegroundColor Yellow; return }
         }
     }
-    Write-KeyValue "Estimated size" (Format-FileSize $estBytes)
 
     try {
         $freeBytes = Get-DestinationFreeSpaceBytes -Path $workingFolder
-        if ($null -ne $freeBytes) {
-            $freeLabel = if ($useLocalStaging) { "Free in local staging" } else { "Free at destination" }
-            Write-KeyValue $freeLabel (Format-FileSize $freeBytes)
-        }
-        # Online mode needs extra space only when it will also create a ZIP.
-        $spaceMultiplier = if ($createsZipArchive) { 2.15 } else { 1.15 }
-        $requiredFreeBytes = [math]::Ceiling($estBytes * $spaceMultiplier)
-        $spaceWarnings = @()
-        if ($freeBytes -gt 0 -and $freeBytes -lt $requiredFreeBytes) {
-            $spaceLocation = if ($useLocalStaging) { "local staging location" } else { "destination" }
-            $spaceDetail = if ($createsZipArchive) { "the package and ZIP archive" } else { "the transfer package" }
-            $spaceWarnings += "The $spaceLocation may not have enough space for $spaceDetail."
-        }
-        if ($useLocalStaging) {
-            $networkFreeBytes = Get-DestinationFreeSpaceBytes -Path $destinationFolder
-            if ($null -ne $networkFreeBytes) {
-                Write-KeyValue "Free at network destination" (Format-FileSize $networkFreeBytes)
-            }
-            if ($networkFreeBytes -gt 0 -and $networkFreeBytes -lt [math]::Ceiling($estBytes * 1.15)) {
-                $spaceWarnings += "The network destination may not have enough space for the ZIP archive."
-            }
-        }
-        if ($spaceWarnings.Count -gt 0) {
-            Write-Host ""
-            Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
-            Write-Host ($spaceWarnings -join " ") -ForegroundColor White
-            $go = Read-Host "    Continue anyway? (Y/N)"
-            if ($go -notmatch "^[Yy]") { Write-Host "  Cancelled." -ForegroundColor Yellow; return }
-        }
+        $networkFreeBytes = if ($useLocalStaging) { Get-DestinationFreeSpaceBytes -Path $destinationFolder } else { $null }
     }
     catch {
+        # A provider that cannot report capacity (some cloud folders, for
+        # example) must not prevent an export. Only the query itself is
+        # best-effort; warnings calculated below still control the flow.
         Write-Log "Could not read free space at $destinationFolder (continuing)" -Level Info
+        $freeBytes = $null
+        $networkFreeBytes = $null
+    }
+
+    if ($null -ne $freeBytes) {
+        $freeLabel = if ($useLocalStaging) { "Free in local staging" } else { "Free at destination" }
+        Write-KeyValue $freeLabel (Format-FileSize $freeBytes)
+    }
+    # Online mode needs extra space only when it will also create a ZIP.
+    $spaceMultiplier = if ($createsZipArchive) { 2.15 } else { 1.15 }
+    $requiredFreeBytes = [math]::Ceiling($estBytes * $spaceMultiplier)
+    $spaceWarnings = @()
+    if ($freeBytes -gt 0 -and $freeBytes -lt $requiredFreeBytes) {
+        $spaceLocation = if ($useLocalStaging) { "local staging location" } else { "destination" }
+        $spaceDetail = if ($createsZipArchive) { "the package and ZIP archive" } else { "the transfer package" }
+        $spaceWarnings += "The $spaceLocation may not have enough space for $spaceDetail."
+    }
+    if ($useLocalStaging) {
+        if ($null -ne $networkFreeBytes) {
+            Write-KeyValue "Free at network destination" (Format-FileSize $networkFreeBytes)
+        }
+        if ($networkFreeBytes -gt 0 -and $networkFreeBytes -lt [math]::Ceiling($estBytes * 1.15)) {
+            $spaceWarnings += "The network destination may not have enough space for the ZIP archive."
+        }
+    }
+    if ($spaceWarnings.Count -gt 0) {
+        if ($NonInteractive) {
+            throw "Non-interactive export stopped because: $($spaceWarnings -join ' ')"
+        }
+        Write-Host ""
+        Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
+        Write-Host ($spaceWarnings -join " ") -ForegroundColor White
+        $go = Read-Host "    Continue anyway? (Y/N)"
+        if ($go -notmatch "^[Yy]") { Write-Host "  Cancelled." -ForegroundColor Yellow; return }
     }
 
     # Create transfer folder structure
@@ -209,11 +236,8 @@ function Start-LaptopExport {
     }
     else { Add-DisabledBackupResult -Item "Printers" }
 
-    # 6. Copy browser data
-    if ($Script:Config.Backup.BrowserData) {
-        Copy-BrowserData -DestinationBase $transferBase
-    }
-    else { Add-DisabledBackupResult -Item "Browser data" -Category "Browser" }
+    # 6. Copy the independently selected browser data.
+    Copy-BrowserData -DestinationBase $transferBase
     
     # 7. Check OneDrive
     if ($Script:Config.Backup.OneDrive) {
@@ -235,10 +259,6 @@ function Start-LaptopExport {
         Add-Result -Category "Package" -Item "ZIP Archive" -Status "Skipped" -Details "Disabled by configuration"
     }
 
-    # Save log
-    $logPath = Join-Path $transferBase "Logs\ExportLog.txt"
-    $Script:Log | Out-File $logPath -Encoding UTF8
-
     # Local transfers stay as folders for a removable drive. Online transfers
     # also produce a portable ZIP beside the package.
     $archivePath = $null
@@ -256,11 +276,25 @@ function Start-LaptopExport {
     $dur = $Script:Results.EndTime - $Script:Results.StartTime
     $sc = ($Script:Results.Actions | Where-Object { $_.Status -eq "Success" }).Count
     $wc = ($Script:Results.Actions | Where-Object { $_.Status -match "Warning|Manual" }).Count
-    $ec = ($Script:Results.Actions | Where-Object { $_.Status -match "Error|NOT EXPORTED" }).Count
+    $ec = @($Script:Results.Actions | Where-Object {
+        $_.Status -eq "Error" -or $_.Status -like "NOT EXPORTED*"
+    }).Count
     $kc = ($Script:Results.Actions | Where-Object { $_.Status -eq "Skipped" }).Count
 
     Write-Banner -Title "Export Complete"
     Write-SummaryCard -Success $sc -Warning $wc -Errors $ec -Skipped $kc -Duration "$([math]::Round($dur.TotalMinutes, 1)) min"
+
+    $adminRequiredTasks = @($Script:Results.ManualTasks | Where-Object { $_.Reason -match "admin|Administrator|privileges" })
+    if (-not $Script:IsAdmin -and $adminRequiredTasks.Count -gt 0) {
+        Write-Host ""
+        Write-Host "  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
+        Write-Host "  ! INCOMPLETE EXPORT: ADMIN-ONLY ITEMS WERE NOT CAPTURED !" -ForegroundColor Red
+        Write-Host "  ! Re-run elevated before wiping the old laptop.          !" -ForegroundColor Red
+        Write-Host "  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
+        foreach ($task in $adminRequiredTasks) {
+            Write-Host "  $($Script:Theme.Glyphs.WARN) $($task.Task)" -ForegroundColor Yellow
+        }
+    }
 
     $packageLabel = if ($useLocalStaging) { "Local staging package" } else { "Package" }
     Write-KeyValue $packageLabel $transferBase
@@ -270,8 +304,15 @@ function Start-LaptopExport {
     Write-Status "UserData"               "INFO" "Documents, Desktop, loose files"
     Write-Status "AppData"                "INFO" "Bluebeam, signatures, Quick Access"
     Write-Status "Settings"               "INFO" "power, drives, personalization"
-    Write-Status "Printers"               "INFO" "PrintBRM package"
-    Write-Status "BrowserData"            "INFO" "Chrome archive/bookmarks/password CSV if chosen; Firefox profile"
+    if ($Script:Config.Backup.Printers) {
+        Write-Status "Printers" "INFO" "PrintBRM package"
+    }
+    else {
+        Write-Status "Printers" "SKIP" "disabled by configuration"
+    }
+    if ($Script:Config.Backup.Chrome) { Write-Status "Chrome" "INFO" "selected" } else { Write-Status "Chrome" "SKIP" "disabled by configuration" }
+    if ($Script:Config.Backup.Firefox) { Write-Status "Firefox" "INFO" "selected" } else { Write-Status "Firefox" "SKIP" "disabled by configuration" }
+    if ($Script:Config.Backup.Edge) { Write-Status "Edge" "INFO" "selected" } else { Write-Status "Edge" "SKIP" "disabled by configuration" }
     Write-Status "Import-LaptopData.ps1"  "OK"   "run on new machine"
     Write-Status "QuickImport.bat"        "OK"   "double-click (choose admin or standard)"
     Write-Status "TransferReport.html"    "OK"   "full report"
@@ -282,13 +323,22 @@ function Start-LaptopExport {
         Write-Status "$(Split-Path -Path $archivePath -Leaf)" "OK" "portable compressed package"
     }
 
-    # Open report
+    # Persist every event, including ZIP creation and any network upload.
+    $logPath = Join-Path $transferBase "Logs\ExportLog.txt"
+    $Script:Log | Out-File $logPath -Encoding UTF8
+
+    # Open report only for an interactive technician run.
     Write-Host ""
-    Write-Host "  Opening transfer report..." -ForegroundColor DarkGray
-    if ($reportPath -and (Test-Path $reportPath)) { Start-Process $reportPath }
+    if ($NonInteractive) {
+        Write-Host "  Report saved: $reportPath" -ForegroundColor DarkGray
+    }
+    elseif ($reportPath -and (Test-Path $reportPath)) {
+        Write-Host "  Opening transfer report..." -ForegroundColor DarkGray
+        Start-Process $reportPath
+    }
     
     Write-Host ""
-    Read-Host "  Press Enter to exit"
+    if (-not $NonInteractive) { Read-Host "  Press Enter to exit" }
 }
 
 # Run the export

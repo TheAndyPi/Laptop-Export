@@ -135,3 +135,10 @@ function Write-StoLogo {
     Write-Host ""
 }
 
+function Clear-StoScreen {
+    # Clear-Host accesses RawUI, which is unavailable when the script runs
+    # through a redirected, remoted, or log-capturing host. The UI is still
+    # readable without clearing, so never let this cosmetic action stop work.
+    try { Clear-Host -ErrorAction Stop } catch { }
+}
+
