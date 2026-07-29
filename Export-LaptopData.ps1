@@ -439,6 +439,7 @@ $Script:Config = @{
         Import = @{
             LotusNotes = $true
             DeletePrintBrmAfterImport = $true
+            EnableAdminHelper = $false
         }
     }
 
@@ -459,6 +460,7 @@ $Script:Config = @{
     Import = @{
         LotusNotes = $true
         DeletePrintBrmAfterImport = $true
+        EnableAdminHelper = $false
     }
 }
 
@@ -3355,7 +3357,7 @@ if ($TestMode) {
 }
 
 # Same computer warning
-if ($env:COMPUTERNAME -eq "{COMPUTERNAME}") {
+if (-not $TestMode -and $env:COMPUTERNAME -eq "{COMPUTERNAME}") {
     Write-Host "  WARNING: Running on the SAME computer as export!" -ForegroundColor Yellow
     Write-Host "  This may overwrite existing files." -ForegroundColor Yellow
     Write-Host ""
@@ -3372,7 +3374,7 @@ if ($env:COMPUTERNAME -eq "{COMPUTERNAME}") {
 # ============================================================================
 
 $isActuallyAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if ($isActuallyAdmin) {
+if ($isActuallyAdmin -and -not $TestMode) {
     Write-Host "  Import-LaptopData.ps1 must run as the signed-in standard user." -ForegroundColor Yellow
     Write-Host "  Close this window and run QuickImport.bat normally." -ForegroundColor Gray
     exit 1
@@ -4635,7 +4637,9 @@ else {
     }
 }
 
-Read-Host "  Press Enter to exit"
+if (-not $TestMode) {
+    Read-Host "  Press Enter to exit"
+}
 '@
 
     # Replace placeholders

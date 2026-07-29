@@ -133,6 +133,7 @@ $Script:Config = @{
         Import = @{
             LotusNotes = $true
             DeletePrintBrmAfterImport = $true
+            EnableAdminHelper = $false
         }
     }
 
@@ -153,6 +154,7 @@ $Script:Config = @{
     Import = @{
         LotusNotes = $true
         DeletePrintBrmAfterImport = $true
+        EnableAdminHelper = $false
     }
 }
 

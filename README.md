@@ -14,6 +14,19 @@ powershell -ExecutionPolicy Bypass -File ".\Build-Deployment.ps1"
 
 For development, [`src/00-development-config.psd1`](src/00-development-config.psd1) controls each export stage. All switches default to `$true`; rebuild after changing a value. The config is embedded in the generated deployment script, so it is not a separate technician-side dependency. Set `Backup.Chrome` to `$false` to skip Chrome while still exporting Edge and Firefox. Under `Import`, disable only the Lotus Notes or Firefox restore as needed. Under `Online`, set `CreateZipArchive` to `$false` to retain only the transfer folder, set `StageNetworkTransfersLocally` to `$false` to disable local staging, and set `Online.Import` values to the defaults that should apply whenever an Online transfer is selected.
 
+Run the automated regression suite before committing changes:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\Invoke-LaptopExportTests.ps1"
+```
+
+The suite uses only Pester's temporary test data. It validates the build
+artifact, destination recursion protection, Online payload limits, ZIP
+cancellation cleanup, generated-import syntax, report HTML encoding, and a
+non-interactive generated-import `-TestMode` run; it never runs a real export
+or import. Pester is required (`Install-Module Pester
+-Scope CurrentUser` if it is not already installed).
+
 When running the export script, a **Transfer Settings** master panel shows the backup, import, and Online ZIP switches. Enter a setting number to toggle it, then press `S` to start. Those menu choices affect only the current transfer and do not change the compiled defaults.
 
 For an Online export to a network share, the default workflow stages the package under `%LOCALAPPDATA%\STO Building Group\LaptopTransferStaging`, creates the ZIP locally, then uploads and size-verifies the single ZIP at the selected network destination. The local staging package is retained for recovery.
