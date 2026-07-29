@@ -41,7 +41,7 @@ It then runs the export and opens the HTML report when finished. **Online** tran
 - **Windows PowerShell 5.1+** (`#Requires -Version 5.1`)
 - An **external/USB drive** (or second fixed drive) with enough free space for **Local** transfers
 - For **Online** transfers, a writable destination folder (network share, cloud-synced folder, or local folder); no external drive is required
-- **Administrator rights** — *optional but recommended*. The script always attempts the printer export, but Windows can require elevation for a full PrintBRM package. The script offers to self-elevate and logs the precise PrintBRM result.
+- **Administrator rights** — *recommended*. Windows requires elevation to export/import the complete power-plan mirror and may require it for a full PrintBRM package. The script offers to self-elevate and logs the precise result.
 
 ## Transfer modes
 
@@ -54,7 +54,7 @@ It then runs the export and opens the HTML report when finished. **Online** tran
 
 - **User folders** — Documents, Desktop, Downloads, Pictures, Videos, Music, Favorites, loose profile files, and OCS Documents
 - **AppData** — Bluebeam, Outlook email signatures, Quick Access pins, Lotus Notes
-- **System settings** — power scheme, lid-close actions (AC/DC), mapped network drives, personalization (colors, dark mode, taskbar), wallpaper
+- **System settings** — individual active power-plan values are applied to the existing STOBG plan (all available AC/DC settings, including the advanced Control Panel and Power & battery settings); an elevated run also includes a complete plan export, plus mapped network drives, personalization (colors, dark mode, taskbar), wallpaper
 - **Installed programs** — documented to a list
 - **Printers** — a `Printers.printerExport` PrintBRM migration file is attempted for every run, plus a driverless network-connection list. Windows may require elevation to create a full PrintBRM package; the package log records the exact result.
 - **Browser data** — Chrome and Edge bookmarks from every profile (automatic restore for Default/matching profiles plus portable HTML), a Chrome profile archive with common cache directories excluded for recovery/reference, and an optional native Chrome Password Manager CSV export that requires Windows authentication; full Firefox profile data, including bookmarks, saved logins, history, extensions, settings, and companion local data

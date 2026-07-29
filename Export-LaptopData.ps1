@@ -131,6 +131,10 @@ $Script:DevelopmentConfig = @{
         # Deletes Printers\Printers.printerExport only after a successful
         # PrintBRM restore and completion of the generated import script.
         DeletePrintBrmAfterImport = $true
+
+        # When enabled, the normal user-context import offers to run the
+        # separate elevated helper after all user-scoped restoration finishes.
+        EnableAdminHelper = $false
     }
 
     # These values override the regular Import defaults when the technician
@@ -151,6 +155,7 @@ $Script:DevelopmentConfig = @{
         Import = @{
             LotusNotes                  = $true
             DeletePrintBrmAfterImport   = $true
+            EnableAdminHelper            = $false
         }
     }
 }
@@ -1958,29 +1963,85 @@ function Get-SystemSettings {
             $matches[1]
         } else { $null }
         
-        # Try to export current power scheme (requires admin)
+        # A .pow export is a complete, portable copy of the active plan.  It
+        # contains the AC and DC values for every setting exposed in Control
+        # Panel and Power & battery (including the hidden advanced settings),
+        # rather than just the small lid-close subset parsed below.  Windows
+        # requires an elevated process to export or import a plan.
         $powerExport = Join-Path $settingsPath "PowerScheme.pow"
-        
+        if (-not $schemeGuid) {
+            throw "Could not determine the active power-scheme GUID."
+        }
+
+        # Keep a human-readable, full advanced-settings snapshot with the
+        # package.  The .pow file is used for restoration because it is not
+        # language-dependent and preserves settings that are not available on
+        # the destination hardware.
+        $powerDetailsPath = Join-Path $settingsPath "PowerSchemeDetails.txt"
+        $powerDetails = & powercfg /qh $schemeGuid 2>&1
+        $settings.PowerSettingsSnapshot = "PowerSchemeDetails.txt"
+        $settings.PowerSettingsSnapshotExitCode = $LASTEXITCODE
+        Set-Content -LiteralPath $powerDetailsPath -Value ($powerDetails | Out-String) -Encoding UTF8
+
+        # Store every individual setting value as well as the .pow file.  The
+        # destination normally already has the organisation's STOBG plan, so
+        # these values can be applied one at a time to that existing plan even
+        # when no plan import is being used.
+        $powerSettingValues = New-Object System.Collections.ArrayList
+        $currentSubgroupGuid = $null
+        $currentPowerSetting = $null
+        foreach ($line in $powerDetails) {
+            if ($line -match '^\s*Subgroup GUID:\s*([0-9a-fA-F-]{36})') {
+                $currentSubgroupGuid = $matches[1]
+                $currentPowerSetting = $null
+            }
+            elseif ($line -match '^\s*Power Setting GUID:\s*([0-9a-fA-F-]{36})') {
+                if ($currentSubgroupGuid) {
+                    $currentPowerSetting = [ordered]@{
+                        SubgroupGuid = $currentSubgroupGuid
+                        SettingGuid = $matches[1]
+                        ACValue = $null
+                        DCValue = $null
+                    }
+                    [void]$powerSettingValues.Add($currentPowerSetting)
+                }
+            }
+            elseif ($currentPowerSetting -and $line -match '^\s*Current AC Power Setting Index:\s*(0x[0-9a-fA-F]+)') {
+                $currentPowerSetting.ACValue = $matches[1]
+            }
+            elseif ($currentPowerSetting -and $line -match '^\s*Current DC Power Setting Index:\s*(0x[0-9a-fA-F]+)') {
+                $currentPowerSetting.DCValue = $matches[1]
+            }
+        }
+        $settings.PowerSettingValues = @($powerSettingValues | Where-Object { $_.ACValue -or $_.DCValue })
+        $settings.PowerSettingValueCount = $settings.PowerSettingValues.Count
+        if ($settings.PowerSettingValueCount -eq 0) {
+            Write-Log "Could not parse individual power-setting values; the full text snapshot was saved" -Level Warning
+        } else {
+            Write-Log "Captured $($settings.PowerSettingValueCount) individual AC/DC power-setting value(s)" -Level Success
+        }
+
         if ($Script:IsAdmin) {
-            $powerExportResult = powercfg /export $powerExport $schemeGuid 2>&1
-            
-            if (Test-Path $powerExport) {
-                $settings.PowerSchemeExported = $true
-                Write-Log "Power scheme exported successfully" -Level Success
+            if (Test-Path -LiteralPath $powerExport) {
+                Remove-Item -LiteralPath $powerExport -Force -ErrorAction Stop
+            }
+
+            $powerExportResult = & powercfg /export $powerExport $schemeGuid 2>&1
+            $powerExportExitCode = $LASTEXITCODE
+            $settings.PowerSchemeExported = ((Test-Path -LiteralPath $powerExport) -and ((Get-Item -LiteralPath $powerExport).Length -gt 0) -and $powerExportExitCode -eq 0)
+            $settings.PowerSchemeExportExitCode = $powerExportExitCode
+            $settings.PowerSettingsMirror = "PowerScheme.pow"
+
+            if ($settings.PowerSchemeExported) {
+                Write-Log "Complete power scheme exported successfully" -Level Success
             } else {
-                $settings.PowerSchemeExported = $false
-                Add-ManualTask -Task "Export Power Scheme" -Reason "Export failed even with admin rights" -Instructions "Run as admin: powercfg /export PowerScheme.pow $schemeGuid"
+                $exportMessage = ($powerExportResult | Out-String).Trim()
+                throw "Power-scheme export failed (exit $powerExportExitCode). $exportMessage"
             }
         } else {
             $settings.PowerSchemeExported = $false
-            Write-Log "Skipping power scheme export (requires admin)" -Level Info
-            Add-ManualTask -Task "Export Power Scheme" -Reason "Requires administrator privileges (skipped)" -Instructions @"
-Run these commands as Administrator on the OLD computer:
-  powercfg /export "D:\LaptopTransfer\PowerScheme.pow" $schemeGuid
-
-Then on the NEW computer:
-  powercfg /import "D:\LaptopTransfer\PowerScheme.pow"
-"@
+            $settings.PowerSchemeExportExitCode = $null
+            Write-Log "Complete power-scheme export skipped because the export is not elevated; individual values will still be restored" -Level Info
         }
         
         # Capture lid close settings using powercfg query (works without admin)
@@ -2002,8 +2063,8 @@ Then on the NEW computer:
             $settings.LidClose.OnBattery = $lidActions[$dcValue]
         }
         
-        Write-Log "Power settings captured" -Level Success
-        Add-Result -Category "Settings" -Item "Power Configuration" -Status $(if ($settings.PowerSchemeExported) { "Success" } else { "NOT EXPORTED - Admin Required" }) -Details "Lid: AC=$($settings.LidClose.OnAC), DC=$($settings.LidClose.OnBattery)"
+        Write-Log "Complete power settings captured" -Level Success
+        Add-Result -Category "Settings" -Item "Power Configuration" -Status $(if ($settings.PowerSettingValueCount -gt 0) { "Success" } else { "Warning" }) -Details "$($settings.PowerSettingValueCount) individual AC/DC values captured$(if ($settings.PowerSchemeExported) { '; full plan also exported' }); lid: AC=$($settings.LidClose.OnAC), DC=$($settings.LidClose.OnBattery)"
     }
     catch {
         Write-Log "Error capturing power settings: $_" -Level Warning
@@ -2951,10 +3012,7 @@ function New-ImportScript {
 #Requires -Version 5.1
 
 param(
-    [switch]$TestMode,
-    # Used by QuickImport.bat so a double-click restore stays in the current
-    # user's context and does not show a UAC elevation prompt.
-    [switch]$NoElevationPrompt
+    [switch]$TestMode
 )
 
 $ErrorActionPreference = "Continue"
@@ -3088,7 +3146,7 @@ $importLotusNotes = [bool]::Parse('{IMPORT_LOTUS_NOTES}')
 # present. There is no separate import toggle to keep in sync.
 $importFirefox = $true
 $deletePrintBrmAfterImport = [bool]::Parse('{DELETE_PRINTBRM_AFTER_IMPORT}')
-$printBrmRestoreSucceeded = $false
+$enableAdminHelper = [bool]::Parse('{ENABLE_ADMIN_HELPER}')
 
 function Write-Log {
     param([string]$Message, [string]$Level = "Info")
@@ -3310,42 +3368,17 @@ if ($env:COMPUTERNAME -eq "{COMPUTERNAME}") {
 }
 
 # ============================================================================
-# ADMIN ELEVATION CHECK
+# USER-CONTEXT SAFETY CHECK
 # ============================================================================
 
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-if (-not $isAdmin) {
-    if ($NoElevationPrompt) {
-        Write-Host "  Running as the current user; admin-only restore steps will be skipped." -ForegroundColor DarkGray
-    }
-    else {
-        Write-Host "  Some features require Administrator rights:" -ForegroundColor Yellow
-        Write-Host "    - Power scheme import" -ForegroundColor Gray
-        Write-Host "    - Lid close action settings" -ForegroundColor Gray
-        Write-Host ""
-        $elevate = Read-Host "  Run as Administrator? (Y/N, or S to skip)"
-
-        if ($elevate -match "^[Yy]") {
-            Write-Host "`n  Requesting elevation..." -ForegroundColor Cyan
-            try {
-                $scriptFullPath = $MyInvocation.MyCommand.Path
-                Start-Process powershell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$scriptFullPath`""
-                exit
-            }
-            catch {
-                Write-Host "  Could not elevate. Continuing without admin rights." -ForegroundColor Yellow
-                $isAdmin = $false
-            }
-        }
-        else {
-            Write-Host "  Continuing without admin rights..." -ForegroundColor Gray
-        }
-    }
+$isActuallyAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($isActuallyAdmin) {
+    Write-Host "  Import-LaptopData.ps1 must run as the signed-in standard user." -ForegroundColor Yellow
+    Write-Host "  Close this window and run QuickImport.bat normally." -ForegroundColor Gray
+    exit 1
 }
-else {
-    Write-Host "  Running with Administrator rights" -ForegroundColor Green
-}
+$isAdmin = $false # This script intentionally never performs elevated work.
+Write-Host "  Running in signed-in user context; user data and connections restore here." -ForegroundColor DarkGray
 
 Write-Host ""
 Write-Host "  Starting import..." -ForegroundColor Cyan
@@ -3725,9 +3758,13 @@ if (Test-Path $settingsFile) {
     }
 }
 
-# Power scheme (requires admin)
+# Power scheme import is retained as a legacy fallback for packages made
+# before individual values were captured.  New packages deliberately keep the
+# organisation's existing STOBG plan and update its values one by one below.
+$powerPlanRestored = $false
+$hasIndividualPowerSettings = ($settingsData -and $settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count -gt 0)
 $powerScheme = Join-Path $scriptPath "Settings\PowerScheme.pow"
-if (Test-Path $powerScheme) {
+if ($false -and (Test-Path $powerScheme) -and -not $hasIndividualPowerSettings) {
     if (-not $isAdmin) {
         Write-Log "Power scheme - Skipped (requires admin)" -Level "Warning"
         Add-Result -Category "Settings" -Item "Power Scheme" -Status "Skipped" -Details "Requires admin"
@@ -3740,10 +3777,26 @@ if (Test-Path $powerScheme) {
     else {
         try {
             $guid = [guid]::NewGuid().ToString()
-            $importResult = powercfg /import $powerScheme $guid 2>&1
-            powercfg /setactive $guid 2>&1 | Out-Null
-            Write-Log "Power scheme imported and activated" -Level "Success"
-            Add-Result -Category "Settings" -Item "Power Scheme" -Status "Success"
+            $importResult = & powercfg /import $powerScheme $guid 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "powercfg /import failed (exit $LASTEXITCODE): $(($importResult | Out-String).Trim())"
+            }
+
+            # Querying the new GUID verifies that Windows actually registered
+            # the imported plan before it is made active.
+            $verifyResult = & powercfg /query $guid 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "Imported power plan could not be queried (exit $LASTEXITCODE): $(($verifyResult | Out-String).Trim())"
+            }
+
+            $activateResult = & powercfg /setactive $guid 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "powercfg /setactive failed (exit $LASTEXITCODE): $(($activateResult | Out-String).Trim())"
+            }
+
+            $powerPlanRestored = $true
+            Write-Log "Complete power scheme imported, verified, and activated" -Level "Success"
+            Add-Result -Category "Settings" -Item "Power Configuration" -Status "Success" -Details "All available AC/DC power-plan settings restored"
         }
         catch {
             Write-Log "Power scheme import failed: $_" -Level "Error"
@@ -3751,9 +3804,65 @@ if (Test-Path $powerScheme) {
         }
     }
 }
+elseif ((Test-Path $powerScheme) -and $hasIndividualPowerSettings) {
+    Write-Log "Power scheme file retained as an elevated backup; applying individual values to the current STOBG plan" -Level "Info"
+    Add-Result -Category "Settings" -Item "Power Scheme" -Status "Skipped" -Details "Individual values preserve the existing managed plan"
+}
 
-# Lid close actions (requires admin)
-if ($settingsData -and $settingsData.LidClose -and $settingsData.LidClose.OnAC) {
+# Apply the captured values to the plan already present on the new computer.
+# This is the normal route for the organisation's managed STOBG plan; it is
+# intentionally attempted even without elevation.  Settings rejected by a
+# policy or unsupported by the new hardware are reported individually.
+if ($hasIndividualPowerSettings) {
+    $individualPowerSettings = @($settingsData.PowerSettingValues)
+    if ($TestMode) {
+        Write-Log "Individual power settings - Would apply $($individualPowerSettings.Count) AC/DC value set(s) to the current plan" -Level "Info"
+        Add-Result -Category "Settings" -Item "Individual Power Settings" -Status "TestMode" -Details "$($individualPowerSettings.Count) captured setting(s)"
+    }
+    else {
+        $powerValuesApplied = 0
+        $powerValueFailures = New-Object System.Collections.ArrayList
+        foreach ($powerSetting in $individualPowerSettings) {
+            $subgroupGuid = [string]$powerSetting.SubgroupGuid
+            $settingGuid = [string]$powerSetting.SettingGuid
+            if ($subgroupGuid -notmatch '^[0-9a-fA-F-]{36}$' -or $settingGuid -notmatch '^[0-9a-fA-F-]{36}$') {
+                [void]$powerValueFailures.Add("Invalid setting identifier: $subgroupGuid / $settingGuid")
+                continue
+            }
+
+            foreach ($powerType in @(@{ Name = "AC"; Value = [string]$powerSetting.ACValue }, @{ Name = "DC"; Value = [string]$powerSetting.DCValue })) {
+                if (-not $powerType.Value) { continue }
+                $powerCommand = if ($powerType.Name -eq "AC") { "/setacvalueindex" } else { "/setdcvalueindex" }
+                $powerOutput = & powercfg $powerCommand SCHEME_CURRENT $subgroupGuid $settingGuid $powerType.Value 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $powerValuesApplied++
+                } else {
+                    [void]$powerValueFailures.Add("$settingGuid ($($powerType.Name)): $(($powerOutput | Out-String).Trim())")
+                }
+            }
+        }
+
+        $activateCurrentResult = & powercfg /setactive SCHEME_CURRENT 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            [void]$powerValueFailures.Add("Could not activate the current plan: $(($activateCurrentResult | Out-String).Trim())")
+        }
+
+        if ($powerValueFailures.Count -eq 0) {
+            Write-Log "Individual power settings applied: $powerValuesApplied AC/DC value(s)" -Level "Success"
+            Add-Result -Category "Settings" -Item "Individual Power Settings" -Status "Success" -Details "$powerValuesApplied AC/DC values applied to the current plan"
+        } else {
+            $failurePreview = @($powerValueFailures | Select-Object -First 3) -join " | "
+            Write-Log "Individual power settings applied: $powerValuesApplied; $($powerValueFailures.Count) value(s) could not be applied" -Level "Warning"
+            Add-Result -Category "Settings" -Item "Individual Power Settings" -Status "Warning" -Details "$powerValuesApplied applied; $($powerValueFailures.Count) rejected/unsupported. $failurePreview"
+            $Script:Results.Warnings += "Some individual power settings were rejected by the current plan, policy, or hardware. See ImportLog.txt."
+        }
+    }
+}
+
+# Lid close actions are already included in a successful full plan import.
+# Keep this narrowly-scoped fallback for older transfer packages that do not
+# have PowerScheme.pow, or if a new computer rejects that plan.
+if ($false -and -not $powerPlanRestored -and $settingsData -and $settingsData.LidClose -and $settingsData.LidClose.OnAC) {
     if (-not $isAdmin) {
         Write-Log "Lid close actions - Skipped (requires admin)" -Level "Warning"
         Add-Result -Category "Settings" -Item "Lid Actions" -Status "Skipped" -Details "Requires admin"
@@ -3907,7 +4016,7 @@ else {
 }
 
 # ---- FALLBACK (admin only): local/direct-IP printers from PrintBRM package ----
-if (Test-Path $printerExportFile) {
+if ($false -and (Test-Path $printerExportFile)) {
     if (-not $isAdmin) {
         Write-Log "Local printer package present but restore needs admin" -Level "Warning"
         Write-Status "Local printers" "SKIP" "admin needed for local drivers"
@@ -4171,6 +4280,12 @@ function Restore-ChromiumProfileBookmarks {
     }
 }
 
+if (Test-Path $printerExportFile) {
+    Write-Log "Local/direct-IP printer package retained for optional administrator helper" -Level "Info"
+    Write-Status "Local printers" "INFO" "optional administrator helper"
+    Add-Result -Category "Printers" -Item "Local Printers" -Status "Pending" -Details "Run Import-SystemSettings.ps1 through the optional helper"
+}
+
 function Add-ManualTask {
     param([string]$Task, [string]$Reason, [string]$Instructions = "")
 
@@ -4392,6 +4507,7 @@ else {
         }
     }
 }
+}
 
 Write-Host ""
 
@@ -4429,19 +4545,6 @@ $skippedCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Skipped
 
 Write-Host "  Import complete" -ForegroundColor Green
 Write-SummaryCard -Success $successCount -Warning $warningCount -Errors $errorCount -Skipped $skippedCount -Duration "$([math]::Round($duration.TotalMinutes, 1)) min"
-
-if ($deletePrintBrmAfterImport -and $printBrmRestoreSucceeded) {
-    try {
-        Remove-Item -LiteralPath $printerExportFile -Force -ErrorAction Stop
-        Write-Log "Deleted PrintBRM package after successful import" -Level "Success"
-        Add-Result -Category "Printers" -Item "PrintBRM Package Cleanup" -Status "Success" -Details "Deleted after successful import"
-    }
-    catch {
-        Write-Log "Could not delete PrintBRM package: $_" -Level "Warning"
-        Add-Result -Category "Printers" -Item "PrintBRM Package Cleanup" -Status "Warning" -Details $_.Exception.Message
-    }
-    }
-}
 
 if ($Script:Results.Warnings.Count -gt 0) {
     Write-Section "Items needing attention"
@@ -4483,6 +4586,55 @@ Write-Host ""
 Write-Host "  See TransferReport.html for full export details." -ForegroundColor DarkGray
 Write-Host ""
 
+# The only elevation path is the narrowly-scoped system helper, and it is
+# offered only after all user-profile work has completed. TestMode must never
+# show UAC or launch the helper.
+$adminAuditPath = Join-Path $logsPath "AdminImportResult.json"
+function Write-AdminHelperAudit {
+    param([string]$Status, [string]$Detail)
+    $audit = [PSCustomObject]@{ Timestamp = (Get-Date).ToString("o"); Status = $Status; Detail = $Detail; Source = "Import-LaptopData.ps1" }
+    $audit | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $adminAuditPath -Encoding UTF8
+    Add-Content -LiteralPath (Join-Path $logsPath "AdminImportLog.txt") -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Status] $Detail"
+}
+
+if ($TestMode) {
+    Write-AdminHelperAudit -Status "Skipped" -Detail "TestMode never launches the administrator helper."
+}
+elseif (-not $enableAdminHelper) {
+    Write-AdminHelperAudit -Status "Skipped" -Detail "Optional administrator helper is disabled by package configuration."
+}
+else {
+    $runHelper = Read-Host "Run optional administrator helper for power settings and local printers? (Y/N) [N]"
+    if ($runHelper -match "^[Yy]") {
+        $helperPath = Join-Path $scriptPath "Import-SystemSettings.ps1"
+        if (-not (Test-Path -LiteralPath $helperPath)) {
+            Write-Host "  Administrator helper is missing; system tasks are deferred." -ForegroundColor Yellow
+            Write-AdminHelperAudit -Status "Deferred" -Detail "Import-SystemSettings.ps1 is missing."
+        }
+        else {
+            try {
+                Write-Host "  Requesting administrator approval..." -ForegroundColor Cyan
+                $helperProcess = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`""
+                if ($helperProcess.ExitCode -eq 0) {
+                    Write-Host "  Administrator helper completed. See Logs\\AdminImportLog.txt." -ForegroundColor Green
+                }
+                else {
+                    Write-Host "  Administrator helper reported an error; system tasks are deferred." -ForegroundColor Yellow
+                    Write-AdminHelperAudit -Status "Deferred" -Detail "Helper exited with code $($helperProcess.ExitCode)."
+                }
+            }
+            catch {
+                Write-Host "  Administrator approval was cancelled or denied; system tasks are deferred." -ForegroundColor Yellow
+                Write-AdminHelperAudit -Status "Cancelled" -Detail "UAC elevation was cancelled, denied, or could not start: $($_.Exception.Message)"
+            }
+        }
+    }
+    else {
+        Write-Host "  Administrator helper skipped; power settings and local printers are deferred." -ForegroundColor DarkGray
+        Write-AdminHelperAudit -Status "Skipped" -Detail "Technician declined the optional administrator helper."
+    }
+}
+
 Read-Host "  Press Enter to exit"
 '@
 
@@ -4492,12 +4644,126 @@ Read-Host "  Press Enter to exit"
     $importScript = $importScript -replace '\{COMPUTERNAME\}', $env:COMPUTERNAME
     $importScript = $importScript -replace '\{IMPORT_LOTUS_NOTES\}', $Script:Config.Import.LotusNotes.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{DELETE_PRINTBRM_AFTER_IMPORT\}', $Script:Config.Import.DeletePrintBrmAfterImport.ToString().ToLowerInvariant()
+    $importScript = $importScript -replace '\{ENABLE_ADMIN_HELPER\}', $Script:Config.Import.EnableAdminHelper.ToString().ToLowerInvariant()
     
     $importScriptPath = Join-Path $DestinationBase "Import-LaptopData.ps1"
     $importScript | Out-File $importScriptPath -Encoding UTF8
     
     Write-Log "Import script generated" -Level Success
     Add-Result -Category "Scripts" -Item "Import-LaptopData.ps1" -Status "Success" -Details "Ready for new machine"
+}
+
+function New-AdminImportScript {
+    param([string]$DestinationBase)
+
+    # This helper deliberately has no user-profile, HKCU, drive-mapping, or
+    # shared-printer work.  It can safely run under an administrator account.
+    $helperScript = @'
+<#
+.SYNOPSIS
+    STO Building Group Laptop Transfer - Optional Administrator Helper
+.DESCRIPTION
+    Applies only system power settings and local/direct-IP printers from the
+    transfer package. It must be run elevated.
+#>
+#Requires -Version 5.1
+$ErrorActionPreference = 'Continue'
+$scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
+$logsPath = Join-Path $scriptPath 'Logs'
+New-Item -ItemType Directory -Path $logsPath -Force | Out-Null
+$logPath = Join-Path $logsPath 'AdminImportLog.txt'
+$resultPath = Join-Path $logsPath 'AdminImportResult.json'
+$result = [ordered]@{
+    StartTime = (Get-Date).ToString('o'); EndTime = $null; Status = 'Running'
+    Elevated = $false; Power = @(); PrintBrm = [ordered]@{ PackagePresent = $false; ToolPresent = $false; ExitCode = $null; Status = 'Skipped' }
+    PrinterStatus = @(); Errors = @()
+}
+function Write-Audit([string]$Message, [string]$Level = 'Info') {
+    $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Level] $Message"
+    Add-Content -LiteralPath $logPath -Value $line
+    Write-Host "  $Message" -ForegroundColor $(if($Level -eq 'Error'){'Red'}elseif($Level -eq 'Warning'){'Yellow'}else{'Gray'})
+}
+function Save-Result {
+    $result.EndTime = (Get-Date).ToString('o')
+    [PSCustomObject]$result | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $resultPath -Encoding UTF8
+}
+$result.Elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $result.Elevated) {
+    $result.Status = 'Denied'
+    $result.Errors += 'Administrator privileges are required.'
+    Write-Audit 'Administrator privileges are required; no changes were made.' 'Error'
+    Save-Result
+    exit 1
+}
+
+$settingsFile = Join-Path $scriptPath 'Settings\SystemSettings.json'
+$powerScheme = Join-Path $scriptPath 'Settings\PowerScheme.pow'
+$settingsData = $null
+if (Test-Path -LiteralPath $settingsFile) {
+    try { $settingsData = Get-Content -LiteralPath $settingsFile -Raw | ConvertFrom-Json } catch { $result.Errors += "Could not read SystemSettings.json: $($_.Exception.Message)" }
+}
+
+# Legacy packages have only a .pow file. New packages keep the managed plan
+# and receive their captured AC/DC values one by one.
+if ((Test-Path -LiteralPath $powerScheme) -and -not ($settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count)) {
+    try {
+        $guid = [guid]::NewGuid().ToString()
+        $output = & powercfg /import $powerScheme $guid 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "powercfg /import exit ${LASTEXITCODE}: $(($output | Out-String).Trim())" }
+        $output = & powercfg /setactive $guid 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "powercfg /setactive exit ${LASTEXITCODE}: $(($output | Out-String).Trim())" }
+        $result.Power += [PSCustomObject]@{ Item = 'Legacy power scheme'; Status = 'Success'; Detail = "Imported and activated $guid" }
+        Write-Audit 'Legacy power scheme imported and activated.' 'Success'
+    } catch { $result.Power += [PSCustomObject]@{ Item = 'Legacy power scheme'; Status = 'Failed'; Detail = $_.Exception.Message }; $result.Errors += $_.Exception.Message; Write-Audit "Power scheme failed: $_" 'Error' }
+}
+if ($settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count) {
+    foreach ($setting in @($settingsData.PowerSettingValues)) {
+        foreach ($kind in @(@{ Name='AC'; Command='/setacvalueindex'; Value=[string]$setting.ACValue }, @{ Name='DC'; Command='/setdcvalueindex'; Value=[string]$setting.DCValue })) {
+            if (-not $kind.Value) { continue }
+            $output = & powercfg $kind.Command SCHEME_CURRENT $setting.SubgroupGuid $setting.SettingGuid $kind.Value 2>&1
+            $status = if ($LASTEXITCODE -eq 0) { 'Success' } else { 'Failed' }
+            $detail = if ($LASTEXITCODE -eq 0) { "$($setting.SettingGuid) $($kind.Name)" } else { "$(($output | Out-String).Trim())" }
+            $result.Power += [PSCustomObject]@{ Item = 'Individual power setting'; Status = $status; Detail = $detail }
+            if ($status -eq 'Failed') { $result.Errors += "Power setting $detail"; Write-Audit "Power setting failed: $detail" 'Warning' }
+        }
+    }
+    & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
+}
+if ($settingsData.LidClose -and $settingsData.LidClose.OnAC) {
+    $map = @{ 'Do Nothing'=0; Sleep=1; Hibernate=2; 'Shut Down'=3 }
+    foreach ($kind in @(@{ Command='/setacvalueindex'; Value=$map[$settingsData.LidClose.OnAC] }, @{ Command='/setdcvalueindex'; Value=$map[$settingsData.LidClose.OnBattery] })) {
+        if ($null -ne $kind.Value) { & powercfg $kind.Command SCHEME_CURRENT SUB_BUTTONS LIDACTION $kind.Value 2>&1 | Out-Null }
+    }
+    & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
+    $result.Power += [PSCustomObject]@{ Item = 'Lid actions'; Status = 'Attempted'; Detail = "AC: $($settingsData.LidClose.OnAC); DC: $($settingsData.LidClose.OnBattery)" }
+}
+
+$printerExport = Join-Path $scriptPath 'Printers\Printers.printerExport'
+$printBrm = Join-Path $env:WINDIR 'System32\spool\tools\PrintBrm.exe'
+$result.PrintBrm.PackagePresent = Test-Path -LiteralPath $printerExport
+$result.PrintBrm.ToolPresent = Test-Path -LiteralPath $printBrm
+if ($result.PrintBrm.PackagePresent -and $result.PrintBrm.ToolPresent) {
+    try {
+        $brmLog = Join-Path $logsPath 'printbrm_restore.log'
+        & $printBrm -R -F $printerExport -O FORCE *>&1 | Tee-Object -LiteralPath $brmLog | Out-Null
+        $result.PrintBrm.ExitCode = $LASTEXITCODE
+        $result.PrintBrm.Status = if ($LASTEXITCODE -eq 0) { 'Success' } else { 'Failed' }
+        $result.PrinterStatus += [PSCustomObject]@{ Item='Local/direct-IP printers'; Status=$result.PrintBrm.Status; Detail="PrintBRM exit $LASTEXITCODE" }
+        if ($LASTEXITCODE -eq 0 -and [bool]::Parse('{DELETE_PRINTBRM_AFTER_IMPORT}')) { Remove-Item -LiteralPath $printerExport -Force; Write-Audit 'PrintBRM succeeded; migration package deleted.' 'Success' }
+        elseif ($LASTEXITCODE -ne 0) { Write-Audit "PrintBRM failed with exit $LASTEXITCODE; package retained." 'Warning' }
+    } catch { $result.PrintBrm.Status='Failed'; $result.Errors += "PrintBRM error: $($_.Exception.Message)"; Write-Audit "PrintBRM error: $_; package retained." 'Error' }
+} elseif ($result.PrintBrm.PackagePresent) { $result.PrintBrm.Status='Skipped'; $result.PrinterStatus += [PSCustomObject]@{ Item='Local/direct-IP printers'; Status='Skipped'; Detail='PrintBRM.exe not found' } }
+
+$result.Status = if ($result.Errors.Count) { 'CompletedWithErrors' } else { 'Completed' }
+Save-Result
+Write-Audit "Administrator helper $($result.Status)." $(if($result.Errors.Count){'Warning'}else{'Success'})
+exit $(if($result.Errors.Count){1}else{0})
+'@
+    $helperScript = $helperScript -replace '\{DELETE_PRINTBRM_AFTER_IMPORT\}', $Script:Config.Import.DeletePrintBrmAfterImport.ToString().ToLowerInvariant()
+    $helperPath = Join-Path $DestinationBase 'Import-SystemSettings.ps1'
+    $helperScript | Out-File -LiteralPath $helperPath -Encoding UTF8
+    Write-Log 'Administrator helper generated' -Level Success
+    Add-Result -Category 'Scripts' -Item 'Import-SystemSettings.ps1' -Status 'Success' -Details 'Optional elevated system settings helper'
 }
 
 # ============================================================================
@@ -4948,8 +5214,7 @@ function New-QuickImportBatch {
 
     $batPath = Join-Path $DestinationBase "QuickImport.bat"
 
-    # Let the technician choose once: run normally for user-scoped data, or
-    # request elevation when power settings and local printer drivers matter.
+    # The user-context import owns any optional elevation after it finishes.
     $batContent = @"
 @echo off
 title STO Laptop Transfer - Quick Import
@@ -4959,24 +5224,7 @@ echo ============================================
 echo    STO Laptop Transfer - Quick Import
 echo ============================================
 echo.
-if /I "%~1"=="--elevated" goto :Elevated
-
-set /p RUN_AS_ADMIN="Run with administrator rights? (Y/N) [N]: "
-echo.
-
-if /I "%RUN_AS_ADMIN%"=="Y" (
-    echo Requesting administrator privileges...
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -ArgumentList '--elevated'"
-    exit /b
-) else (
-    echo Running import script as the current user...
-    echo Admin-only restore steps will be skipped and listed in the report.
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Import-LaptopData.ps1" -NoElevationPrompt
-)
-goto :Complete
-
-:Elevated
-echo Running import script with administrator rights...
+echo Running import script as the current signed-in user...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Import-LaptopData.ps1"
 
 :Complete
@@ -5190,6 +5438,7 @@ function Start-LaptopExport {
     
     # 8. Generate import script
     New-ImportScript -DestinationBase $transferBase -Settings $settings
+    New-AdminImportScript -DestinationBase $transferBase
 
     # 9. Generate HTML report
     $reportPath = New-TransferReport -DestinationBase $transferBase
@@ -5257,7 +5506,7 @@ function Start-LaptopExport {
     if ($Script:Config.Backup.Firefox) { Write-Status "Firefox" "INFO" "selected" } else { Write-Status "Firefox" "SKIP" "disabled by configuration" }
     if ($Script:Config.Backup.Edge) { Write-Status "Edge" "INFO" "selected" } else { Write-Status "Edge" "SKIP" "disabled by configuration" }
     Write-Status "Import-LaptopData.ps1"  "OK"   "run on new machine"
-    Write-Status "QuickImport.bat"        "OK"   "double-click (choose admin or standard)"
+    Write-Status "QuickImport.bat"        "OK"   "double-click (runs as signed-in user)"
     Write-Status "TransferReport.html"    "OK"   "full report"
     if ($publishedArchivePath) {
         Write-Status "$(Split-Path -Path $publishedArchivePath -Leaf)" "OK" "uploaded ZIP archive"

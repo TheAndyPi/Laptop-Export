@@ -22,6 +22,10 @@
         # Deletes Printers\Printers.printerExport only after a successful
         # PrintBRM restore and completion of the generated import script.
         DeletePrintBrmAfterImport = $true
+
+        # When enabled, the normal user-context import offers to run the
+        # separate elevated helper after all user-scoped restoration finishes.
+        EnableAdminHelper = $false
     }
 
     # These values override the regular Import defaults when the technician
@@ -42,6 +46,7 @@
         Import = @{
             LotusNotes                  = $true
             DeletePrintBrmAfterImport   = $true
+            EnableAdminHelper            = $false
         }
     }
 }

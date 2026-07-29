@@ -32,29 +32,85 @@ function Get-SystemSettings {
             $matches[1]
         } else { $null }
         
-        # Try to export current power scheme (requires admin)
+        # A .pow export is a complete, portable copy of the active plan.  It
+        # contains the AC and DC values for every setting exposed in Control
+        # Panel and Power & battery (including the hidden advanced settings),
+        # rather than just the small lid-close subset parsed below.  Windows
+        # requires an elevated process to export or import a plan.
         $powerExport = Join-Path $settingsPath "PowerScheme.pow"
-        
+        if (-not $schemeGuid) {
+            throw "Could not determine the active power-scheme GUID."
+        }
+
+        # Keep a human-readable, full advanced-settings snapshot with the
+        # package.  The .pow file is used for restoration because it is not
+        # language-dependent and preserves settings that are not available on
+        # the destination hardware.
+        $powerDetailsPath = Join-Path $settingsPath "PowerSchemeDetails.txt"
+        $powerDetails = & powercfg /qh $schemeGuid 2>&1
+        $settings.PowerSettingsSnapshot = "PowerSchemeDetails.txt"
+        $settings.PowerSettingsSnapshotExitCode = $LASTEXITCODE
+        Set-Content -LiteralPath $powerDetailsPath -Value ($powerDetails | Out-String) -Encoding UTF8
+
+        # Store every individual setting value as well as the .pow file.  The
+        # destination normally already has the organisation's STOBG plan, so
+        # these values can be applied one at a time to that existing plan even
+        # when no plan import is being used.
+        $powerSettingValues = New-Object System.Collections.ArrayList
+        $currentSubgroupGuid = $null
+        $currentPowerSetting = $null
+        foreach ($line in $powerDetails) {
+            if ($line -match '^\s*Subgroup GUID:\s*([0-9a-fA-F-]{36})') {
+                $currentSubgroupGuid = $matches[1]
+                $currentPowerSetting = $null
+            }
+            elseif ($line -match '^\s*Power Setting GUID:\s*([0-9a-fA-F-]{36})') {
+                if ($currentSubgroupGuid) {
+                    $currentPowerSetting = [ordered]@{
+                        SubgroupGuid = $currentSubgroupGuid
+                        SettingGuid = $matches[1]
+                        ACValue = $null
+                        DCValue = $null
+                    }
+                    [void]$powerSettingValues.Add($currentPowerSetting)
+                }
+            }
+            elseif ($currentPowerSetting -and $line -match '^\s*Current AC Power Setting Index:\s*(0x[0-9a-fA-F]+)') {
+                $currentPowerSetting.ACValue = $matches[1]
+            }
+            elseif ($currentPowerSetting -and $line -match '^\s*Current DC Power Setting Index:\s*(0x[0-9a-fA-F]+)') {
+                $currentPowerSetting.DCValue = $matches[1]
+            }
+        }
+        $settings.PowerSettingValues = @($powerSettingValues | Where-Object { $_.ACValue -or $_.DCValue })
+        $settings.PowerSettingValueCount = $settings.PowerSettingValues.Count
+        if ($settings.PowerSettingValueCount -eq 0) {
+            Write-Log "Could not parse individual power-setting values; the full text snapshot was saved" -Level Warning
+        } else {
+            Write-Log "Captured $($settings.PowerSettingValueCount) individual AC/DC power-setting value(s)" -Level Success
+        }
+
         if ($Script:IsAdmin) {
-            $powerExportResult = powercfg /export $powerExport $schemeGuid 2>&1
-            
-            if (Test-Path $powerExport) {
-                $settings.PowerSchemeExported = $true
-                Write-Log "Power scheme exported successfully" -Level Success
+            if (Test-Path -LiteralPath $powerExport) {
+                Remove-Item -LiteralPath $powerExport -Force -ErrorAction Stop
+            }
+
+            $powerExportResult = & powercfg /export $powerExport $schemeGuid 2>&1
+            $powerExportExitCode = $LASTEXITCODE
+            $settings.PowerSchemeExported = ((Test-Path -LiteralPath $powerExport) -and ((Get-Item -LiteralPath $powerExport).Length -gt 0) -and $powerExportExitCode -eq 0)
+            $settings.PowerSchemeExportExitCode = $powerExportExitCode
+            $settings.PowerSettingsMirror = "PowerScheme.pow"
+
+            if ($settings.PowerSchemeExported) {
+                Write-Log "Complete power scheme exported successfully" -Level Success
             } else {
-                $settings.PowerSchemeExported = $false
-                Add-ManualTask -Task "Export Power Scheme" -Reason "Export failed even with admin rights" -Instructions "Run as admin: powercfg /export PowerScheme.pow $schemeGuid"
+                $exportMessage = ($powerExportResult | Out-String).Trim()
+                throw "Power-scheme export failed (exit $powerExportExitCode). $exportMessage"
             }
         } else {
             $settings.PowerSchemeExported = $false
-            Write-Log "Skipping power scheme export (requires admin)" -Level Info
-            Add-ManualTask -Task "Export Power Scheme" -Reason "Requires administrator privileges (skipped)" -Instructions @"
-Run these commands as Administrator on the OLD computer:
-  powercfg /export "D:\LaptopTransfer\PowerScheme.pow" $schemeGuid
-
-Then on the NEW computer:
-  powercfg /import "D:\LaptopTransfer\PowerScheme.pow"
-"@
+            $settings.PowerSchemeExportExitCode = $null
+            Write-Log "Complete power-scheme export skipped because the export is not elevated; individual values will still be restored" -Level Info
         }
         
         # Capture lid close settings using powercfg query (works without admin)
@@ -76,8 +132,8 @@ Then on the NEW computer:
             $settings.LidClose.OnBattery = $lidActions[$dcValue]
         }
         
-        Write-Log "Power settings captured" -Level Success
-        Add-Result -Category "Settings" -Item "Power Configuration" -Status $(if ($settings.PowerSchemeExported) { "Success" } else { "NOT EXPORTED - Admin Required" }) -Details "Lid: AC=$($settings.LidClose.OnAC), DC=$($settings.LidClose.OnBattery)"
+        Write-Log "Complete power settings captured" -Level Success
+        Add-Result -Category "Settings" -Item "Power Configuration" -Status $(if ($settings.PowerSettingValueCount -gt 0) { "Success" } else { "Warning" }) -Details "$($settings.PowerSettingValueCount) individual AC/DC values captured$(if ($settings.PowerSchemeExported) { '; full plan also exported' }); lid: AC=$($settings.LidClose.OnAC), DC=$($settings.LidClose.OnBattery)"
     }
     catch {
         Write-Log "Error capturing power settings: $_" -Level Warning

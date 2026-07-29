@@ -5,8 +5,7 @@ function New-QuickImportBatch {
 
     $batPath = Join-Path $DestinationBase "QuickImport.bat"
 
-    # Let the technician choose once: run normally for user-scoped data, or
-    # request elevation when power settings and local printer drivers matter.
+    # The user-context import owns any optional elevation after it finishes.
     $batContent = @"
 @echo off
 title STO Laptop Transfer - Quick Import
@@ -16,24 +15,7 @@ echo ============================================
 echo    STO Laptop Transfer - Quick Import
 echo ============================================
 echo.
-if /I "%~1"=="--elevated" goto :Elevated
-
-set /p RUN_AS_ADMIN="Run with administrator rights? (Y/N) [N]: "
-echo.
-
-if /I "%RUN_AS_ADMIN%"=="Y" (
-    echo Requesting administrator privileges...
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -ArgumentList '--elevated'"
-    exit /b
-) else (
-    echo Running import script as the current user...
-    echo Admin-only restore steps will be skipped and listed in the report.
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Import-LaptopData.ps1" -NoElevationPrompt
-)
-goto :Complete
-
-:Elevated
-echo Running import script with administrator rights...
+echo Running import script as the current signed-in user...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Import-LaptopData.ps1"
 
 :Complete
@@ -247,6 +229,7 @@ function Start-LaptopExport {
     
     # 8. Generate import script
     New-ImportScript -DestinationBase $transferBase -Settings $settings
+    New-AdminImportScript -DestinationBase $transferBase
 
     # 9. Generate HTML report
     $reportPath = New-TransferReport -DestinationBase $transferBase
@@ -314,7 +297,7 @@ function Start-LaptopExport {
     if ($Script:Config.Backup.Firefox) { Write-Status "Firefox" "INFO" "selected" } else { Write-Status "Firefox" "SKIP" "disabled by configuration" }
     if ($Script:Config.Backup.Edge) { Write-Status "Edge" "INFO" "selected" } else { Write-Status "Edge" "SKIP" "disabled by configuration" }
     Write-Status "Import-LaptopData.ps1"  "OK"   "run on new machine"
-    Write-Status "QuickImport.bat"        "OK"   "double-click (choose admin or standard)"
+    Write-Status "QuickImport.bat"        "OK"   "double-click (runs as signed-in user)"
     Write-Status "TransferReport.html"    "OK"   "full report"
     if ($publishedArchivePath) {
         Write-Status "$(Split-Path -Path $publishedArchivePath -Leaf)" "OK" "uploaded ZIP archive"
