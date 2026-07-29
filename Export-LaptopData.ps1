@@ -122,6 +122,9 @@ $Script:DevelopmentConfig = @{
         Firefox           = $true
         Edge              = $true
         OneDrive          = $true
+        DesktopLayout     = $true
+        TaskbarLayout     = $true
+        DefaultApps       = $true
     }
 
     Import = @{
@@ -456,6 +459,9 @@ $Script:Config = @{
         Firefox           = $true
         Edge              = $true
         OneDrive          = $true
+        DesktopLayout     = $true
+        TaskbarLayout     = $true
+        DefaultApps       = $true
     }
     Import = @{
         LotusNotes = $true
@@ -548,6 +554,9 @@ function Show-TransferSettingsMenu {
         @{ Section = "Backup"; Key = "Firefox";           Label = "Firefox";            Detail = "Firefox profile, bookmarks, logins, extensions, and settings" }
         @{ Section = "Backup"; Key = "Edge";              Label = "Microsoft Edge";     Detail = "Edge bookmarks and profile-specific favorites" }
         @{ Section = "Backup"; Key = "OneDrive";          Label = "OneDrive";           Detail = "Offline file availability check" }
+        @{ Section = "Backup"; Key = "DesktopLayout";     Label = "Desktop layout";     Detail = "Shortcut layout manifest and safe OneDrive duplicate review" }
+        @{ Section = "Backup"; Key = "TaskbarLayout";     Label = "Taskbar layout";     Detail = "Pinned app shortcuts and taskbar layout" }
+        @{ Section = "Backup"; Key = "DefaultApps";       Label = "Default apps";       Detail = "File and protocol default-app inventory" }
         @{ Section = "Import"; Key = "LotusNotes";        Label = "Import Lotus Notes"; Detail = "Restore exported Lotus local data on the new laptop" }
         @{ Section = "Import"; Key = "DeletePrintBrmAfterImport"; Label = "Delete PrintBRM after import"; Detail = "Remove the printer package after a successful restore" }
         @{ Section = "Online"; Key = "MaxTransferGB"; Type = "Number"; Label = "Online payload limit"; Detail = "Warn before export when selected payload exceeds this many GB" }
@@ -2094,7 +2103,12 @@ function Get-SystemSettings {
             }
         }
         
-        $settings.MappedDrives = @($mappedDrives) + @($regDrives) | Sort-Object -Property Letter -Unique
+        # Keep the letter/path pair intact.  A letter can be reused with a
+        # different UNC path, which is precisely the mismatch the importer
+        # needs to identify on the replacement device.
+        $settings.MappedDrives = @($mappedDrives) + @($regDrives) |
+            Where-Object { $_.Letter -and $_.Path } |
+            Sort-Object -Property Letter, Path -Unique
         
         $driveCount = ($settings.MappedDrives | Measure-Object).Count
         Write-Log "Found $driveCount mapped drive(s)" -Level Success
@@ -2264,6 +2278,17 @@ Windows Registry Editor Version 5.00
         Write-Log "Error capturing wallpaper: $_" -Level Warning
     }
     
+    # Save a dedicated, technician-readable snapshot as well as the complete
+    # settings payload consumed by the generated importer.
+    if (-not $settings.ContainsKey('MappedDrives')) { $settings.MappedDrives = @() }
+    $mappedDriveSnapshotFile = Join-Path $settingsPath "MappedDrivesSnapshot.json"
+    [PSCustomObject]@{
+        CaptureDate = $settings.CaptureDate
+        ComputerName = $settings.ComputerName
+        UserName = $settings.UserName
+        Drives = @($settings.MappedDrives)
+    } | ConvertTo-Json -Depth 4 | Out-File $mappedDriveSnapshotFile -Encoding UTF8
+
     # Save settings to JSON
     $settingsFile = Join-Path $settingsPath "SystemSettings.json"
     $settings | ConvertTo-Json -Depth 5 | Out-File $settingsFile -Encoding UTF8
@@ -2271,6 +2296,100 @@ Windows Registry Editor Version 5.00
     Write-Log "Settings saved to SystemSettings.json" -Level Success
     
     return $settings
+}
+
+function Get-ShortcutMetadata {
+    param([System.IO.FileInfo]$File, [int]$Ordinal = 0)
+
+    $item = [ordered]@{
+        Name = $File.Name; Extension = $File.Extension.ToLowerInvariant(); Sha256 = $null
+        TargetPath = $null; Arguments = $null; WorkingDirectory = $null; IconLocation = $null; Ordinal = $Ordinal
+    }
+    try { $item.Sha256 = (Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256 -ErrorAction Stop).Hash } catch { }
+    if ($item.Extension -eq '.lnk') {
+        try {
+            $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($File.FullName)
+            $item.TargetPath = $shortcut.TargetPath; $item.Arguments = $shortcut.Arguments
+            $item.WorkingDirectory = $shortcut.WorkingDirectory; $item.IconLocation = $shortcut.IconLocation
+        } catch { Write-Log "Could not inspect shortcut '$($File.Name)': $($_.Exception.Message)" -Level Warning }
+    }
+    return [PSCustomObject]$item
+}
+
+function Backup-DesktopLayout {
+    param([string]$DestinationBase)
+
+    $settingsPath = Join-Path $DestinationBase 'Settings'
+    $desktopPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+    try {
+        $shortcuts = @(Get-ChildItem -LiteralPath $desktopPath -File -Force -ErrorAction Stop |
+            Where-Object { $_.Extension -in @('.lnk', '.url') } |
+            Sort-Object Name | ForEach-Object -Begin { $ordinal = 0 } -Process { $ordinal++; Get-ShortcutMetadata -File $_ -Ordinal $ordinal })
+        [PSCustomObject]@{
+            CaptureDate = (Get-Date).ToString('o'); DesktopPath = $desktopPath; CoordinateRestore = 'BestEffortShellOrder'
+            Shortcuts = $shortcuts
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $settingsPath 'DesktopLayout.json') -Encoding UTF8
+        Add-Result -Category 'Settings' -Item 'Desktop Layout' -Status 'Success' -Details "$($shortcuts.Count) shortcut(s) captured"
+        Write-Log "Desktop layout captured: $($shortcuts.Count) shortcut(s)" -Level Success
+    } catch {
+        Write-Log "Desktop layout capture failed: $($_.Exception.Message)" -Level Warning
+        Add-Result -Category 'Settings' -Item 'Desktop Layout' -Status 'Warning' -Details $_.Exception.Message
+    }
+}
+
+function Backup-TaskbarLayout {
+    param([string]$DestinationBase)
+
+    $settingsPath = Join-Path $DestinationBase 'Settings'
+    $sourcePath = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'
+    $packagePath = Join-Path $settingsPath 'TaskbarLayout'
+    try {
+        $pins = @()
+        if (Test-Path -LiteralPath $sourcePath) {
+            New-Item -ItemType Directory -Path $packagePath -Force | Out-Null
+            $ordinal = 0
+            foreach ($file in @(Get-ChildItem -LiteralPath $sourcePath -File -Force | Sort-Object Name)) {
+                $ordinal++; Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $packagePath $file.Name) -Force -ErrorAction Stop
+                $pins += Get-ShortcutMetadata -File $file -Ordinal $ordinal
+            }
+        }
+        [PSCustomObject]@{ CaptureDate = (Get-Date).ToString('o'); Pins = @($pins); SourcePath = $sourcePath } |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $settingsPath 'TaskbarLayout.json') -Encoding UTF8
+        Add-Result -Category 'Settings' -Item 'Taskbar Layout' -Status 'Success' -Details "$($pins.Count) pinned app shortcut(s) captured"
+        Write-Log "Taskbar layout captured: $($pins.Count) pin(s)" -Level Success
+    } catch {
+        Write-Log "Taskbar layout capture failed: $($_.Exception.Message)" -Level Warning
+        Add-Result -Category 'Settings' -Item 'Taskbar Layout' -Status 'Warning' -Details $_.Exception.Message
+    }
+}
+
+function Backup-DefaultApps {
+    param([string]$DestinationBase)
+
+    $settingsPath = Join-Path $DestinationBase 'Settings'
+    try {
+        $associations = @()
+        $roots = @(
+            @{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts'; Type = 'FileExtension' },
+            @{ Path = 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations'; Type = 'Protocol' }
+        )
+        foreach ($root in $roots) {
+            foreach ($key in @(Get-ChildItem -Path $root.Path -ErrorAction SilentlyContinue)) {
+                $choice = Get-ItemProperty -LiteralPath (Join-Path $key.PSPath 'UserChoice') -ErrorAction SilentlyContinue
+                if ($choice -and $choice.ProgId) {
+                    $associations += [PSCustomObject]@{ Name = $key.PSChildName; Type = $root.Type; ProgId = $choice.ProgId }
+                }
+            }
+        }
+        $associations = @($associations | Sort-Object Type, Name -Unique)
+        [PSCustomObject]@{ CaptureDate = (Get-Date).ToString('o'); Associations = $associations } |
+            ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $settingsPath 'DefaultApps.json') -Encoding UTF8
+        Add-Result -Category 'Settings' -Item 'Default Apps' -Status 'Success' -Details "$($associations.Count) explicit association(s) captured"
+        Write-Log "Default app inventory captured: $($associations.Count) association(s)" -Level Success
+    } catch {
+        Write-Log "Default app inventory capture failed: $($_.Exception.Message)" -Level Warning
+        Add-Result -Category 'Settings' -Item 'Default Apps' -Status 'Warning' -Details $_.Exception.Message
+    }
 }
 
 function Get-InstalledPrograms {
@@ -3136,6 +3255,7 @@ $Script:Results = @{
     Actions = @()
     Warnings = @()
     Errors = @()
+    ManualTasks = @()
     OriginalUser = "{USERNAME}"
     OriginalComputer = "{COMPUTERNAME}"
 }
@@ -3203,6 +3323,15 @@ function Format-FileSize {
     if ($Bytes -ge 1MB) { return "{0:N2} MB" -f ($Bytes / 1MB) }
     if ($Bytes -ge 1KB) { return "{0:N2} KB" -f ($Bytes / 1KB) }
     return "$Bytes B"
+}
+
+function Add-ManualTask {
+    param([string]$Task, [string]$Reason, [string]$Instructions = "")
+    $Script:Results.ManualTasks += [PSCustomObject]@{
+        Task = $Task
+        Reason = $Reason
+        Instructions = $Instructions
+    }
 }
 
 function Format-RemainingTime {
@@ -3440,6 +3569,112 @@ foreach ($folder in $folders) {
     else {
         Write-Log "$folder - Not in transfer package" -Level "Info"
     }
+}
+
+# ============================================================================
+# DESKTOP LAYOUT AND ONEDRIVE SHORTCUT DUPLICATES
+# ============================================================================
+
+function Get-OneDriveDesktopPaths {
+    $paths = @()
+    foreach ($root in @($env:OneDriveCommercial, $env:OneDrive)) {
+        if ($root) {
+            $candidate = Join-Path $root 'Desktop'
+            if (Test-Path -LiteralPath $candidate) { $paths += $candidate }
+        }
+    }
+    return @($paths | Sort-Object -Unique)
+}
+
+function Get-ShortcutHash { param([string]$Path) try { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash } catch { return $null } }
+
+function Send-ShortcutToRecycleBin {
+    param([string]$Path)
+    Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction SilentlyContinue
+    [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($Path, [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
+}
+
+$desktopLayoutFile = Join-Path $scriptPath 'Settings\DesktopLayout.json'
+if (Test-Path -LiteralPath $desktopLayoutFile) {
+    try {
+        $desktopLayout = Get-Content -LiteralPath $desktopLayoutFile -Raw | ConvertFrom-Json
+        $count = @($desktopLayout.Shortcuts).Count
+        if ($TestMode) {
+            Write-Log "Desktop layout - Would retain $count transferred shortcut(s) and review OneDrive duplicates" -Level 'Info'
+            Add-Result -Category 'Desktop Layout' -Item 'Shortcut layout' -Status 'TestMode' -Details "$count shortcut(s); no changes made"
+        }
+        else {
+            # Desktop shortcut files have already been restored with the Desktop folder. Windows owns physical grid placement;
+            # retain the source ordering as a best-effort manifest and never import opaque Explorer Bag/Taskband registry blobs.
+            Add-Result -Category 'Desktop Layout' -Item 'Shortcut layout' -Status 'Success' -Details "$count shortcut(s) restored with Desktop data (Shell placement best effort)"
+            $localDesktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+            $candidates = @()
+            foreach ($cloudDesktop in @(Get-OneDriveDesktopPaths)) {
+                foreach ($cloudShortcut in @(Get-ChildItem -LiteralPath $cloudDesktop -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.lnk', '.url') })) {
+                    $localShortcut = Join-Path $localDesktop $cloudShortcut.Name
+                    if (-not (Test-Path -LiteralPath $localShortcut)) { continue }
+                    $cloudHash = Get-ShortcutHash $cloudShortcut.FullName; $localHash = Get-ShortcutHash $localShortcut
+                    if ($cloudHash -and $cloudHash -eq $localHash) { $candidates += $cloudShortcut }
+                }
+            }
+            if ($candidates.Count) {
+                Write-Host '  Exact duplicate OneDrive Desktop shortcuts:' -ForegroundColor Yellow
+                $candidates | ForEach-Object { Write-Host "    $($_.FullName)" -ForegroundColor Gray }
+                $answer = Read-Host '  Send ALL listed duplicate shortcuts to the Recycle Bin? (Y/N)'
+                if ($answer -match '^[Yy]') {
+                    foreach ($candidate in $candidates) {
+                        try { Send-ShortcutToRecycleBin -Path $candidate.FullName; Write-Log "OneDrive duplicate shortcut recycled: $($candidate.Name)" -Level 'Success' }
+                        catch { Write-Log "Could not recycle OneDrive shortcut '$($candidate.Name)': $($_.Exception.Message)" -Level 'Warning' }
+                    }
+                    Add-Result -Category 'Desktop Layout' -Item 'OneDrive duplicate shortcuts' -Status 'Success' -Details "$($candidates.Count) selected exact duplicate(s) sent to Recycle Bin"
+                } else { Add-Result -Category 'Desktop Layout' -Item 'OneDrive duplicate shortcuts' -Status 'Skipped' -Details "$($candidates.Count) candidate(s) retained by technician" }
+            }
+        }
+    } catch { Write-Log "Desktop layout restore failed: $($_.Exception.Message)" -Level 'Warning'; Add-Result -Category 'Desktop Layout' -Item 'Shortcut layout' -Status 'Warning' -Details $_.Exception.Message }
+}
+
+# ============================================================================
+# TASKBAR PINS AND DEFAULT-APP GUIDANCE
+# ============================================================================
+
+$taskbarLayoutFile = Join-Path $scriptPath 'Settings\TaskbarLayout.json'
+$taskbarPackagePath = Join-Path $scriptPath 'Settings\TaskbarLayout'
+if (Test-Path -LiteralPath $taskbarLayoutFile) {
+    try {
+        $taskbarLayout = Get-Content -LiteralPath $taskbarLayoutFile -Raw | ConvertFrom-Json
+        $pinCount = @($taskbarLayout.Pins).Count
+        if ($TestMode) { Write-Log "Taskbar layout - Would restore $pinCount source pin(s) without removing destination pins" -Level 'Info'; Add-Result -Category 'Taskbar Layout' -Item 'Pinned apps' -Status 'TestMode' -Details "$pinCount source pin(s)" }
+        elseif (Test-Path -LiteralPath $taskbarPackagePath) {
+            $destinationPins = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'
+            New-Item -ItemType Directory -Path $destinationPins -Force | Out-Null
+            $copied = 0; $skipped = 0
+            foreach ($pin in @($taskbarLayout.Pins | Sort-Object Ordinal)) {
+                $sourcePin = Join-Path $taskbarPackagePath $pin.Name
+                if (-not (Test-Path -LiteralPath $sourcePin)) { $skipped++; continue }
+                if ($pin.TargetPath -and -not (Test-Path -LiteralPath $pin.TargetPath) -and $pin.TargetPath -notmatch '^(shell:|explorer\.exe)') {
+                    Write-Log "Taskbar app unavailable: $($pin.Name) -> $($pin.TargetPath)" -Level 'Warning'; $skipped++; continue
+                }
+                $destinationPin = Join-Path $destinationPins $pin.Name
+                if (Test-Path -LiteralPath $destinationPin) { $skipped++; continue }
+                Copy-Item -LiteralPath $sourcePin -Destination $destinationPin -ErrorAction Stop; $copied++
+            }
+            if ($copied) { Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Process explorer.exe }
+            Add-Result -Category 'Taskbar Layout' -Item 'Pinned apps' -Status $(if ($skipped) { 'Warning' } else { 'Success' }) -Details "$copied added; $skipped retained/unavailable. Existing destination pins preserved"
+        }
+    } catch { Write-Log "Taskbar layout restore failed: $($_.Exception.Message)" -Level 'Warning'; Add-Result -Category 'Taskbar Layout' -Item 'Pinned apps' -Status 'Warning' -Details $_.Exception.Message }
+}
+
+$defaultAppsFile = Join-Path $scriptPath 'Settings\DefaultApps.json'
+if (Test-Path -LiteralPath $defaultAppsFile) {
+    try {
+        $defaultApps = Get-Content -LiteralPath $defaultAppsFile -Raw | ConvertFrom-Json
+        $guidePath = Join-Path $logsPath 'DefaultAppsRestoreGuide.txt'
+        $guide = @('Default apps captured on the source computer', 'Windows protects per-user defaults; set these through Settings > Apps > Default apps.', '')
+        $guide += @($defaultApps.Associations | Sort-Object Type, Name | ForEach-Object { "$($_.Type): $($_.Name) -> $($_.ProgId)" })
+        $guide | Set-Content -LiteralPath $guidePath -Encoding UTF8
+        if ($TestMode) { Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'TestMode' -Details 'No Settings page opened' }
+        else { Start-Process 'ms-settings:defaultapps' -ErrorAction SilentlyContinue; Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'Manual' -Details 'See Logs\DefaultAppsRestoreGuide.txt and the opened Settings page' }
+    } catch { Write-Log "Default-app guidance failed: $($_.Exception.Message)" -Level 'Warning'; Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'Warning' -Details $_.Exception.Message }
 }
 
 # Additional folders
@@ -3905,14 +4140,76 @@ if ($false -and -not $powerPlanRestored -and $settingsData -and $settingsData.Li
 }
 
 # Mapped network drives
-if ($settingsData -and $settingsData.MappedDrives -and $settingsData.MappedDrives.Count -gt 0) {
+function Get-CurrentNetworkDriveMappings {
+    $mappings = @()
+    try {
+        $mappings += @(Get-PSDrive -PSProvider FileSystem -ErrorAction Stop |
+            Where-Object { $_.DisplayRoot -like "\\*" } |
+            ForEach-Object { [PSCustomObject]@{ Letter = $_.Name.ToUpperInvariant(); Path = $_.DisplayRoot } })
+    }
+    catch { Write-Log "Could not query active network drives: $($_.Exception.Message)" -Level "Warning" }
+
+    try {
+        $mappings += @(Get-ItemProperty -Path "HKCU:\Network\*" -ErrorAction SilentlyContinue |
+            Where-Object { $_.PSChildName -and $_.RemotePath } |
+            ForEach-Object { [PSCustomObject]@{ Letter = $_.PSChildName.ToUpperInvariant(); Path = $_.RemotePath } })
+    }
+    catch { Write-Log "Could not query persistent network drives: $($_.Exception.Message)" -Level "Warning" }
+
+    return @($mappings | Sort-Object Letter, Path -Unique)
+}
+
+function Write-NetworkDriveComparison {
+    param([object[]]$ExpectedDrives)
+
+    $currentDrives = @(Get-CurrentNetworkDriveMappings)
+    $missing = @()
+    $conflicts = @()
+    foreach ($expected in $ExpectedDrives) {
+        $matchingLetter = @($currentDrives | Where-Object { $_.Letter -eq $expected.Letter })
+        if (@($matchingLetter | Where-Object { $_.Path -eq $expected.Path }).Count -eq 0) {
+            if ($matchingLetter.Count -gt 0) {
+                $conflicts += "$($expected.Letter): expected $($expected.Path); found $($matchingLetter[0].Path)"
+            }
+            else { $missing += "$($expected.Letter): $($expected.Path)" }
+        }
+    }
+
+    $reportPath = Join-Path $scriptPath "Logs\NetworkDriveComparison.txt"
+    $lines = @(
+        "Network drive comparison - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
+        "Expected: $($ExpectedDrives.Count); detected: $($currentDrives.Count)",
+        "",
+        "Missing expected mappings:"
+    )
+    $lines += if ($missing.Count) { $missing } else { "None" }
+    $lines += ""; $lines += "Conflicting drive letters:"
+    $lines += if ($conflicts.Count) { $conflicts } else { "None" }
+    $lines += ""; $lines += "Detected mappings:"
+    $lines += if ($currentDrives.Count) { @($currentDrives | ForEach-Object { "$($_.Letter): $($_.Path)" }) } else { "None" }
+    $lines | Set-Content -LiteralPath $reportPath -Encoding UTF8
+
+    if ($missing.Count -or $conflicts.Count) {
+        $detail = "$($missing.Count) missing, $($conflicts.Count) conflicting. See Logs\\NetworkDriveComparison.txt"
+        Write-Log "NETWORK DRIVE REVIEW REQUIRED: $detail" -Level "Warning"
+        Write-Host "  Technician notification: $detail" -ForegroundColor Yellow
+        Add-Result -Category "Network Drives" -Item "Comparison" -Status "Warning" -Details $detail
+        Add-ManualTask -Task "Resolve missing network drives" -Reason $detail -Instructions "Review Logs\\NetworkDriveComparison.txt. Connect to the required network/VPN, resolve credentials, and ensure every expected letter points to its recorded UNC path."
+    }
+    else {
+        Write-Log "Network drive comparison passed: all expected mappings match" -Level "Success"
+        Add-Result -Category "Network Drives" -Item "Comparison" -Status "Success" -Details "All $($ExpectedDrives.Count) expected mappings match"
+    }
+}
+
+if ($settingsData -and $settingsData.MappedDrives -and (@($settingsData.MappedDrives).Count -gt 0)) {
     Write-Host ""
     Write-Host "  Network Drives:" -ForegroundColor Gray
     
     foreach ($drive in $settingsData.MappedDrives) {
         if ($drive.Letter -and $drive.Path) {
-            $driveLetter = $drive.Letter
-            $drivePath = $drive.Path
+            $driveLetter = $drive.Letter.ToString().TrimEnd(':').ToUpperInvariant()
+            $drivePath = $drive.Path.ToString().Trim()
             
             if ($TestMode) {
                 Write-Log "  ${driveLetter}: -> $drivePath (would map)" -Level "Info"
@@ -3920,9 +4217,13 @@ if ($settingsData -and $settingsData.MappedDrives -and $settingsData.MappedDrive
             }
             else {
                 # Check if drive letter already in use
-                if (Test-Path "${driveLetter}:") {
-                    Write-Log "  ${driveLetter}: already mapped" -Level "Warning"
-                    Add-Result -Category "Network Drives" -Item "${driveLetter}:" -Status "Skipped" -Details "Already mapped"
+                $existing = @(Get-CurrentNetworkDriveMappings | Where-Object { $_.Letter -eq $driveLetter })
+                if ($existing.Count -gt 0) {
+                    $existingPath = $existing[0].Path
+                    $status = if ($existingPath -eq $drivePath) { "Skipped" } else { "Warning" }
+                    $detail = if ($existingPath -eq $drivePath) { "Already mapped to expected path" } else { "Already mapped to different path: $existingPath" }
+                    Write-Log "  ${driveLetter}: $detail" -Level $(if ($status -eq "Warning") { "Warning" } else { "Info" })
+                    Add-Result -Category "Network Drives" -Item "${driveLetter}:" -Status $status -Details $detail
                 }
                 else {
                     try {
@@ -3938,6 +4239,10 @@ if ($settingsData -and $settingsData.MappedDrives -and $settingsData.MappedDrive
             }
         }
     }
+    $expectedDrives = @($settingsData.MappedDrives | Where-Object { $_.Letter -and $_.Path } | ForEach-Object {
+        [PSCustomObject]@{ Letter = $_.Letter.ToString().TrimEnd(':').ToUpperInvariant(); Path = $_.Path.ToString().Trim() }
+    } | Sort-Object Letter, Path -Unique)
+    Write-NetworkDriveComparison -ExpectedDrives $expectedDrives
 }
 
 # ========== RESTORE PRINTERS ==========
@@ -4288,18 +4593,6 @@ if (Test-Path $printerExportFile) {
     Add-Result -Category "Printers" -Item "Local Printers" -Status "Pending" -Details "Run Import-SystemSettings.ps1 through the optional helper"
 }
 
-function Add-ManualTask {
-    param([string]$Task, [string]$Reason, [string]$Instructions = "")
-
-    # The generated importer records items that need manual follow-up, such
-    # as local printers that require elevation.
-    $Script:Results.ManualTasks += [PSCustomObject]@{
-        Task = $Task
-        Reason = $Reason
-        Instructions = $Instructions
-    }
-}
-
 # Chrome bookmarks HTML (one file per old Chrome profile)
 $chromeBookmarksPath = Join-Path $browserDataPath "Chrome\Bookmarks"
 $chromeBookmarkFiles = @(Get-ChildItem -LiteralPath $chromeBookmarksPath -Filter "*.html" -File -Force -ErrorAction SilentlyContinue)
@@ -4378,6 +4671,38 @@ if ($chromePasswordCsvs.Count -gt 0) {
         }
     }
 }
+
+# OneDrive Files On-Demand: after the user has signed in, pin every synced
+# folder so Windows keeps the content available on this replacement device.
+function Enable-OneDriveAlwaysOnDevice {
+    $oneDriveFolders = @($env:OneDriveCommercial, $env:OneDrive) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Sort-Object -Unique
+    if ($TestMode) {
+        Write-Log "OneDrive - Would enable 'Always keep on this device' after sign-in" -Level "Info"
+        Add-Result -Category "OneDrive" -Item "Always on this device" -Status "TestMode" -Details "No changes made"
+        return
+    }
+    if ($oneDriveFolders.Count -eq 0) {
+        Write-Log "OneDrive is not signed in or its sync folder is unavailable" -Level "Warning"
+        Add-Result -Category "OneDrive" -Item "Always on this device" -Status "Manual" -Details "Sign in to OneDrive, then rerun the import"
+        Add-ManualTask -Task "Enable OneDrive always-on-device sync" -Reason "No signed-in OneDrive folder was found" -Instructions "Sign in to OneDrive, wait for its folder to appear, then rerun Import-LaptopData.ps1. The rerun pins the synced files for offline availability."
+        return
+    }
+    foreach ($oneDriveFolder in $oneDriveFolders) {
+        try {
+            $process = Start-Process -FilePath "attrib.exe" -ArgumentList "+P", "-U", "/S", "/D", "`"$oneDriveFolder\*`"" -Wait -PassThru -NoNewWindow -ErrorAction Stop
+            if ($process.ExitCode -ne 0) { throw "attrib.exe exited with code $($process.ExitCode)" }
+            Write-Log "OneDrive files pinned for this device: $oneDriveFolder" -Level "Success"
+            Add-Result -Category "OneDrive" -Item "Always on this device" -Status "Success" -Details $oneDriveFolder
+        }
+        catch {
+            Write-Log "Could not pin OneDrive files at ${oneDriveFolder}: $($_.Exception.Message)" -Level "Warning"
+            Add-Result -Category "OneDrive" -Item "Always on this device" -Status "Manual" -Details $_.Exception.Message
+            Add-ManualTask -Task "Enable OneDrive always-on-device sync" -Reason "Automatic pinning failed" -Instructions "In File Explorer, open $oneDriveFolder, select all content, then choose 'Always keep on this device'."
+        }
+    }
+}
+
+Enable-OneDriveAlwaysOnDevice
 
 # Edge bookmarks HTML (one file per old Edge profile)
 $edgeBookmarksPath = Join-Path $browserDataPath "Edge\Bookmarks"
@@ -5439,8 +5764,16 @@ function Start-LaptopExport {
         Set-OneDriveLocalSync
     }
     else { Add-DisabledBackupResult -Item "OneDrive" }
+
+    # 8. Capture optional user-experience layout and default-app inventories.
+    if ($Script:Config.Backup.DesktopLayout) { Backup-DesktopLayout -DestinationBase $transferBase }
+    else { Add-DisabledBackupResult -Item "Desktop layout" -Category "Settings" }
+    if ($Script:Config.Backup.TaskbarLayout) { Backup-TaskbarLayout -DestinationBase $transferBase }
+    else { Add-DisabledBackupResult -Item "Taskbar layout" -Category "Settings" }
+    if ($Script:Config.Backup.DefaultApps) { Backup-DefaultApps -DestinationBase $transferBase }
+    else { Add-DisabledBackupResult -Item "Default apps" -Category "Settings" }
     
-    # 8. Generate import script
+    # 9. Generate import script
     New-ImportScript -DestinationBase $transferBase -Settings $settings
     New-AdminImportScript -DestinationBase $transferBase
 

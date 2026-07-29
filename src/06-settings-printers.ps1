@@ -161,7 +161,12 @@ function Get-SystemSettings {
             }
         }
         
-        $settings.MappedDrives = @($mappedDrives) + @($regDrives) | Sort-Object -Property Letter -Unique
+        # Keep the letter/path pair intact.  A letter can be reused with a
+        # different UNC path, which is precisely the mismatch the importer
+        # needs to identify on the replacement device.
+        $settings.MappedDrives = @($mappedDrives) + @($regDrives) |
+            Where-Object { $_.Letter -and $_.Path } |
+            Sort-Object -Property Letter, Path -Unique
         
         $driveCount = ($settings.MappedDrives | Measure-Object).Count
         Write-Log "Found $driveCount mapped drive(s)" -Level Success
@@ -331,6 +336,17 @@ Windows Registry Editor Version 5.00
         Write-Log "Error capturing wallpaper: $_" -Level Warning
     }
     
+    # Save a dedicated, technician-readable snapshot as well as the complete
+    # settings payload consumed by the generated importer.
+    if (-not $settings.ContainsKey('MappedDrives')) { $settings.MappedDrives = @() }
+    $mappedDriveSnapshotFile = Join-Path $settingsPath "MappedDrivesSnapshot.json"
+    [PSCustomObject]@{
+        CaptureDate = $settings.CaptureDate
+        ComputerName = $settings.ComputerName
+        UserName = $settings.UserName
+        Drives = @($settings.MappedDrives)
+    } | ConvertTo-Json -Depth 4 | Out-File $mappedDriveSnapshotFile -Encoding UTF8
+
     # Save settings to JSON
     $settingsFile = Join-Path $settingsPath "SystemSettings.json"
     $settings | ConvertTo-Json -Depth 5 | Out-File $settingsFile -Encoding UTF8
@@ -338,6 +354,100 @@ Windows Registry Editor Version 5.00
     Write-Log "Settings saved to SystemSettings.json" -Level Success
     
     return $settings
+}
+
+function Get-ShortcutMetadata {
+    param([System.IO.FileInfo]$File, [int]$Ordinal = 0)
+
+    $item = [ordered]@{
+        Name = $File.Name; Extension = $File.Extension.ToLowerInvariant(); Sha256 = $null
+        TargetPath = $null; Arguments = $null; WorkingDirectory = $null; IconLocation = $null; Ordinal = $Ordinal
+    }
+    try { $item.Sha256 = (Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256 -ErrorAction Stop).Hash } catch { }
+    if ($item.Extension -eq '.lnk') {
+        try {
+            $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($File.FullName)
+            $item.TargetPath = $shortcut.TargetPath; $item.Arguments = $shortcut.Arguments
+            $item.WorkingDirectory = $shortcut.WorkingDirectory; $item.IconLocation = $shortcut.IconLocation
+        } catch { Write-Log "Could not inspect shortcut '$($File.Name)': $($_.Exception.Message)" -Level Warning }
+    }
+    return [PSCustomObject]$item
+}
+
+function Backup-DesktopLayout {
+    param([string]$DestinationBase)
+
+    $settingsPath = Join-Path $DestinationBase 'Settings'
+    $desktopPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+    try {
+        $shortcuts = @(Get-ChildItem -LiteralPath $desktopPath -File -Force -ErrorAction Stop |
+            Where-Object { $_.Extension -in @('.lnk', '.url') } |
+            Sort-Object Name | ForEach-Object -Begin { $ordinal = 0 } -Process { $ordinal++; Get-ShortcutMetadata -File $_ -Ordinal $ordinal })
+        [PSCustomObject]@{
+            CaptureDate = (Get-Date).ToString('o'); DesktopPath = $desktopPath; CoordinateRestore = 'BestEffortShellOrder'
+            Shortcuts = $shortcuts
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $settingsPath 'DesktopLayout.json') -Encoding UTF8
+        Add-Result -Category 'Settings' -Item 'Desktop Layout' -Status 'Success' -Details "$($shortcuts.Count) shortcut(s) captured"
+        Write-Log "Desktop layout captured: $($shortcuts.Count) shortcut(s)" -Level Success
+    } catch {
+        Write-Log "Desktop layout capture failed: $($_.Exception.Message)" -Level Warning
+        Add-Result -Category 'Settings' -Item 'Desktop Layout' -Status 'Warning' -Details $_.Exception.Message
+    }
+}
+
+function Backup-TaskbarLayout {
+    param([string]$DestinationBase)
+
+    $settingsPath = Join-Path $DestinationBase 'Settings'
+    $sourcePath = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'
+    $packagePath = Join-Path $settingsPath 'TaskbarLayout'
+    try {
+        $pins = @()
+        if (Test-Path -LiteralPath $sourcePath) {
+            New-Item -ItemType Directory -Path $packagePath -Force | Out-Null
+            $ordinal = 0
+            foreach ($file in @(Get-ChildItem -LiteralPath $sourcePath -File -Force | Sort-Object Name)) {
+                $ordinal++; Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $packagePath $file.Name) -Force -ErrorAction Stop
+                $pins += Get-ShortcutMetadata -File $file -Ordinal $ordinal
+            }
+        }
+        [PSCustomObject]@{ CaptureDate = (Get-Date).ToString('o'); Pins = @($pins); SourcePath = $sourcePath } |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $settingsPath 'TaskbarLayout.json') -Encoding UTF8
+        Add-Result -Category 'Settings' -Item 'Taskbar Layout' -Status 'Success' -Details "$($pins.Count) pinned app shortcut(s) captured"
+        Write-Log "Taskbar layout captured: $($pins.Count) pin(s)" -Level Success
+    } catch {
+        Write-Log "Taskbar layout capture failed: $($_.Exception.Message)" -Level Warning
+        Add-Result -Category 'Settings' -Item 'Taskbar Layout' -Status 'Warning' -Details $_.Exception.Message
+    }
+}
+
+function Backup-DefaultApps {
+    param([string]$DestinationBase)
+
+    $settingsPath = Join-Path $DestinationBase 'Settings'
+    try {
+        $associations = @()
+        $roots = @(
+            @{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts'; Type = 'FileExtension' },
+            @{ Path = 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations'; Type = 'Protocol' }
+        )
+        foreach ($root in $roots) {
+            foreach ($key in @(Get-ChildItem -Path $root.Path -ErrorAction SilentlyContinue)) {
+                $choice = Get-ItemProperty -LiteralPath (Join-Path $key.PSPath 'UserChoice') -ErrorAction SilentlyContinue
+                if ($choice -and $choice.ProgId) {
+                    $associations += [PSCustomObject]@{ Name = $key.PSChildName; Type = $root.Type; ProgId = $choice.ProgId }
+                }
+            }
+        }
+        $associations = @($associations | Sort-Object Type, Name -Unique)
+        [PSCustomObject]@{ CaptureDate = (Get-Date).ToString('o'); Associations = $associations } |
+            ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $settingsPath 'DefaultApps.json') -Encoding UTF8
+        Add-Result -Category 'Settings' -Item 'Default Apps' -Status 'Success' -Details "$($associations.Count) explicit association(s) captured"
+        Write-Log "Default app inventory captured: $($associations.Count) association(s)" -Level Success
+    } catch {
+        Write-Log "Default app inventory capture failed: $($_.Exception.Message)" -Level Warning
+        Add-Result -Category 'Settings' -Item 'Default Apps' -Status 'Warning' -Details $_.Exception.Message
+    }
 }
 
 function Get-InstalledPrograms {

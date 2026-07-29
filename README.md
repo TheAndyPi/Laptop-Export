@@ -67,7 +67,7 @@ It then runs the export and opens the HTML report when finished. **Online** tran
 
 - **User folders** — Documents, Desktop, Downloads, Pictures, Videos, Music, Favorites, loose profile files, and OCS Documents
 - **AppData** — Bluebeam, Outlook email signatures, Quick Access pins, Lotus Notes
-- **System settings** — individual active power-plan values are applied to the existing STOBG plan (all available AC/DC settings, including the advanced Control Panel and Power & battery settings); an elevated run also includes a complete plan export, plus mapped network drives, personalization (colors, dark mode, taskbar), wallpaper
+- **System settings** — individual active power-plan values are applied to the existing STOBG plan (all available AC/DC settings, including the advanced Control Panel and Power & battery settings); an elevated run also includes a complete plan export, plus mapped network drives, personalization (colors, dark mode, taskbar), wallpaper, desktop shortcut layout, taskbar pins, and a default-app inventory
 - **Installed programs** — documented to a list
 - **Printers** — a `Printers.printerExport` PrintBRM migration file is attempted for every run, plus a driverless network-connection list. Windows may require elevation to create a full PrintBRM package; the package log records the exact result.
 - **Browser data** — Chrome and Edge bookmarks from every profile (automatic restore for Default/matching profiles plus portable HTML), a Chrome profile archive with common cache directories excluded for recovery/reference, and an optional native Chrome Password Manager CSV export that requires Windows authentication; full Firefox profile data, including bookmarks, saved logins, history, extensions, settings, and companion local data
@@ -107,6 +107,8 @@ If Firefox data is present, the import script restores it automatically. Close F
 With Chrome and Edge closed, the import script restores bookmarks automatically for each `Default` profile and any matching `Profile N` profiles. It backs up any target bookmark file first. Profiles that do not yet exist on the new machine remain available as portable HTML files for native browser import. The raw Chrome profile archive is retained for recovery/reference but credentials and cookies are deliberately not copied over: their encryption is tied to the old Windows installation. During export, the tool can open Chrome Password Manager so the original user can complete Chrome's Windows-authenticated password export. Save that resulting plaintext CSV in the requested `BrowserData\Chrome\PasswordExport` folder. The generated import script guides the native Chrome CSV import and offers to delete the CSV only after you confirm the import succeeded.
 
 During any file-copy step, press `S` to stop that copy and continue the export. The transfer report records the step as skipped; partially copied files remain in place so a later export can resume the copy.
+
+Desktop Layout, Taskbar Layout, and Default Apps are independent Transfer Settings switches and are enabled by default. Desktop duplicate cleanup only offers exact duplicate `.lnk`/`.url` files found in both the local and OneDrive Desktop folders; it requires confirmation and sends selected shortcuts to the Recycle Bin. Taskbar restoration retains existing destination pins and reports unavailable apps. Default-app associations are documented in `Logs\DefaultAppsRestoreGuide.txt` and opened in Windows Settings rather than being force-written.
 
 ## Command-line parameters
 

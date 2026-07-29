@@ -13,6 +13,9 @@
         Firefox           = $true
         Edge              = $true
         OneDrive          = $true
+        DesktopLayout     = $true
+        TaskbarLayout     = $true
+        DefaultApps       = $true
     }
 
     Import = @{

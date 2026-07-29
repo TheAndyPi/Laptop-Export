@@ -89,6 +89,19 @@ Describe 'Generated importer TestMode' {
         Set-Content -LiteralPath (Join-Path $script:Package "UserData\Documents\$script:MarkerName") -Value 'Synthetic test payload' -Encoding UTF8
         New-Item -ItemType Directory -Path (Join-Path $script:Package 'Logs') -Force | Out-Null
         New-ImportScript -DestinationBase $script:Package -Settings @{}
+        New-Item -ItemType Directory -Path (Join-Path $script:Package 'Settings') -Force | Out-Null
+        @{ MappedDrives = @(@{ Letter = 'Z'; Path = '\\test-server\transfer-share' }) } |
+            ConvertTo-Json -Depth 3 |
+            Set-Content -LiteralPath (Join-Path $script:Package 'Settings\SystemSettings.json') -Encoding UTF8
+        @{ Shortcuts = @(@{ Name = 'Example.lnk'; Sha256 = 'synthetic'; Ordinal = 1 }) } |
+            ConvertTo-Json -Depth 3 |
+            Set-Content -LiteralPath (Join-Path $script:Package 'Settings\DesktopLayout.json') -Encoding UTF8
+        @{ Pins = @(@{ Name = 'Example.lnk'; TargetPath = 'C:\Missing\Example.exe'; Ordinal = 1 }) } |
+            ConvertTo-Json -Depth 3 |
+            Set-Content -LiteralPath (Join-Path $script:Package 'Settings\TaskbarLayout.json') -Encoding UTF8
+        @{ Associations = @(@{ Type = 'Protocol'; Name = 'https'; ProgId = 'SyntheticHTML' }) } |
+            ConvertTo-Json -Depth 3 |
+            Set-Content -LiteralPath (Join-Path $script:Package 'Settings\DefaultApps.json') -Encoding UTF8
     }
 
     It 'runs non-interactively without restoring synthetic package data' {
@@ -105,5 +118,52 @@ Describe 'Generated importer TestMode' {
         Test-Path -LiteralPath $targetMarker | Should Be $false
         (Get-FileHash -LiteralPath $sourcePayload -Algorithm SHA256).Hash | Should Be $sourceHashBefore
         Test-Path -LiteralPath (Join-Path $script:Package 'Logs\AdminImportResult.json') | Should Be $true
+        $comparisonPath = Join-Path $script:Package 'Logs\NetworkDriveComparison.txt'
+        Test-Path -LiteralPath $comparisonPath | Should Be $true
+        (Get-Content -LiteralPath $comparisonPath -Raw) | Should Match ([regex]::Escape('Z: \\test-server\transfer-share'))
+        $output | Should Match 'OneDrive - Would enable'
+        $output | Should Match 'Desktop layout - Would retain 1 transferred shortcut'
+        $output | Should Match 'Taskbar layout - Would restore 1 source pin'
+        Test-Path -LiteralPath (Join-Path $script:Package 'Logs\DefaultAppsRestoreGuide.txt') | Should Be $true
+    }
+}
+
+Describe 'Layout and default-app implementation' {
+    It 'ships all three independent toggles enabled by default' {
+        $config = Import-PowerShellDataFile -LiteralPath (Join-Path $script:RepoRoot 'src\00-development-config.psd1')
+        $config.Backup.DesktopLayout | Should Be $true
+        $config.Backup.TaskbarLayout | Should Be $true
+        $config.Backup.DefaultApps | Should Be $true
+    }
+
+    It 'uses a hash-gated, shortcut-only OneDrive cleanup and avoids protected default-app writes' {
+        $template = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\08-import-template.ps1') -Raw
+        $template | Should Match "\.Extension -in @\('\.lnk', '\.url'\)"
+        $template | Should Match 'Get-ShortcutHash \$cloudShortcut\.FullName'
+        $template | Should Match 'SendToRecycleBin'
+        $template | Should Match 'ms-settings:defaultapps'
+        $template | Should Not Match 'Set-ItemProperty.+UserChoice'
+    }
+
+    It 'captures portable manifests rather than opaque Taskband registry data' {
+        $settings = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\06-settings-printers.ps1') -Raw
+        $settings | Should Match 'DesktopLayout\.json'
+        $settings | Should Match 'TaskbarLayout\.json'
+        $settings | Should Match 'DefaultApps\.json'
+        $settings | Should Not Match 'Taskband\\Favorites'
+    }
+}
+
+Describe 'Network drive and OneDrive implementation' {
+    It 'writes an old-device mapped-drive snapshot and includes import comparison safeguards' {
+        $settingsModule = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\06-settings-printers.ps1') -Raw
+        $importTemplate = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\08-import-template.ps1') -Raw
+
+        $settingsModule | Should Match 'MappedDrivesSnapshot\.json'
+        $settingsModule | Should Match 'Sort-Object -Property Letter, Path -Unique'
+        $importTemplate | Should Match 'function Write-NetworkDriveComparison'
+        $importTemplate | Should Match 'NetworkDriveComparison\.txt'
+        $importTemplate | Should Match 'function Enable-OneDriveAlwaysOnDevice'
+        $importTemplate | Should Match 'attrib\.exe'
     }
 }
