@@ -14,6 +14,7 @@ echo Welcome. Choose the export method you want to run:
 echo.
 echo   [S] Stable export method    ^(main branch^)
 echo   [P] Prototype export method ^(A1A2-Prototype branch^)
+echo   [E] Experimental UNSTABLE export method ^(PrototypeSuperUnstable branch^)
 echo.
 
 :ChooseMethod
@@ -21,8 +22,9 @@ set "METHOD="
 set /p "METHOD=Choose S or P: "
 if /I "%METHOD%"=="S" set "TARGET_BRANCH=main"
 if /I "%METHOD%"=="P" set "TARGET_BRANCH=A1A2-Prototype"
+if /I "%METHOD%"=="E" set "TARGET_BRANCH=PrototypeSuperUnstable"
 if not defined TARGET_BRANCH (
-    echo Please enter S for Stable or P for Prototype.
+    echo Please enter S for Stable or P for Prototype or E for Experimental.
     echo.
     goto ChooseMethod
 )

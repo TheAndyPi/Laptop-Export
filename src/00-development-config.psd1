@@ -8,6 +8,7 @@
         LotusNotes        = $true
         SystemSettings    = $true
         InstalledPrograms = $true
+        AppDataCandidateInventory = $true
         Printers          = $true
         Chrome            = $true
         Firefox           = $true
@@ -29,6 +30,8 @@
         # When enabled, the normal user-context import offers to run the
         # separate elevated helper after all user-scoped restoration finishes.
         EnableAdminHelper = $false
+        AppComparison = $true
+        AppDataReview = $true
     }
 
     # These values override the regular Import defaults when the technician
@@ -50,6 +53,8 @@
             LotusNotes                  = $true
             DeletePrintBrmAfterImport   = $true
             EnableAdminHelper            = $false
+            AppComparison                = $true
+            AppDataReview                = $true
         }
     }
 }

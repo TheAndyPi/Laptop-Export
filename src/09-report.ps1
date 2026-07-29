@@ -408,6 +408,7 @@ function New-TransferReport {
                     <li><span class="checkbox"></span> Test Teams incl. Camera</li>
                     <li><span class="checkbox"></span> Configure Adobe / Bluebeam Revu</li>
                     <li><span class="checkbox"></span> Test run all other Applications</li>
+                    <li><span class="checkbox"></span> Review missing applications and AppData candidates in Logs\AppMigrationReview.html</li>
                     <li><span class="checkbox"></span> Verify printers restored (test page) - add any missing local printers</li>
                     <li><span class="checkbox"></span> Unpin Store from taskbar</li>
                     <li><span class="checkbox"></span> Verify printers and shared drives match</li>

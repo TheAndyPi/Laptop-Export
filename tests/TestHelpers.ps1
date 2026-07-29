@@ -5,8 +5,8 @@ $script:Config = @{
     UserFolders = @('Documents', 'Desktop', 'Downloads')
     BluebeamPaths = @('Bluebeam Software', 'Bluebeam')
     AppDataRoaming = @{ Signatures = 'Microsoft\Signatures'; QuickAccess = 'Microsoft\Windows\Recent\AutomaticDestinations' }
-    Backup = @{ UserData = $true; AppData = $true; LotusNotes = $true; SystemSettings = $true; InstalledPrograms = $true; Printers = $true; Chrome = $true; Firefox = $true; Edge = $true; OneDrive = $true; DesktopLayout = $true; TaskbarLayout = $true; DefaultApps = $true }
-    Import = @{ LotusNotes = $true; DeletePrintBrmAfterImport = $true; EnableAdminHelper = $false }
+    Backup = @{ UserData = $true; AppData = $true; LotusNotes = $true; SystemSettings = $true; InstalledPrograms = $true; AppDataCandidateInventory = $true; Printers = $true; Chrome = $true; Firefox = $true; Edge = $true; OneDrive = $true; DesktopLayout = $true; TaskbarLayout = $true; DefaultApps = $true }
+    Import = @{ LotusNotes = $true; DeletePrintBrmAfterImport = $true; EnableAdminHelper = $false; AppComparison = $true; AppDataReview = $true }
     Online = @{ DownloadsCapGB = 5; MaxTransferGB = 5; OverrideDownloadsCap = $false; SkipLotusNotes = $true; CreateZipArchive = $true; StageNetworkTransfersLocally = $true }
 }
 foreach ($module in @(

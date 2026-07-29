@@ -134,6 +134,8 @@ $Script:Config = @{
             LotusNotes = $true
             DeletePrintBrmAfterImport = $true
             EnableAdminHelper = $false
+            AppComparison = $true
+            AppDataReview = $true
         }
     }
 
@@ -145,6 +147,7 @@ $Script:Config = @{
         LotusNotes        = $true
         SystemSettings    = $true
         InstalledPrograms = $true
+        AppDataCandidateInventory = $true
         Printers          = $true
         Chrome            = $true
         Firefox           = $true
@@ -158,6 +161,8 @@ $Script:Config = @{
         LotusNotes = $true
         DeletePrintBrmAfterImport = $true
         EnableAdminHelper = $false
+        AppComparison = $true
+        AppDataReview = $true
     }
 }
 
@@ -240,6 +245,7 @@ function Show-TransferSettingsMenu {
         @{ Section = "Backup"; Key = "LotusNotes";        Label = "Lotus Notes";        Detail = "Local Lotus Notes data from AppData\\Local" }
         @{ Section = "Backup"; Key = "SystemSettings";    Label = "System settings";    Detail = "Power, drives, personalization, and related settings" }
         @{ Section = "Backup"; Key = "InstalledPrograms"; Label = "Installed programs"; Detail = "Installed-program inventory" }
+        @{ Section = "Backup"; Key = "AppDataCandidateInventory"; Label = "AppData candidates"; Detail = "Review-only inventory of non-system application folders" }
         @{ Section = "Backup"; Key = "Printers";          Label = "Printers";           Detail = "PrintBRM package and printer connections" }
         @{ Section = "Backup"; Key = "Chrome";            Label = "Google Chrome";      Detail = "Bookmarks, profile archive, and password-export prompt" }
         @{ Section = "Backup"; Key = "Firefox";           Label = "Firefox";            Detail = "Firefox profile, bookmarks, logins, extensions, and settings" }
@@ -250,6 +256,8 @@ function Show-TransferSettingsMenu {
         @{ Section = "Backup"; Key = "DefaultApps";       Label = "Default apps";       Detail = "File and protocol default-app inventory" }
         @{ Section = "Import"; Key = "LotusNotes";        Label = "Import Lotus Notes"; Detail = "Restore exported Lotus local data on the new laptop" }
         @{ Section = "Import"; Key = "DeletePrintBrmAfterImport"; Label = "Delete PrintBRM after import"; Detail = "Remove the printer package after a successful restore" }
+        @{ Section = "Import"; Key = "AppComparison"; Label = "Compare installed apps"; Detail = "Compare old and new PC installed-program inventories" }
+        @{ Section = "Import"; Key = "AppDataReview"; Label = "Review AppData candidates"; Detail = "Include source AppData candidates in the technician review" }
         @{ Section = "Online"; Key = "MaxTransferGB"; Type = "Number"; Label = "Online payload limit"; Detail = "Warn before export when selected payload exceeds this many GB" }
         @{ Section = "Online"; Key = "OverrideDownloadsCap"; Label = "Override Downloads cap"; Detail = "Allow Downloads above the $($Script:Config.Online.DownloadsCapGB) GB Online cap" }
         @{ Section = "Online"; Key = "CreateZipArchive";  Label = "Create ZIP archive"; Detail = "Create a ZIP beside the package (Online transfers only)" }

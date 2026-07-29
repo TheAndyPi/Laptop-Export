@@ -461,20 +461,26 @@ function Get-InstalledPrograms {
     
     # 64-bit programs
     $programs += Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName } |
-        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate
+        Where-Object { $_.DisplayName -and -not $_.SystemComponent -and -not $_.ReleaseType } |
+        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, @{ Name = 'SourceScope'; Expression = { 'Machine64' } }
     
     # 32-bit programs on 64-bit system
     $programs += Get-ItemProperty "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName } |
-        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate
+        Where-Object { $_.DisplayName -and -not $_.SystemComponent -and -not $_.ReleaseType } |
+        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, @{ Name = 'SourceScope'; Expression = { 'Machine32' } }
     
     # User-installed programs
     $programs += Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName } |
-        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate
+        Where-Object { $_.DisplayName -and -not $_.SystemComponent -and -not $_.ReleaseType } |
+        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, @{ Name = 'SourceScope'; Expression = { 'CurrentUser' } }
     
-    $programs = $programs | Sort-Object DisplayName -Unique
+    $programs = @($programs | ForEach-Object {
+        [PSCustomObject]@{
+            DisplayName = $_.DisplayName; DisplayVersion = $_.DisplayVersion; Publisher = $_.Publisher
+            InstallDate = $_.InstallDate; SourceScope = $_.SourceScope
+            MatchKey = Get-ProgramMatchKey -DisplayName $_.DisplayName -Publisher $_.Publisher
+        }
+    } | Sort-Object MatchKey, DisplayName -Unique)
     
     $settingsPath = Join-Path $DestinationBase "Settings"
     $programsFile = Join-Path $settingsPath "InstalledPrograms.json"
@@ -489,6 +495,53 @@ function Get-InstalledPrograms {
     Add-Result -Category "Settings" -Item "Installed Programs" -Status "Success" -Details "$count programs listed"
     
     return $programs
+}
+
+function ConvertTo-ProgramMatchPart {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+    return (($Value.ToLowerInvariant() -replace '[^a-z0-9]+', ' ').Trim() -replace '\s+', ' ')
+}
+
+function Get-ProgramMatchKey {
+    param([string]$DisplayName, [string]$Publisher)
+    return "$(ConvertTo-ProgramMatchPart $DisplayName)|$(ConvertTo-ProgramMatchPart $Publisher)"
+}
+
+function Get-AppDataCandidates {
+    param([string]$DestinationBase)
+
+    $excludedNames = @('Microsoft', 'Packages', 'Temp', 'Temporary Internet Files', 'CrashDumps', 'SquirrelTemp', 'D3DSCache', 'ConnectedDevicesPlatform', 'Comms')
+    $curated = @($Script:Config.AppDataRoaming.Keys + $Script:Config.AppDataLocal.Keys + 'Bluebeam')
+    $candidates = [System.Collections.ArrayList]::new()
+    foreach ($root in @(
+        @{ Area = 'Roaming'; Path = $Script:OriginalAppDataRoaming },
+        @{ Area = 'Local'; Path = $Script:OriginalAppDataLocal }
+    )) {
+        try {
+            foreach ($folder in @(Get-ChildItem -LiteralPath $root.Path -Directory -Force -ErrorAction Stop)) {
+                if ($folder.Name -in $excludedNames) { continue }
+                $covered = $curated -contains $folder.Name
+                $size = 0L
+                try { $size = Get-FolderSizeBytes -Path $folder.FullName } catch { Write-Log "Could not size AppData candidate $($folder.FullName): $($_.Exception.Message)" -Level Warning }
+                [void]$candidates.Add([PSCustomObject]@{
+                    Area = $root.Area; RelativePath = $folder.Name; FullPath = $folder.FullName; SizeBytes = $size
+                    CoveredByCuratedBackup = $covered; AssociationHint = ConvertTo-ProgramMatchPart $folder.Name
+                })
+            }
+        }
+        catch {
+            Write-Log "Could not enumerate $($root.Area) AppData candidates: $($_.Exception.Message)" -Level Warning
+            Add-Result -Category 'Settings' -Item "AppData candidates ($($root.Area))" -Status 'Warning' -Details $_.Exception.Message
+        }
+    }
+    $settingsPath = Join-Path $DestinationBase 'Settings'
+    $path = Join-Path $settingsPath 'AppDataCandidates.json'
+    @($candidates | Sort-Object Area, RelativePath) | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $path -Encoding UTF8
+    $textPath = Join-Path $settingsPath 'AppDataCandidates.txt'
+    @($candidates | Sort-Object Area, RelativePath | ForEach-Object { "[$($_.Area)] $($_.RelativePath) | $(Format-FileSize $_.SizeBytes) | $(if ($_.CoveredByCuratedBackup) { 'already curated' } else { 'review candidate' })" }) | Set-Content -LiteralPath $textPath -Encoding UTF8
+    Add-Result -Category 'Settings' -Item 'AppData candidates' -Status 'Success' -Details "$($candidates.Count) review candidate(s) listed"
+    return @($candidates)
 }
 
 function Backup-Printers {

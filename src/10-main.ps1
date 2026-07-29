@@ -211,6 +211,11 @@ function Start-LaptopExport {
         $programs = Get-InstalledPrograms -DestinationBase $transferBase
     }
     else { Add-DisabledBackupResult -Item "Installed programs" }
+
+    if ($Script:Config.Backup.AppDataCandidateInventory) {
+        Get-AppDataCandidates -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "AppData candidate inventory" -Category "Settings" }
     
     # 5. Back up printers
     if ($Script:Config.Backup.Printers) {

@@ -102,6 +102,12 @@ Describe 'Generated importer TestMode' {
         @{ Associations = @(@{ Type = 'Protocol'; Name = 'https'; ProgId = 'SyntheticHTML' }) } |
             ConvertTo-Json -Depth 3 |
             Set-Content -LiteralPath (Join-Path $script:Package 'Settings\DefaultApps.json') -Encoding UTF8
+        @(@{ DisplayName = 'Synthetic Required App'; DisplayVersion = '1.0'; Publisher = 'Test Publisher'; MatchKey = 'synthetic required app|test publisher' }) |
+            ConvertTo-Json -Depth 3 |
+            Set-Content -LiteralPath (Join-Path $script:Package 'Settings\InstalledPrograms.json') -Encoding UTF8
+        @(@{ Area = 'Roaming'; RelativePath = 'SyntheticApp'; SizeBytes = 123; CoveredByCuratedBackup = $false; AssociationHint = 'syntheticapp' }) |
+            ConvertTo-Json -Depth 3 |
+            Set-Content -LiteralPath (Join-Path $script:Package 'Settings\AppDataCandidates.json') -Encoding UTF8
     }
 
     It 'runs non-interactively without restoring synthetic package data' {
@@ -125,6 +131,8 @@ Describe 'Generated importer TestMode' {
         $output | Should Match 'Desktop layout - Would retain 1 transferred shortcut'
         $output | Should Match 'Taskbar layout - Would restore 1 source pin'
         Test-Path -LiteralPath (Join-Path $script:Package 'Logs\DefaultAppsRestoreGuide.txt') | Should Be $true
+        Test-Path -LiteralPath (Join-Path $script:Package 'Logs\AppMigrationComparison.json') | Should Be $true
+        Test-Path -LiteralPath (Join-Path $script:Package 'Logs\AppMigrationReview.html') | Should Be $true
     }
 }
 
@@ -151,6 +159,26 @@ Describe 'Layout and default-app implementation' {
         $settings | Should Match 'TaskbarLayout\.json'
         $settings | Should Match 'DefaultApps\.json'
         $settings | Should Not Match 'Taskband\\Favorites'
+    }
+}
+
+Describe 'Application migration review implementation' {
+    It 'ships app comparison and AppData review toggles enabled by default' {
+        $config = Import-PowerShellDataFile -LiteralPath (Join-Path $script:RepoRoot 'src\00-development-config.psd1')
+        $config.Backup.AppDataCandidateInventory | Should Be $true
+        $config.Import.AppComparison | Should Be $true
+        $config.Import.AppDataReview | Should Be $true
+    }
+
+    It 'generates the app review implementation with safe source artifacts and TestMode support' {
+        $settings = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\06-settings-printers.ps1') -Raw
+        $template = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\08-import-template.ps1') -Raw
+        $settings | Should Match 'AppDataCandidates\.json'
+        $settings | Should Match 'Get-ProgramMatchKey'
+        $template | Should Match 'AppMigrationComparison\.json'
+        $template | Should Match 'AppMigrationReview\.html'
+        $template | Should Match 'IMPORT_APP_COMPARISON'
+        $template | Should Match 'if \(-not \$TestMode\) \{ Start-Process'
     }
 }
 

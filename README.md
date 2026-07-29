@@ -68,7 +68,8 @@ It then runs the export and opens the HTML report when finished. **Online** tran
 - **User folders** — Documents, Desktop, Downloads, Pictures, Videos, Music, Favorites, loose profile files, and OCS Documents
 - **AppData** — Bluebeam, Outlook email signatures, Quick Access pins, Lotus Notes
 - **System settings** — individual active power-plan values are applied to the existing STOBG plan (all available AC/DC settings, including the advanced Control Panel and Power & battery settings); an elevated run also includes a complete plan export, plus mapped network drives, personalization (colors, dark mode, taskbar), wallpaper, desktop shortcut layout, taskbar pins, and a default-app inventory
-- **Installed programs** — documented to a list
+- **Installed programs** — captured from the old PC and compared against the signed-in user's new-PC inventory during import; missing apps and version differences are written to `Logs\AppMigrationReview.html`
+- **AppData candidates** — a review-only inventory of non-system Roaming/Local AppData folders, including size and curated-backup coverage; candidates are never copied automatically
 - **Printers** — a `Printers.printerExport` PrintBRM migration file is attempted for every run, plus a driverless network-connection list. Windows may require elevation to create a full PrintBRM package; the package log records the exact result.
 - **Browser data** — Chrome and Edge bookmarks from every profile (automatic restore for Default/matching profiles plus portable HTML), a Chrome profile archive with common cache directories excluded for recovery/reference, and an optional native Chrome Password Manager CSV export that requires Windows authentication; full Firefox profile data, including bookmarks, saved logins, history, extensions, settings, and companion local data
 - **OneDrive** — sync-state handling
@@ -109,6 +110,8 @@ With Chrome and Edge closed, the import script restores bookmarks automatically 
 During any file-copy step, press `S` to stop that copy and continue the export. The transfer report records the step as skipped; partially copied files remain in place so a later export can resume the copy.
 
 Desktop Layout, Taskbar Layout, and Default Apps are independent Transfer Settings switches and are enabled by default. Desktop duplicate cleanup only offers exact duplicate `.lnk`/`.url` files found in both the local and OneDrive Desktop folders; it requires confirmation and sends selected shortcuts to the Recycle Bin. Taskbar restoration retains existing destination pins and reports unavailable apps. Default-app associations are documented in `Logs\DefaultAppsRestoreGuide.txt` and opened in Windows Settings rather than being force-written.
+
+The AppData candidate inventory, installed-app comparison, and AppData review are also independent Transfer Settings switches and default to enabled. After import, review `Logs\AppMigrationReview.html` for missing applications and associated/unassociated AppData candidates. This produces a warning and checklist task but does not block import completion.
 
 ## Command-line parameters
 

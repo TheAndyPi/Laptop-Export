@@ -117,6 +117,7 @@ $Script:DevelopmentConfig = @{
         LotusNotes        = $true
         SystemSettings    = $true
         InstalledPrograms = $true
+        AppDataCandidateInventory = $true
         Printers          = $true
         Chrome            = $true
         Firefox           = $true
@@ -138,6 +139,8 @@ $Script:DevelopmentConfig = @{
         # When enabled, the normal user-context import offers to run the
         # separate elevated helper after all user-scoped restoration finishes.
         EnableAdminHelper = $false
+        AppComparison = $true
+        AppDataReview = $true
     }
 
     # These values override the regular Import defaults when the technician
@@ -159,6 +162,8 @@ $Script:DevelopmentConfig = @{
             LotusNotes                  = $true
             DeletePrintBrmAfterImport   = $true
             EnableAdminHelper            = $false
+            AppComparison                = $true
+            AppDataReview                = $true
         }
     }
 }
@@ -443,6 +448,8 @@ $Script:Config = @{
             LotusNotes = $true
             DeletePrintBrmAfterImport = $true
             EnableAdminHelper = $false
+            AppComparison = $true
+            AppDataReview = $true
         }
     }
 
@@ -454,6 +461,7 @@ $Script:Config = @{
         LotusNotes        = $true
         SystemSettings    = $true
         InstalledPrograms = $true
+        AppDataCandidateInventory = $true
         Printers          = $true
         Chrome            = $true
         Firefox           = $true
@@ -467,6 +475,8 @@ $Script:Config = @{
         LotusNotes = $true
         DeletePrintBrmAfterImport = $true
         EnableAdminHelper = $false
+        AppComparison = $true
+        AppDataReview = $true
     }
 }
 
@@ -549,6 +559,7 @@ function Show-TransferSettingsMenu {
         @{ Section = "Backup"; Key = "LotusNotes";        Label = "Lotus Notes";        Detail = "Local Lotus Notes data from AppData\\Local" }
         @{ Section = "Backup"; Key = "SystemSettings";    Label = "System settings";    Detail = "Power, drives, personalization, and related settings" }
         @{ Section = "Backup"; Key = "InstalledPrograms"; Label = "Installed programs"; Detail = "Installed-program inventory" }
+        @{ Section = "Backup"; Key = "AppDataCandidateInventory"; Label = "AppData candidates"; Detail = "Review-only inventory of non-system application folders" }
         @{ Section = "Backup"; Key = "Printers";          Label = "Printers";           Detail = "PrintBRM package and printer connections" }
         @{ Section = "Backup"; Key = "Chrome";            Label = "Google Chrome";      Detail = "Bookmarks, profile archive, and password-export prompt" }
         @{ Section = "Backup"; Key = "Firefox";           Label = "Firefox";            Detail = "Firefox profile, bookmarks, logins, extensions, and settings" }
@@ -559,6 +570,8 @@ function Show-TransferSettingsMenu {
         @{ Section = "Backup"; Key = "DefaultApps";       Label = "Default apps";       Detail = "File and protocol default-app inventory" }
         @{ Section = "Import"; Key = "LotusNotes";        Label = "Import Lotus Notes"; Detail = "Restore exported Lotus local data on the new laptop" }
         @{ Section = "Import"; Key = "DeletePrintBrmAfterImport"; Label = "Delete PrintBRM after import"; Detail = "Remove the printer package after a successful restore" }
+        @{ Section = "Import"; Key = "AppComparison"; Label = "Compare installed apps"; Detail = "Compare old and new PC installed-program inventories" }
+        @{ Section = "Import"; Key = "AppDataReview"; Label = "Review AppData candidates"; Detail = "Include source AppData candidates in the technician review" }
         @{ Section = "Online"; Key = "MaxTransferGB"; Type = "Number"; Label = "Online payload limit"; Detail = "Warn before export when selected payload exceeds this many GB" }
         @{ Section = "Online"; Key = "OverrideDownloadsCap"; Label = "Override Downloads cap"; Detail = "Allow Downloads above the $($Script:Config.Online.DownloadsCapGB) GB Online cap" }
         @{ Section = "Online"; Key = "CreateZipArchive";  Label = "Create ZIP archive"; Detail = "Create a ZIP beside the package (Online transfers only)" }
@@ -2403,20 +2416,26 @@ function Get-InstalledPrograms {
     
     # 64-bit programs
     $programs += Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName } |
-        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate
+        Where-Object { $_.DisplayName -and -not $_.SystemComponent -and -not $_.ReleaseType } |
+        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, @{ Name = 'SourceScope'; Expression = { 'Machine64' } }
     
     # 32-bit programs on 64-bit system
     $programs += Get-ItemProperty "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName } |
-        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate
+        Where-Object { $_.DisplayName -and -not $_.SystemComponent -and -not $_.ReleaseType } |
+        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, @{ Name = 'SourceScope'; Expression = { 'Machine32' } }
     
     # User-installed programs
     $programs += Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName } |
-        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate
+        Where-Object { $_.DisplayName -and -not $_.SystemComponent -and -not $_.ReleaseType } |
+        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, @{ Name = 'SourceScope'; Expression = { 'CurrentUser' } }
     
-    $programs = $programs | Sort-Object DisplayName -Unique
+    $programs = @($programs | ForEach-Object {
+        [PSCustomObject]@{
+            DisplayName = $_.DisplayName; DisplayVersion = $_.DisplayVersion; Publisher = $_.Publisher
+            InstallDate = $_.InstallDate; SourceScope = $_.SourceScope
+            MatchKey = Get-ProgramMatchKey -DisplayName $_.DisplayName -Publisher $_.Publisher
+        }
+    } | Sort-Object MatchKey, DisplayName -Unique)
     
     $settingsPath = Join-Path $DestinationBase "Settings"
     $programsFile = Join-Path $settingsPath "InstalledPrograms.json"
@@ -2431,6 +2450,53 @@ function Get-InstalledPrograms {
     Add-Result -Category "Settings" -Item "Installed Programs" -Status "Success" -Details "$count programs listed"
     
     return $programs
+}
+
+function ConvertTo-ProgramMatchPart {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+    return (($Value.ToLowerInvariant() -replace '[^a-z0-9]+', ' ').Trim() -replace '\s+', ' ')
+}
+
+function Get-ProgramMatchKey {
+    param([string]$DisplayName, [string]$Publisher)
+    return "$(ConvertTo-ProgramMatchPart $DisplayName)|$(ConvertTo-ProgramMatchPart $Publisher)"
+}
+
+function Get-AppDataCandidates {
+    param([string]$DestinationBase)
+
+    $excludedNames = @('Microsoft', 'Packages', 'Temp', 'Temporary Internet Files', 'CrashDumps', 'SquirrelTemp', 'D3DSCache', 'ConnectedDevicesPlatform', 'Comms')
+    $curated = @($Script:Config.AppDataRoaming.Keys + $Script:Config.AppDataLocal.Keys + 'Bluebeam')
+    $candidates = [System.Collections.ArrayList]::new()
+    foreach ($root in @(
+        @{ Area = 'Roaming'; Path = $Script:OriginalAppDataRoaming },
+        @{ Area = 'Local'; Path = $Script:OriginalAppDataLocal }
+    )) {
+        try {
+            foreach ($folder in @(Get-ChildItem -LiteralPath $root.Path -Directory -Force -ErrorAction Stop)) {
+                if ($folder.Name -in $excludedNames) { continue }
+                $covered = $curated -contains $folder.Name
+                $size = 0L
+                try { $size = Get-FolderSizeBytes -Path $folder.FullName } catch { Write-Log "Could not size AppData candidate $($folder.FullName): $($_.Exception.Message)" -Level Warning }
+                [void]$candidates.Add([PSCustomObject]@{
+                    Area = $root.Area; RelativePath = $folder.Name; FullPath = $folder.FullName; SizeBytes = $size
+                    CoveredByCuratedBackup = $covered; AssociationHint = ConvertTo-ProgramMatchPart $folder.Name
+                })
+            }
+        }
+        catch {
+            Write-Log "Could not enumerate $($root.Area) AppData candidates: $($_.Exception.Message)" -Level Warning
+            Add-Result -Category 'Settings' -Item "AppData candidates ($($root.Area))" -Status 'Warning' -Details $_.Exception.Message
+        }
+    }
+    $settingsPath = Join-Path $DestinationBase 'Settings'
+    $path = Join-Path $settingsPath 'AppDataCandidates.json'
+    @($candidates | Sort-Object Area, RelativePath) | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $path -Encoding UTF8
+    $textPath = Join-Path $settingsPath 'AppDataCandidates.txt'
+    @($candidates | Sort-Object Area, RelativePath | ForEach-Object { "[$($_.Area)] $($_.RelativePath) | $(Format-FileSize $_.SizeBytes) | $(if ($_.CoveredByCuratedBackup) { 'already curated' } else { 'review candidate' })" }) | Set-Content -LiteralPath $textPath -Encoding UTF8
+    Add-Result -Category 'Settings' -Item 'AppData candidates' -Status 'Success' -Details "$($candidates.Count) review candidate(s) listed"
+    return @($candidates)
 }
 
 function Backup-Printers {
@@ -3264,6 +3330,8 @@ $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $userProfile = $env:USERPROFILE
 $logFile = Join-Path $scriptPath "ImportLog.txt"
 $importLotusNotes = [bool]::Parse('{IMPORT_LOTUS_NOTES}')
+$compareInstalledApps = [bool]::Parse('{IMPORT_APP_COMPARISON}')
+$reviewAppDataCandidates = [bool]::Parse('{IMPORT_APPDATA_REVIEW}')
 # Firefox is restored whenever its independently-selected backup payload is
 # present. There is no separate import toggle to keep in sync.
 $importFirefox = $true
@@ -4839,13 +4907,110 @@ else {
 Write-Host ""
 
 # ============================================================================
-# VERIFY INSTALLED PROGRAMS
+# VERIFY INSTALLED PROGRAMS AND APPDATA REVIEW
 # ============================================================================
 
 Write-Section "Installed programs reference"
 Write-Host ""
 
+function ConvertTo-ProgramMatchPart {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+    return (($Value.ToLowerInvariant() -replace '[^a-z0-9]+', ' ').Trim() -replace '\s+', ' ')
+}
+
+function Get-ProgramMatchKey {
+    param([string]$DisplayName, [string]$Publisher)
+    return "$(ConvertTo-ProgramMatchPart $DisplayName)|$(ConvertTo-ProgramMatchPart $Publisher)"
+}
+
+function Get-CurrentInstalledPrograms {
+    $items = @()
+    $locations = @(
+        @{ Path = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'; Scope = 'Machine64' },
+        @{ Path = 'HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'; Scope = 'Machine32' },
+        @{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'; Scope = 'CurrentUser' }
+    )
+    foreach ($location in $locations) {
+        try {
+            $items += Get-ItemProperty $location.Path -ErrorAction SilentlyContinue | Where-Object {
+                $_.DisplayName -and -not $_.SystemComponent -and -not $_.ReleaseType
+            } | ForEach-Object {
+                [PSCustomObject]@{
+                    DisplayName = $_.DisplayName; DisplayVersion = $_.DisplayVersion; Publisher = $_.Publisher
+                    InstallDate = $_.InstallDate; SourceScope = $location.Scope
+                    MatchKey = Get-ProgramMatchKey $_.DisplayName $_.Publisher
+                }
+            }
+        } catch { Write-Log "Could not read installed-program inventory location $($location.Scope): $($_.Exception.Message)" -Level 'Warning' }
+    }
+    return @($items | Sort-Object MatchKey, DisplayName -Unique)
+}
+
+function ConvertTo-ReviewHtml {
+    param([object[]]$Missing, [object[]]$Candidates)
+    $encode = { param($Value) [Security.SecurityElement]::Escape([string]$Value) }
+    $rows = @($Missing | ForEach-Object { "<tr><td>$(& $encode $_.DisplayName)</td><td>$(& $encode $_.Publisher)</td><td>$(& $encode $_.DisplayVersion)</td></tr>" }) -join "`n"
+    if (-not $rows) { $rows = '<tr><td colspan="3">No missing apps detected.</td></tr>' }
+    $candidateRows = @($Candidates | ForEach-Object { "<tr><td>$(& $encode $_.Area)</td><td>$(& $encode $_.RelativePath)</td><td>$(& $encode $_.Association)</td></tr>" }) -join "`n"
+    if (-not $candidateRows) { $candidateRows = '<tr><td colspan="3">No AppData candidates available.</td></tr>' }
+    return "<html><head><meta charset='utf-8'><title>Application Migration Review</title><style>body{font-family:Segoe UI;margin:32px;color:#202020}table{border-collapse:collapse;width:100%;margin-bottom:25px}td,th{padding:8px;border:1px solid #ccc;text-align:left}th{background:#17365d;color:#fff}h1{color:#17365d}</style></head><body><h1>Application Migration Review</h1><p>Review missing applications and AppData candidates before handoff. Candidate folders are review-only and were not copied automatically.</p><h2>Missing applications</h2><table><tr><th>Application</th><th>Publisher</th><th>Old version</th></tr>$rows</table><h2>AppData candidates</h2><table><tr><th>Area</th><th>Folder</th><th>Association</th></tr>$candidateRows</table></body></html>"
+}
+
 $programsFile = Join-Path $scriptPath "Settings\InstalledPrograms.txt"
+$sourceProgramsPath = Join-Path $scriptPath 'Settings\InstalledPrograms.json'
+if (-not $compareInstalledApps) {
+    Add-Result -Category 'Reference' -Item 'Application comparison' -Status 'Skipped' -Details 'Disabled by package configuration'
+}
+elseif (-not (Test-Path -LiteralPath $sourceProgramsPath)) {
+    Write-Log 'Application comparison skipped: source InstalledPrograms.json is missing.' -Level 'Warning'
+    Add-Result -Category 'Reference' -Item 'Application comparison' -Status 'Warning' -Details 'Source installed-program inventory is missing'
+}
+else {
+    try {
+        # Accept inventories from earlier package versions that predate MatchKey.
+        $sourcePrograms = @(Get-Content -LiteralPath $sourceProgramsPath -Raw | ConvertFrom-Json | ForEach-Object {
+            [PSCustomObject]@{
+                DisplayName = $_.DisplayName; DisplayVersion = $_.DisplayVersion; Publisher = $_.Publisher
+                InstallDate = $_.InstallDate; SourceScope = $_.SourceScope
+                MatchKey = if ($_.MatchKey) { $_.MatchKey } else { Get-ProgramMatchKey $_.DisplayName $_.Publisher }
+            }
+        })
+        $newPrograms = @(Get-CurrentInstalledPrograms)
+        $newProgramsPath = Join-Path $logsPath 'NewInstalledPrograms.json'
+        $newPrograms | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $newProgramsPath -Encoding UTF8
+        $newByKey = @{}; foreach ($program in $newPrograms) { if ($program.MatchKey) { $newByKey[$program.MatchKey] = $program } }
+        $missingPrograms = @($sourcePrograms | Where-Object { -not $_.MatchKey -or -not $newByKey.ContainsKey($_.MatchKey) })
+        $matchedPrograms = @($sourcePrograms | Where-Object { $_.MatchKey -and $newByKey.ContainsKey($_.MatchKey) } | ForEach-Object {
+            [PSCustomObject]@{ DisplayName = $_.DisplayName; Publisher = $_.Publisher; OldVersion = $_.DisplayVersion; NewVersion = $newByKey[$_.MatchKey].DisplayVersion; VersionDifferent = ($_.DisplayVersion -ne $newByKey[$_.MatchKey].DisplayVersion) }
+        })
+        $candidateItems = @()
+        $candidatePath = Join-Path $scriptPath 'Settings\AppDataCandidates.json'
+        if ($reviewAppDataCandidates -and (Test-Path -LiteralPath $candidatePath)) {
+            $missingWords = @($missingPrograms | ForEach-Object { ConvertTo-ProgramMatchPart $_.DisplayName })
+            $candidateItems = @(Get-Content -LiteralPath $candidatePath -Raw | ConvertFrom-Json | ForEach-Object {
+                $association = if ($_.AssociationHint -and ($missingWords | Where-Object { $_ -like "*$($_.AssociationHint)*" })) { 'Potentially associated with missing app' } elseif ($_.CoveredByCuratedBackup) { 'Already covered by curated backup' } else { 'Review candidate' }
+                [PSCustomObject]@{ Area = $_.Area; RelativePath = $_.RelativePath; SizeBytes = $_.SizeBytes; Association = $association }
+            })
+        }
+        elseif ($reviewAppDataCandidates) { Write-Log 'AppData candidate review skipped: source inventory is missing.' -Level 'Warning' }
+        $comparison = [PSCustomObject]@{ GeneratedAt = (Get-Date).ToString('o'); Missing = $missingPrograms; Matched = $matchedPrograms; AppDataCandidates = $candidateItems }
+        $comparison | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationComparison.json') -Encoding UTF8
+        @('Application migration review', '', "Missing applications: $($missingPrograms.Count)", '') + @($missingPrograms | ForEach-Object { "MISSING | $($_.DisplayName) | $($_.Publisher) | old version: $($_.DisplayVersion)" }) + @('', 'AppData candidates:') + @($candidateItems | ForEach-Object { "[$($_.Area)] $($_.RelativePath) | $($_.Association)" }) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.txt') -Encoding UTF8
+        (ConvertTo-ReviewHtml -Missing $missingPrograms -Candidates $candidateItems) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.html') -Encoding UTF8
+        $detail = "$($missingPrograms.Count) missing app(s); $($candidateItems.Count) AppData candidate(s)"
+        Write-Log "Application migration review created: $detail" -Level $(if ($missingPrograms.Count -gt 0) { 'Warning' } else { 'Success' })
+        Add-Result -Category 'Reference' -Item 'Application migration review' -Status $(if ($missingPrograms.Count -gt 0) { 'Manual' } else { 'Success' }) -Details $detail
+        if ($missingPrograms.Count -gt 0 -or $candidateItems.Count -gt 0) {
+            Add-ManualTask -Task 'Review applications and AppData' -Reason $detail -Instructions 'Review Logs\AppMigrationReview.html, install/configure required apps, and decide whether any AppData candidate needs manual migration.'
+            if (-not $TestMode) { Start-Process (Join-Path $logsPath 'AppMigrationReview.html') -ErrorAction SilentlyContinue }
+        }
+    } catch {
+        Write-Log "Application comparison failed: $($_.Exception.Message)" -Level 'Warning'
+        Add-Result -Category 'Reference' -Item 'Application comparison' -Status 'Warning' -Details $_.Exception.Message
+    }
+}
+
 if (Test-Path $programsFile) {
     $programCount = (Get-Content $programsFile | Measure-Object -Line).Lines
     Write-Log "Program list available ($programCount programs documented)" -Level "Info"
@@ -4972,6 +5137,8 @@ if (-not $TestMode) {
     $importScript = $importScript -replace '\{USERNAME\}', $Script:OriginalUserName
     $importScript = $importScript -replace '\{COMPUTERNAME\}', $env:COMPUTERNAME
     $importScript = $importScript -replace '\{IMPORT_LOTUS_NOTES\}', $Script:Config.Import.LotusNotes.ToString().ToLowerInvariant()
+    $importScript = $importScript -replace '\{IMPORT_APP_COMPARISON\}', $Script:Config.Import.AppComparison.ToString().ToLowerInvariant()
+    $importScript = $importScript -replace '\{IMPORT_APPDATA_REVIEW\}', $Script:Config.Import.AppDataReview.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{DELETE_PRINTBRM_AFTER_IMPORT\}', $Script:Config.Import.DeletePrintBrmAfterImport.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{ENABLE_ADMIN_HELPER\}', $Script:Config.Import.EnableAdminHelper.ToString().ToLowerInvariant()
     
@@ -5509,6 +5676,7 @@ function New-TransferReport {
                     <li><span class="checkbox"></span> Test Teams incl. Camera</li>
                     <li><span class="checkbox"></span> Configure Adobe / Bluebeam Revu</li>
                     <li><span class="checkbox"></span> Test run all other Applications</li>
+                    <li><span class="checkbox"></span> Review missing applications and AppData candidates in Logs\AppMigrationReview.html</li>
                     <li><span class="checkbox"></span> Verify printers restored (test page) - add any missing local printers</li>
                     <li><span class="checkbox"></span> Unpin Store from taskbar</li>
                     <li><span class="checkbox"></span> Verify printers and shared drives match</li>
@@ -5749,6 +5917,11 @@ function Start-LaptopExport {
         $programs = Get-InstalledPrograms -DestinationBase $transferBase
     }
     else { Add-DisabledBackupResult -Item "Installed programs" }
+
+    if ($Script:Config.Backup.AppDataCandidateInventory) {
+        Get-AppDataCandidates -DestinationBase $transferBase
+    }
+    else { Add-DisabledBackupResult -Item "AppData candidate inventory" -Category "Settings" }
     
     # 5. Back up printers
     if ($Script:Config.Backup.Printers) {
