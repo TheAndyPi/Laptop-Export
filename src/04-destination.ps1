@@ -142,7 +142,6 @@ namespace Sto {
 }
 
 function Select-TargetDrive {
-    Write-StoLogo
     Write-Banner -Title "Laptop Transfer  -  Export Tool" -Subtitle "v$($Script:Config.Version)"
     Write-KeyValue "Transferring" $Script:OriginalUserName
     Write-KeyValue "Computer" $env:COMPUTERNAME
@@ -204,7 +203,6 @@ function Select-TargetDrive {
 }
 
 function Select-TargetDestination {
-    Write-StoLogo
     Write-Banner -Title "Laptop Transfer  -  Export Tool" -Subtitle "v$($Script:Config.Version)"
     Write-KeyValue "Transferring" $Script:OriginalUserName
     Write-KeyValue "Computer" $env:COMPUTERNAME
@@ -272,19 +270,61 @@ function Select-TargetDestination {
 # FOLDER OPERATIONS
 # ============================================================================
 
+function Test-FolderInventoryAbortRequested {
+    if ($Script:SkipAdditionalAppDataSizing) { return $true }
+    if (-not $Script:AdditionalAppDataSizingInProgress) { return $false }
+    try {
+        if ([Console]::KeyAvailable -and [Console]::ReadKey($true).Key -eq [ConsoleKey]::S) {
+            $Script:SkipAdditionalAppDataSizing = $true
+            Write-Host "`r$(' ' * 120)`r  Additional AppData sizing skipped." -ForegroundColor Yellow
+            return $true
+        }
+    }
+    catch { }
+    return $false
+}
+
+function Get-FolderInventory {
+    param([string]$Path)
+
+    if (-not $Script:FolderInventoryCache) { $Script:FolderInventoryCache = @{} }
+    try { $key = [System.IO.Path]::GetFullPath($Path).TrimEnd([char]92) }
+    catch { $key = $Path }
+    if ($Script:FolderInventoryCache.ContainsKey($key)) { return $Script:FolderInventoryCache[$key] }
+    if ($Script:SkipAdditionalAppDataSizing) {
+        return [PSCustomObject]@{ FileCount = 0; Bytes = [long]0; Skipped = $true }
+    }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        $inventory = [PSCustomObject]@{ FileCount = 0; Bytes = [long]0 }
+        $Script:FolderInventoryCache[$key] = $inventory
+        return $inventory
+    }
+
+    # Cache one recursive walk for the settings screen, Online policy checks,
+    # and copy setup. This avoids repeatedly walking the same browser/profile
+    # tree before robocopy starts.
+    $files = [System.Collections.Generic.List[object]]::new()
+    Get-ChildItem -LiteralPath $Path -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        if (Test-FolderInventoryAbortRequested) { break }
+        if (-not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)) { [void]$files.Add($_) }
+    }
+    if ($Script:SkipAdditionalAppDataSizing) {
+        return [PSCustomObject]@{ FileCount = 0; Bytes = [long]0; Skipped = $true }
+    }
+    $sum = ($files | Measure-Object -Property Length -Sum).Sum
+    $inventory = [PSCustomObject]@{ FileCount = $files.Count; Bytes = [long]$(if ($null -eq $sum) { 0 } else { $sum }) }
+    $Script:FolderInventoryCache[$key] = $inventory
+    return $inventory
+}
+
 function Get-FolderSizeBytes {
     param([string]$Path)
-    if (-not (Test-Path $Path)) { return 0 }
-    $sum = (Get-ChildItem $Path -Recurse -File -Force -ErrorAction SilentlyContinue |
-        Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) } |
-        Measure-Object -Property Length -Sum).Sum
-    if ($null -eq $sum) { return 0 }
-    return [long]$sum
+    return (Get-FolderInventory -Path $Path).Bytes
 }
 
 function Get-TransferPayloadEstimate {
     $sizes = @{}
-    foreach ($key in @("UserData","AppData","LotusNotes","SystemSettings","InstalledPrograms","Printers","Chrome","Firefox","Edge","OneDrive")) {
+    foreach ($key in @("UserData","EntireUserProfile","AdditionalAppData","AppData","LotusNotes","SystemSettings","InstalledPrograms","Printers","Chrome","Firefox","Edge","OneDrive")) {
         $sizes[$key] = [long]0
     }
 
@@ -297,6 +337,21 @@ function Get-TransferPayloadEstimate {
                 continue
             }
             $sizes.UserData += $bytes
+        }
+    }
+
+    if ($Script:Config.Backup.EntireUserProfile) {
+        # The full-profile stage excludes standard user folders and AppData,
+        # both of which are handled by their dedicated export stages.
+        $sizes.EntireUserProfile = Get-FolderSizeBytes $Script:OriginalUserProfile
+        foreach ($folder in @($Script:Config.UserFolders + 'AppData')) {
+            $sizes.EntireUserProfile -= Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder)
+        }
+    }
+
+    if ($Script:Config.Backup.AdditionalAppData) {
+        foreach ($item in @($Script:SelectedAdditionalAppData)) {
+            if ($null -ne $item -and $null -ne $item.SizeBytes) { $sizes.AdditionalAppData += [long]$item.SizeBytes }
         }
     }
 
@@ -314,7 +369,14 @@ function Get-TransferPayloadEstimate {
         -not ($Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.SkipLotusNotes)) {
         $sizes.LotusNotes = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Lotus")
     }
-    if ($Script:Config.Backup.Chrome) { $sizes.Chrome = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Google\Chrome\User Data") }
+    if ($Script:Config.Backup.Chrome) {
+        # Online lean mode exports portable bookmarks and an optional native
+        # password CSV only; do not reserve/archive the raw profile unless
+        # the technician enables it in Advanced Online Controls.
+        if ($Script:Config.TransferMode -ne 'Online' -or $Script:Config.Online.IncludeChromeProfileArchive) {
+            $sizes.Chrome = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Google\Chrome\User Data")
+        }
+    }
     if ($Script:Config.Backup.Firefox) {
         $sizes.Firefox = (Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataRoaming "Mozilla\Firefox")) +
                           (Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Mozilla\Firefox"))
@@ -328,6 +390,27 @@ function Get-TransferPayloadEstimate {
         ItemBytes = $sizes
         TotalBytes = [long](($sizes.Values | Measure-Object -Sum).Sum)
     }
+}
+
+function Update-AdvancedPayloadEstimate {
+    # Use the startup inventory cache to update only the advanced rows. This
+    # avoids re-walking the backup tree each time a menu toggle is pressed.
+    if ($null -eq $Script:StartupPayloadEstimate) { return }
+    $items = $Script:StartupPayloadEstimate.ItemBytes
+    $items.EntireUserProfile = [long]0
+    $items.AdditionalAppData = [long]0
+    if ($Script:Config.Backup.EntireUserProfile) {
+        $items.EntireUserProfile = Get-FolderSizeBytes $Script:OriginalUserProfile
+        foreach ($folder in @($Script:Config.UserFolders + 'AppData')) {
+            $items.EntireUserProfile -= Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder)
+        }
+    }
+    if ($Script:Config.Backup.AdditionalAppData) {
+        foreach ($item in @($Script:SelectedAdditionalAppData)) {
+            if ($null -ne $item -and $null -ne $item.SizeBytes) { $items.AdditionalAppData += [long]$item.SizeBytes }
+        }
+    }
+    $Script:StartupPayloadEstimate.TotalBytes = [long](($items.Values | Measure-Object -Sum).Sum)
 }
 
 function Get-DestinationFreeSpaceBytes {
@@ -518,7 +601,11 @@ function New-TransferArchive {
         try {
             foreach ($file in $files) {
                 $relativePath = $file.FullName.Substring($TransferBase.Length).TrimStart([char]92)
-                $entry = $archive.CreateEntry($relativePath, [System.IO.Compression.CompressionLevel]::Optimal)
+                # Most transfer payloads (Office/PDF/media) are already
+                # compressed. Fastest avoids spending minutes CPU-compressing
+                # them again, while still packaging thousands of small files
+                # into one network-friendly transfer.
+                $entry = $archive.CreateEntry($relativePath, [System.IO.Compression.CompressionLevel]::Fastest)
                 $input = [System.IO.File]::Open($file.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
                 $output = $entry.Open()
                 try {

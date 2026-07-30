@@ -241,45 +241,38 @@ function Copy-BrowserData {
         Add-DisabledBackupResult -Item "Chrome" -Category "Browser"
     }
     elseif (Test-Path -LiteralPath $chromeUserDataPath) {
-        # Keep the result: a partial copy while Chrome is open must never be
-        # presented as a fully successful profile archive.
-        $chromeClosed = Request-BrowserClose -ProcessName "chrome" -DisplayName "Google Chrome"
         [void](Export-ChromeBookmarks -ChromeUserDataPath $chromeUserDataPath -BrowserPath $browserPath)
-
-        $chromeRawDestination = Join-Path $browserPath "Chrome\User Data"
-        $chromeRawLog = Join-Path $DestinationBase "Logs\robocopy_chrome_user_data.log"
-        $chromeCopyArgs = @($Script:Config.RobocopyArgs) + @(
-            # These folders hold disposable cache data or Windows-encrypted
-            # network cookies. They add substantial size, are often locked
-            # while Chrome runs, and cannot be meaningfully moved to another
-            # Windows profile.
-            "/XD", "Cache", '"Code Cache"', "GPUCache", "GPUPersistentCache", "ShaderCache", "GrShaderCache", "DawnCache", "Crashpad", "Network", '"Safe Browsing Network"'
-        )
-        $result = Copy-WithProgress -Source $chromeUserDataPath `
-                                    -Destination $chromeRawDestination `
-                                    -FolderName "Chrome profile archive (all profiles)" `
-                                    -LogPath $chromeRawLog `
-                                    -RobocopyArgs $chromeCopyArgs
-        if ($result.Status -eq "Success" -and $chromeClosed) {
-            Write-Log "Chrome profile archive copied: $($result.FilesCopied) files" -Level Success
-            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Success" -Details "$($result.FilesCopied) files; common caches excluded; credentials remain Windows-protected"
-        }
-        elseif ($result.Aborted) {
-            Write-Log "Chrome profile archive copy stopped by operator" -Level Warning
-            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Skipped" -Details "Stopped by operator; partial files may remain and can be resumed by rerunning the export"
-        }
-        else {
-            $detail = if (-not $chromeClosed) {
-                "Chrome was open; active profile databases may be incomplete. Close Chrome and rerun before wiping the old laptop."
+        $includeChromeArchive = $Script:Config.TransferMode -ne 'Online' -or $Script:Config.Online.IncludeChromeProfileArchive
+        if ($includeChromeArchive) {
+            # Keep the result: a partial copy while Chrome is open must never be
+            # presented as a fully successful profile archive.
+            $chromeClosed = Request-BrowserClose -ProcessName "chrome" -DisplayName "Google Chrome"
+            $chromeRawDestination = Join-Path $browserPath "Chrome\User Data"
+            $chromeRawLog = Join-Path $DestinationBase "Logs\robocopy_chrome_user_data.log"
+            $chromeCopyArgs = @($Script:Config.RobocopyArgs) + @(
+                "/XD", "Cache", '"Code Cache"', "GPUCache", "GPUPersistentCache", "ShaderCache", "GrShaderCache", "DawnCache", "Crashpad", "Network", '"Safe Browsing Network"', '"Service Worker\\CacheStorage"', '"Service Worker\\ScriptCache"', "optimization_guide_model_store", "hyphen-data", "MEIPreload"
+            )
+            $result = Copy-WithProgress -Source $chromeUserDataPath -Destination $chromeRawDestination -FolderName "Chrome profile archive (all profiles)" -LogPath $chromeRawLog -RobocopyArgs $chromeCopyArgs
+            if ($result.Status -eq "Success" -and $chromeClosed) {
+                Write-Log "Chrome profile archive copied: $($result.FilesCopied) files" -Level Success
+                Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Success" -Details "$($result.FilesCopied) files; common caches excluded; credentials remain Windows-protected"
+            }
+            elseif ($result.Aborted) {
+                Write-Log "Chrome profile archive copy stopped by operator" -Level Warning
+                Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Skipped" -Details "Stopped by operator; partial files may remain and can be resumed by rerunning the export"
             }
             else {
-                "Check robocopy_chrome_user_data.log"
+                $detail = if (-not $chromeClosed) { "Chrome was open; active profile databases may be incomplete. Close Chrome and rerun before wiping the old laptop." } else { "Check robocopy_chrome_user_data.log" }
+                Write-Log "Chrome profile archive copy completed with warnings" -Level Warning
+                Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Warning" -Details $detail
             }
-            Write-Log "Chrome profile archive copy completed with warnings" -Level Warning
-            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Warning" -Details $detail
+        }
+        else {
+            Write-Log "Chrome raw profile archive omitted by Online policy; portable bookmarks and password export remain available" -Level Info
+            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Skipped" -Details "Online lean mode: bookmarks and optional native password CSV only"
         }
 
-        if (-not $result.Aborted) {
+        if (-not $result -or -not $result.Aborted) {
             $canLaunchChromeForOriginalUser = (-not $Script:IsAdmin) -or ($Script:OriginalUserProfile -eq $env:USERPROFILE)
             Invoke-ChromePasswordExportPrompt -BrowserPath $browserPath -CanLaunchChromeForOriginalUser $canLaunchChromeForOriginalUser
         }
@@ -338,11 +331,15 @@ function Copy-BrowserData {
         $firefoxFound = $true
         $firefoxLocalDest = Join-Path $firefoxPackagePath "Local"
         $firefoxLocalLog = Join-Path $DestinationBase "Logs\robocopy_firefox_local.log"
+        # Local Firefox data is largely disposable cache. Preserve profile
+        # metadata and offline data, but skip the cache trees that otherwise
+        # dominate both the export and the later ZIP operation.
+        $firefoxLocalArgs = @($Script:Config.RobocopyArgs) + @("/XD", "cache2", "startupCache", "shader-cache", "thumbnails")
         $result = Copy-WithProgress -Source $firefoxLocalSource `
                                     -Destination $firefoxLocalDest `
                                     -FolderName "Firefox data (Local)" `
                                     -LogPath $firefoxLocalLog `
-                                    -RobocopyArgs $Script:Config.RobocopyArgs
+                                    -RobocopyArgs $firefoxLocalArgs
 
         if ($result.Status -eq "Success") {
             Write-Log "Firefox local data copied: $($result.FilesCopied) files" -Level Success

@@ -38,6 +38,10 @@ param(
     [string]$DestinationPath = "",
     # Optional override for the Online payload ceiling in GB (default: 5).
     [double]$OnlineMaxTransferGB = 0,
+    # Internal: preserves choices made in Transfer Settings across the UAC
+    # relaunch. Technicians do not need to supply either parameter.
+    [string]$RuntimeSettings = "",
+    [switch]$ElevatedFromSettings,
     # Intended for logged/automated validation. It keeps normal technician
     # runs unchanged, skips prompts, and does not open the HTML report.
     [switch]$NonInteractive

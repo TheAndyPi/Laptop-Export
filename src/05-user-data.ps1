@@ -14,8 +14,9 @@ function Copy-UserFolders {
         New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
     }
     
+    if ($Script:Config.Backup.UserData) {
     foreach ($folder in $Script:Config.UserFolders) {
-        $sourcePath = Join-Path $userProfile $folder
+        $sourcePath = Resolve-ExportUserFolderPath $folder
         $destPath = Join-Path $destUserData $folder
         
         if (Test-Path $sourcePath) {
@@ -99,6 +100,7 @@ function Copy-UserFolders {
             Add-Result -Category "User Folders" -Item $folder -Status "Skipped" -Details "Folder not found"
         }
     }
+    }
     
     # Check for additional folders in user profile (excluding known system folders and cloud sync folders)
     Write-Log "Checking for additional user folders..." -Level Info
@@ -114,7 +116,7 @@ function Copy-UserFolders {
         "Dropbox", "Google Drive", "iCloudDrive", "Box", "Box Sync"
     ) + $Script:Config.UserFolders
     
-    $additionalFolders = Get-ChildItem $userProfile -Directory -Force -ErrorAction SilentlyContinue | 
+    $additionalFolders = if ($Script:Config.Backup.EntireUserProfile) { @() } else { Get-ChildItem $userProfile -Directory -Force -ErrorAction SilentlyContinue |
         Where-Object { 
             $folderName = $_.Name
             # Exclude if in explicit list
@@ -124,12 +126,30 @@ function Copy-UserFolders {
             -not $_.Attributes.HasFlag([System.IO.FileAttributes]::Hidden) -and
             # Exclude any folder starting with "OneDrive"
             -not $folderName.StartsWith("OneDrive")
-        }
+        } }
     
     foreach ($folder in $additionalFolders) {
         $items = Get-ChildItem $folder.FullName -Force -ErrorAction SilentlyContinue |
             Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) }
         if ($items) {
+            if ($Script:Config.TransferMode -eq 'Online' -and -not $Script:Config.Online.IncludeAdditionalUserFolders) {
+                Write-Log "Additional folder $($folder.Name) omitted by Online policy" -Level Info
+                Add-Result -Category "Additional Folders" -Item $folder.Name -Status "Skipped" -Details "Omitted by Online policy; enable Advanced Online Controls to include it"
+                Add-ManualTask -Task "Review additional folder $($folder.Name)" -Reason "Not included in the lean Online package" -Instructions "Copy C:\Users\$($Script:OriginalUserName)\$($folder.Name) separately if the user needs it."
+                continue
+            }
+            if ($Script:Config.TransferMode -eq 'Online') {
+                $folderBytes = Get-FolderSizeBytes -Path $folder.FullName
+                $folderGB = [math]::Round($folderBytes / 1GB, 2)
+                if ($folderGB -gt $Script:Config.Online.AdditionalFolderCapGB) {
+                    $answer = Read-Host "  Additional folder '$($folder.Name)' is $folderGB GB (cap: $($Script:Config.Online.AdditionalFolderCapGB) GB). Copy it? (Y/N)"
+                    if ($answer -notmatch '^[Yy]') {
+                        Add-Result -Category "Additional Folders" -Item $folder.Name -Status "Skipped" -Details "Online size cap: $folderGB GB; operator chose skip"
+                        Add-ManualTask -Task "Copy additional folder $($folder.Name) manually" -Reason "Skipped above the Online additional-folder cap" -Instructions "Copy C:\Users\$($Script:OriginalUserName)\$($folder.Name) separately if needed."
+                        continue
+                    }
+                }
+            }
             $destPath = Join-Path $destUserData "Additional\$($folder.Name)"
             $robocopyLog = Join-Path $DestinationBase "Logs\robocopy_additional_$($folder.Name).log"
             
@@ -151,16 +171,58 @@ function Copy-UserFolders {
         }
     }
     
+    if ($Script:Config.Backup.EntireUserProfile) {
+        Write-Log "Copying remaining user-profile folders (standard folders and AppData are excluded)..." -Level Info
+        $profileDestination = Join-Path $destUserData 'FullProfile'
+        $profileExclusions = @(
+            'AppData', 'Application Data', 'Local Settings', 'NetHood', 'PrintHood',
+            'Recent', 'SendTo', 'Start Menu', 'Templates', 'Cookies', 'Links',
+            'Saved Games', 'Searches', 'Contacts', '3D Objects',
+            'OneDrive', 'OneDrive - STO Building Group', 'STO Building Group',
+            'Dropbox', 'Google Drive', 'iCloudDrive', 'Box', 'Box Sync'
+        ) + $Script:Config.UserFolders
+        $remainingFolders = @(Get-ChildItem -LiteralPath $userProfile -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -notin $profileExclusions -and
+                -not $_.Name.StartsWith('.') -and
+                -not $_.Name.StartsWith('OneDrive') -and
+                -not $_.Attributes.HasFlag([System.IO.FileAttributes]::Hidden) -and
+                -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)
+            })
+
+        foreach ($folder in $remainingFolders) {
+            $result = Copy-WithProgress -Source $folder.FullName `
+                                       -Destination (Join-Path $profileDestination $folder.Name) `
+                                       -FolderName "Profile: $($folder.Name)" `
+                                       -LogPath (Join-Path $logsDir "robocopy_profile_$($folder.Name).log") `
+                                       -RobocopyArgs $Script:Config.RobocopyArgs
+            Add-Result -Category 'Entire User Profile' -Item $folder.Name -Status $result.Status -Details "$($result.FilesCopied) files"
+        }
+
+        # Keep ordinary root files with the full-profile payload. Hidden and
+        # system files remain excluded, matching the existing loose-file policy.
+        $profileFiles = @(Get-ChildItem -LiteralPath $userProfile -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { -not $_.Name.StartsWith('.') -and -not $_.Attributes.HasFlag([System.IO.FileAttributes]::Hidden) -and -not $_.Attributes.HasFlag([System.IO.FileAttributes]::System) })
+        if ($profileFiles.Count) {
+            New-Item -ItemType Directory -Path $profileDestination -Force | Out-Null
+            foreach ($file in $profileFiles) {
+                try { Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $profileDestination $file.Name) -Force -ErrorAction Stop }
+                catch { Write-Log "Could not copy profile-root file '$($file.Name)': $($_.Exception.Message)" -Level Warning }
+            }
+            Add-Result -Category 'Entire User Profile' -Item 'Profile root files' -Status 'Success' -Details "$($profileFiles.Count) file(s)"
+        }
+    }
+
     # Check for loose files directly in user profile root (not in any subfolder)
     Write-Log "Checking for loose files in user profile root..." -Level Info
     
-    $looseFiles = Get-ChildItem $userProfile -File -Force -ErrorAction SilentlyContinue | 
+    $looseFiles = if ($Script:Config.Backup.EntireUserProfile) { @() } else { Get-ChildItem $userProfile -File -Force -ErrorAction SilentlyContinue |
         Where-Object { 
             -not $_.Name.StartsWith(".") -and
             -not $_.Attributes.HasFlag([System.IO.FileAttributes]::Hidden) -and
             -not $_.Attributes.HasFlag([System.IO.FileAttributes]::System) -and
             $_.Extension -notin @(".ini", ".dat", ".log") # Skip system files
-        }
+        } }
     
     if ($looseFiles -and $looseFiles.Count -gt 0) {
         Write-Log "Found $($looseFiles.Count) loose file(s) in profile root" -Level Info
@@ -204,6 +266,24 @@ function Copy-UserFolders {
     $ocsPath = "C:\OCS Documents"
     if (Test-Path $ocsPath) {
         Write-Log "Found OCS Documents folder" -Level Info
+        if ($Script:Config.TransferMode -eq 'Online' -and -not $Script:Config.Online.IncludeOcsDocuments) {
+            Write-Log "OCS Documents omitted by Online policy" -Level Info
+            Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Skipped" -Details "Omitted by Online policy; enable Advanced Online Controls to include it"
+            Add-ManualTask -Task "Review OCS Documents" -Reason "Not included in the lean Online package" -Instructions "Copy C:\OCS Documents separately if the user needs it."
+            return
+        }
+        if ($Script:Config.TransferMode -eq 'Online') {
+            $ocsBytes = Get-FolderSizeBytes -Path $ocsPath
+            $ocsGB = [math]::Round($ocsBytes / 1GB, 2)
+            if ($ocsGB -gt $Script:Config.Online.AdditionalFolderCapGB) {
+                $answer = Read-Host "  OCS Documents is $ocsGB GB (cap: $($Script:Config.Online.AdditionalFolderCapGB) GB). Copy it? (Y/N)"
+                if ($answer -notmatch '^[Yy]') {
+                    Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Skipped" -Details "Online size cap: $ocsGB GB; operator chose skip"
+                    Add-ManualTask -Task "Copy OCS Documents manually" -Reason "Skipped above the Online additional-folder cap" -Instructions "Copy C:\OCS Documents separately if needed."
+                    return
+                }
+            }
+        }
         
         $destOcs = Join-Path $destUserData "OCS Documents"
         $robocopyLog = Join-Path $DestinationBase "Logs\robocopy_ocs_documents.log"

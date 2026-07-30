@@ -21,6 +21,7 @@ if (-not $OutputPath) {
 }
 $sourceRoot = Join-Path $PSScriptRoot "src"
 $developmentConfigPath = Join-Path $sourceRoot "00-development-config.psd1"
+$reportTemplatePath = Join-Path $sourceRoot "TransferReport.template.html"
 $moduleOrder = @(
     "01-bootstrap.ps1",
     "02-ui.ps1",
@@ -41,11 +42,13 @@ if (-not (Test-Path -LiteralPath $sourceRoot)) {
 if (-not (Test-Path -LiteralPath $developmentConfigPath)) {
     throw "Development configuration file not found: $developmentConfigPath"
 }
+if (-not (Test-Path -LiteralPath $reportTemplatePath)) { throw "Transfer report template not found: $reportTemplatePath" }
 
 # Compile the development config into the one-file technician deployment.
 try {
-    $developmentConfig = Import-PowerShellDataFile -LiteralPath $developmentConfigPath -ErrorAction Stop
+$developmentConfig = Import-PowerShellDataFile -LiteralPath $developmentConfigPath -ErrorAction Stop
     $developmentConfigText = Get-Content -LiteralPath $developmentConfigPath -Raw
+    $reportTemplateText = Get-Content -LiteralPath $reportTemplatePath -Raw
 }
 catch {
     throw "Could not load development configuration '$developmentConfigPath': $_"
@@ -67,9 +70,10 @@ $modulePaths = foreach ($module in $moduleOrder) {
 # module owns the script-level param block, so insert the compiled config only
 # after that module; a PowerShell param block must be the first statement.
 $configAssignment = "`$Script:DevelopmentConfig = " + $developmentConfigText.Trim() + "`r`n`r`n"
+$templateAssignment = "`$Script:TransferReportTemplate = @'`r`n" + $reportTemplateText.Trim() + "`r`n'@`r`n`r`n"
 $bootstrapText = Get-Content -LiteralPath $modulePaths[0] -Raw
 $remainingSourceText = (($modulePaths | Select-Object -Skip 1 | ForEach-Object { Get-Content -LiteralPath $_ -Raw }) -join "")
-$combinedSourceText = $bootstrapText + $configAssignment + $remainingSourceText
+$combinedSourceText = $bootstrapText + $configAssignment + $templateAssignment + $remainingSourceText
 $tokens = $null
 $parseErrors = $null
 [void][System.Management.Automation.Language.Parser]::ParseInput($combinedSourceText, [ref]$tokens, [ref]$parseErrors)

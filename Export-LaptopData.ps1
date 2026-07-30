@@ -43,6 +43,10 @@ param(
     [string]$DestinationPath = "",
     # Optional override for the Online payload ceiling in GB (default: 5).
     [double]$OnlineMaxTransferGB = 0,
+    # Internal: preserves choices made in Transfer Settings across the UAC
+    # relaunch. Technicians do not need to supply either parameter.
+    [string]$RuntimeSettings = "",
+    [switch]$ElevatedFromSettings,
     # Intended for logged/automated validation. It keeps normal technician
     # runs unchanged, skips prompts, and does not open the HTML report.
     [switch]$NonInteractive
@@ -113,6 +117,10 @@ $Script:DevelopmentConfig = @{
     # Every backup stage is enabled by default.
     Backup = @{
         UserData          = $true
+        # Optional comprehensive profile copy. It excludes data captured by
+        # the standard user-folder, AppData, and browser stages.
+        EntireUserProfile = $false
+        AdditionalAppData = $false
         AppData           = $true
         LotusNotes        = $true
         SystemSettings    = $true
@@ -141,6 +149,49 @@ $Script:DevelopmentConfig = @{
         EnableAdminHelper = $false
         AppComparison = $true
         AppDataReview = $true
+        # These technical uninstall entries are excluded from the user-facing
+        # missing-app report. Add patterns here when a new managed runtime or
+        # driver should not become a handoff action.
+        AppComparisonExcludePatterns = @(
+            '^Microsoft Visual C\+\+', '^Microsoft \.NET', '^Microsoft Windows Desktop Runtime', '^Microsoft ASP\.NET Core',
+            '^Microsoft Edge( WebView2 Runtime| Update)?$', '^Microsoft Update Health Tools', '^Microsoft OneDrive',
+            '^Microsoft Teams Meeting Add-in', '^Windows (Desktop Runtime|Software Development Kit)', '^KB\d+',
+            'Driver', 'Firmware', 'Lenovo (System Update|Vantage Service|USB|LAN|Dock)', 'Intel.*(Driver|Component)',
+            'Realtek.*(Driver|Audio)', 'NVIDIA.*(Driver|FrameView)', 'AMD.*(Driver|Software)'
+        )
+
+        # At the end of an import, the report always opens.  The technician
+        # can optionally open this standard handoff set as well.  Future
+        # additions only require another target/alternative here; no importer
+        # code changes are needed.  Desktop shortcuts are checked in the user,
+        # OneDrive, and Public Desktop folders before command fallbacks.
+        PostImportLaunch = @{
+            Enabled = $true
+            DesktopFolders = @('Desktop', 'OneDrive - STO Building Group\Desktop', 'C:\Users\Public\Desktop')
+            Targets = @(
+                @{ Name = 'PDF application'; Alternatives = @(
+                    @{ Name = 'Adobe Acrobat'; DesktopShortcuts = @('Adobe Acrobat.lnk'); Commands = @('Acrobat.exe', 'AcroRd32.exe') },
+                    @{ Name = 'Bluebeam Revu'; DesktopShortcuts = @('Bluebeam Revu.lnk', 'Bluebeam Revu 21.lnk'); Commands = @('Revu.exe') }
+                ) },
+                @{ Name = 'Classic Outlook'; Alternatives = @(@{ Name = 'Classic Outlook'; DesktopShortcuts = @('Outlook.lnk'); Commands = @('OUTLOOK.EXE') }) },
+                @{ Name = 'Microsoft Teams'; Alternatives = @(@{ Name = 'Microsoft Teams'; DesktopShortcuts = @('Microsoft Teams.lnk', 'Teams.lnk'); Commands = @('ms-teams.exe', 'Teams.exe') }) },
+                @{ Name = 'Cisco Secure Client'; Alternatives = @(@{ Name = 'Cisco Secure Client'; DesktopShortcuts = @('Cisco Secure Client.lnk') }) },
+                @{ Name = 'CMiC'; Alternatives = @(@{ Name = 'CMiC'; DesktopShortcuts = @('CMiC.lnk') }) },
+                @{ Name = 'Microsoft Edge'; Alternatives = @(@{ Name = 'Microsoft Edge'; DesktopShortcuts = @('Microsoft Edge.lnk'); Commands = @('msedge.exe') }) },
+                @{ Name = 'STOBG Intranet'; Alternatives = @(@{ Name = 'STOBG Intranet'; DesktopShortcuts = @('STOBG Intranet.lnk', 'STO Intranet.lnk') }) },
+                @{ Name = 'Knowledge Exchange'; Alternatives = @(@{ Name = 'Knowledge Exchange'; DesktopShortcuts = @('Knowledge Exchange.lnk') }) },
+                @{ Name = 'Freshservice'; Alternatives = @(@{ Name = 'Freshservice'; DesktopShortcuts = @('Freshservice.url') }) },
+                @{ Name = 'Firefox'; Alternatives = @(@{ Name = 'Firefox'; DesktopShortcuts = @('Firefox.lnk'); Commands = @('firefox.exe') }) },
+                @{ Name = 'Google Chrome'; Alternatives = @(@{ Name = 'Google Chrome'; DesktopShortcuts = @('Google Chrome.lnk'); Commands = @('chrome.exe') }) },
+                @{ Name = 'HR Hub'; Alternatives = @(@{ Name = 'HR Hub'; DesktopShortcuts = @('HR Hub.lnk') }) }
+            )
+        }
+    }
+
+    Export = @{
+        # When enabled, request UAC approval after the technician confirms
+        # Transfer Settings. It is off by default to avoid an early prompt.
+        RequestAdministratorPrivileges = $false
     }
 
     # These values override the regular Import defaults when the technician
@@ -158,6 +209,15 @@ $Script:DevelopmentConfig = @{
         # then upload one ZIP instead of thousands of small network writes.
         StageNetworkTransfersLocally = $true
 
+        # Advanced Online controls. Keep only portable Chrome bookmarks and
+        # the optional native password CSV by default; a raw profile archive
+        # can be enabled for recovery/reference when its estimated size fits.
+        IncludeChromeProfileArchive = $false
+        IncludeAdditionalUserFolders = $false
+        AdditionalFolderCapGB = 1
+        IncludeOcsDocuments = $false
+        DetailedAppDataCandidateInventory = $false
+
         Import = @{
             LotusNotes                  = $true
             DeletePrintBrmAfterImport   = $true
@@ -167,6 +227,44 @@ $Script:DevelopmentConfig = @{
         }
     }
 }
+
+$Script:TransferReportTemplate = @'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Laptop Transfer Report - {{USER}}</title>
+  <style>
+    :root{color-scheme:dark;--ink:#f5f9ff;--muted:#9daec6;--panel:#111d33;--panel2:#172744;--line:rgba(173,204,255,.17);--blue:#29b8ff;--violet:#9d7bff;--green:#44dda4;--amber:#ffc45d;--red:#ff7185}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% -10%,#235e91 0,transparent 38%),radial-gradient(circle at 90% 5%,#4d327b 0,transparent 31%),#08111f;color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif}.container{max-width:1160px;margin:auto;padding:32px 20px 48px}.hero,.section,.stat,.route-card,.duration-card{border:1px solid var(--line);background:linear-gradient(145deg,rgba(27,45,76,.93),rgba(12,23,41,.94));box-shadow:0 18px 50px rgba(0,0,0,.19)}.hero{border-radius:24px;padding:30px;margin-bottom:18px;overflow:hidden;position:relative}.hero:after{content:"";position:absolute;width:280px;height:280px;border-radius:50%;right:-100px;top:-165px;background:radial-gradient(circle,rgba(41,184,255,.22),transparent 70%);pointer-events:none}.eyebrow,.label{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}h1{margin:5px 0 4px;font-size:clamp(28px,4vw,42px);line-height:1.1;letter-spacing:-.035em}.accent{color:var(--blue)}.meta{color:var(--muted);margin:0}.route{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:stretch;margin-top:25px}.route-card{min-width:0;border-radius:16px;padding:16px;background:rgba(7,17,31,.55)}.route-name{overflow-wrap:anywhere;font-size:20px;font-weight:700;color:#fff;margin-top:4px}.route-arrow{align-self:center;color:var(--blue);font-size:28px;text-align:center}.duration-card{border-radius:16px;margin-top:16px;padding:18px 20px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(100deg,rgba(41,184,255,.14),rgba(157,123,255,.14))}.duration{font-size:clamp(34px,5vw,56px);line-height:1;font-weight:800;letter-spacing:-.06em;color:#fff}.duration-copy{text-align:right;color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.stat{border-radius:16px;padding:18px}.number{font-size:30px;font-weight:800;line-height:1.1}.success .number,.success-text{color:var(--green)}.warning .number{color:var(--amber)}.error .number{color:var(--red)}.skipped .number{color:#c8d2e3}.section{border-radius:18px;margin:18px 0;overflow:hidden}.section-header{padding:17px 20px;background:rgba(255,255,255,.035);font-size:17px;font-weight:700}.section-subtitle{display:block;margin-top:2px;color:var(--muted);font-size:12px;font-weight:400}.section-content{padding:20px}.app-summary{border:1px solid rgba(41,184,255,.35);border-radius:14px;padding:18px;background:linear-gradient(110deg,rgba(41,184,255,.1),rgba(157,123,255,.08))}.app-summary h3{margin:0 0 6px;font-size:19px}.app-summary p{margin:0;color:var(--muted)}.app-summary.ready{border-color:rgba(255,196,93,.55)}.app-summary.ok{border-color:rgba(68,221,164,.55)}.app-list{margin:16px 0 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:9px}.app-list li{padding:11px 12px;border-radius:10px;background:rgba(6,15,28,.55);border:1px solid var(--line)}.app-list small{display:block;color:var(--muted);margin-top:2px}table{width:100%;border-collapse:collapse}th,td{padding:12px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}.status{display:inline-block;border-radius:999px;padding:4px 9px;font-size:12px;white-space:nowrap}.status-success{background:rgba(68,221,164,.15);color:#84f2c6}.status-warning{background:rgba(255,196,93,.14);color:#ffda91}.status-error{background:rgba(255,113,133,.16);color:#ffb3be}.status-skipped{background:rgba(187,202,224,.13);color:#d9e2f0}.critical-warning{border:1px solid rgba(255,113,133,.7);background:rgba(127,29,29,.28);border-radius:18px;padding:20px;margin:18px 0}.critical-warning h2{margin:0 0 4px;color:#ffbac4}.critical-warning p{margin:0;color:#ffd1d8}.admin-success{border-radius:16px;padding:15px 20px;margin:18px 0;color:#a1f6d1}.manual-task{border-left:3px solid var(--violet);border-radius:0 10px 10px 0;background:rgba(157,123,255,.1);padding:14px 16px;margin-bottom:10px}.manual-task.critical{border-color:var(--red);background:rgba(255,113,133,.1)}.manual-task h4{margin:0 0 4px}.manual-task p{margin:0;color:var(--muted)}.manual-task pre{white-space:pre-wrap;margin:10px 0 0;color:#dfeaff;font:12px/1.45 Consolas,monospace}details.section{padding:0}details summary{cursor:pointer;list-style:none;padding:18px 20px;font-size:17px;font-weight:700;background:rgba(255,255,255,.035)}details summary::-webkit-details-marker{display:none}details summary:after{content:'+';float:right;color:var(--blue);font-size:22px;line-height:.8}details[open] summary:after{content:'âˆ’'}details summary span{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:2px}details ul{margin:0;padding-left:22px}details li{margin:9px 0;color:#dce8fa}footer{text-align:center;color:#7f91ac;font-size:12px;padding:10px}@media(max-width:700px){.container{padding:18px 14px 35px}.hero{padding:22px}.route{grid-template-columns:1fr}.route-arrow{transform:rotate(90deg);padding:0}.duration-card{align-items:flex-start;gap:12px;flex-direction:column}.duration-copy{text-align:left}.stats{grid-template-columns:repeat(2,1fr)}.section-content{overflow:auto;padding:14px}table{min-width:680px}}
+  </style>
+</head>
+<body>
+<main class="container">
+  <header class="hero">
+    <div class="eyebrow">STO Â· laptop handoff</div>
+    <h1>Transfer <span class="accent">handoff report</span></h1>
+    <p class="meta">Prepared for {{USER}} Â· {{DATE}} Â· {{MODE}} transfer</p>
+    <div class="route">
+      <div class="route-card"><div class="label">Old computer Â· export source</div><div class="route-name">{{SOURCE_COMPUTER}}</div></div>
+      <div class="route-arrow" aria-hidden="true">â†’</div>
+      <div class="route-card"><div class="label">New computer Â· import destination</div><div class="route-name"><!-- DESTINATION_COMPUTER -->{{DESTINATION_COMPUTER}}<!-- /DESTINATION_COMPUTER --></div></div>
+    </div>
+    <div class="duration-card"><div><div class="label">Total export time</div><div class="duration">{{DURATION}}</div></div><div class="duration-copy">Time from transfer start<br>to completed export report</div></div>
+  </header>
+  {{ADMIN_BANNER}}
+  <section class="stats"><div class="stat success"><div class="number">{{SUCCESS_COUNT}}</div><div class="label">Successful</div></div><div class="stat warning"><div class="number">{{WARNING_COUNT}}</div><div class="label">Warnings</div></div><div class="stat error"><div class="number">{{ERROR_COUNT}}</div><div class="label">Errors</div></div><div class="stat skipped"><div class="number">{{SKIPPED_COUNT}}</div><div class="label">Skipped</div></div></section>
+  <section class="section"><div class="section-header">Application readiness<span class="section-subtitle">Apps present on the old computer but absent from the new one</span></div><div class="section-content"><!-- APP_MIGRATION_SECTION -->{{APP_MIGRATION_SECTION}}<!-- /APP_MIGRATION_SECTION --></div></section>
+  <!-- IMPORT_RESULTS --><!-- /IMPORT_RESULTS -->
+  <section class="section"><div class="section-header">Export actions<span class="section-subtitle">Items needing attention are listed first</span></div><div class="section-content"><table><thead><tr><th>Category</th><th>Item</th><th>Status</th><th>Details</th></tr></thead><tbody>{{ACTION_ROWS}}</tbody></table></div></section>
+  <section class="section"><div class="section-header">Other manual tasks</div><div class="section-content">{{MANUAL_TASKS}}</div></section>
+  <details class="section"><summary>New machine checklist<span>Collapsed by default â€” expand while completing the handoff</span></summary><div class="section-content"><ul><li>Run Import-LaptopData.ps1</li><li>Verify Windows Updates and BitLocker</li><li>Sign in to OneDrive and Teams</li><li>Configure Office 365 and Outlook signatures</li><li>Review Logs/AppMigrationReview.html</li><li>Verify printers, drives, power settings, and default browser</li></ul></div></details>
+  <footer>Generated by STO Laptop Transfer Tool v{{VERSION}} Â· {{YEAR}}</footer>
+</main>
+</body>
+</html>
+'@
 
 function Get-VisibleLength {
     # Length of a string ignoring ANSI escape sequences (for correct padding)
@@ -334,47 +432,6 @@ else {
     $Script:OriginalAppDataLocal = $TargetAppDataLocal
 }
 
-if (-not $Script:IsAdmin) {
-    Write-Banner -Title "Administrator Privileges Recommended"
-    Write-Host "  Some features (power scheme and a full PrintBRM package) require admin rights." -ForegroundColor Gray
-    Write-Host "  PrintBRM is still attempted if you skip; its result is recorded in the package.`n" -ForegroundColor DarkGray
-    
-    $choice = if ($NonInteractive) {
-        Write-Host "  Non-interactive mode: continuing without elevation." -ForegroundColor DarkGray
-        "S"
-    }
-    else {
-        Read-Host "  Run as Administrator? (Y/N, or S to skip)"
-    }
-    
-    if ($choice -eq "Y" -or $choice -eq "y") {
-        Write-Host "Requesting administrator privileges..." -ForegroundColor Yellow
-        $scriptPath = $MyInvocation.MyCommand.Path
-        
-        # Pass the current user's profile info to the elevated script
-        $elevatedArgs = "-ExecutionPolicy Bypass -File `"$scriptPath`" -TargetUserProfile `"$env:USERPROFILE`" -TargetUserName `"$env:USERNAME`" -TargetAppDataRoaming `"$env:APPDATA`" -TargetAppDataLocal `"$env:LOCALAPPDATA`""
-        if ($TransferMode) { $elevatedArgs += " -TransferMode `"$TransferMode`"" }
-        if ($DestinationPath) { $elevatedArgs += " -DestinationPath `"$DestinationPath`"" }
-        if ($OnlineMaxTransferGB -gt 0) { $elevatedArgs += " -OnlineMaxTransferGB $OnlineMaxTransferGB" }
-        
-        try {
-            $process = Start-Process PowerShell -Verb RunAs -ArgumentList $elevatedArgs -PassThru -ErrorAction Stop
-            # If we get here, elevation was accepted - exit this non-admin instance
-            exit
-        }
-        catch {
-            Write-Host "`nCould not elevate to administrator. Continuing without admin rights..." -ForegroundColor Yellow
-            Write-Host "Admin-required tasks will be added to the manual checklist.`n" -ForegroundColor Gray
-            Start-Sleep -Seconds 2
-        }
-    }
-    else {
-        Write-Host "`nContinuing without administrator privileges..." -ForegroundColor Yellow
-        Write-Host "Some tasks will be added to the manual checklist.`n" -ForegroundColor Gray
-        Start-Sleep -Seconds 1
-    }
-}
-
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -388,6 +445,12 @@ $Script:Config = @{
     # when PrintBRM is permitted to create the package; FALSE (-NOBIN) makes a
     # smaller package.
     IncludePrinterDrivers = $true
+
+    # Elevation is opt-in from the Transfer Settings screen. This keeps the
+    # initial mode selection uninterrupted while retaining full export support.
+    Export = @{
+        RequestAdministratorPrivileges = $false
+    }
     
     # User profile folders to copy (relative to user profile)
     UserFolders = @(
@@ -397,7 +460,10 @@ $Script:Config = @{
         "Pictures",
         "Videos",
         "Music",
-        "Favorites"
+        "Favorites",
+        # Start Menu is stored under Roaming AppData, not at the profile-root
+        # junction. Resolve-ExportUserFolderPath handles that canonical path.
+        "Start Menu"
     )
     
     # AppData paths to check/copy (relative to AppData\Roaming)
@@ -418,7 +484,11 @@ $Script:Config = @{
     )
     
     # Robocopy settings
-    RobocopyArgs = @("/E", "/Z", "/R:2", "/W:3", "/MT:8", "/NP", "/NDL", "/NFL")
+    # /Z (restartable mode) writes extra recovery state and is noticeably
+    # slower for normal local/USB copies. A failed copy can be rerun safely,
+    # so favor throughput with parallel file copies. (/J remains in use for
+    # the one-file ZIP upload, where unbuffered I/O is beneficial.)
+    RobocopyArgs = @("/E", "/R:2", "/W:3", "/MT:16", "/NP", "/NDL", "/NFL", "/NJH", "/NJS")
 
     # ---- Transfer mode ----
     # "Local"  = full copy (USB/on-site).  "Online" = trimmed for slow/remote links.
@@ -443,6 +513,13 @@ $Script:Config = @{
         CreateZipArchive = $true
         # Avoid direct file-by-file exports to a network destination.
         StageNetworkTransfersLocally = $true
+        # Advanced Online controls. These are deliberately conservative so
+        # slow links carry only data that can be restored or imported.
+        IncludeChromeProfileArchive = $false
+        IncludeAdditionalUserFolders = $false
+        AdditionalFolderCapGB = 1
+        IncludeOcsDocuments = $false
+        DetailedAppDataCandidateInventory = $false
         # Import defaults used only when the selected transfer mode is Online.
         Import = @{
             LotusNotes = $true
@@ -457,6 +534,8 @@ $Script:Config = @{
     # time and remain embedded in the single deployment script.
     Backup = @{
         UserData          = $true
+        EntireUserProfile = $false
+        AdditionalAppData = $false
         AppData           = $true
         LotusNotes        = $true
         SystemSettings    = $true
@@ -482,7 +561,7 @@ $Script:Config = @{
 
 # Apply only known Boolean development switches so invalid additions cannot
 # unexpectedly change the behavior of a technician deployment.
-foreach ($sectionName in @("Backup", "Import")) {
+foreach ($sectionName in @("Backup", "Import", "Export")) {
     if (-not ($Script:DevelopmentConfig -is [hashtable]) -or
         -not $Script:DevelopmentConfig.ContainsKey($sectionName) -or
         -not ($Script:DevelopmentConfig[$sectionName] -is [hashtable])) {
@@ -505,7 +584,7 @@ if ($Script:DevelopmentConfig -is [hashtable] -and
     $Script:DevelopmentConfig.ContainsKey("Online") -and
     $Script:DevelopmentConfig.Online -is [hashtable]) {
     $developmentOnline = $Script:DevelopmentConfig.Online
-    foreach ($switchName in @("CreateZipArchive", "StageNetworkTransfersLocally", "OverrideDownloadsCap")) {
+    foreach ($switchName in @("CreateZipArchive", "StageNetworkTransfersLocally", "OverrideDownloadsCap", "IncludeChromeProfileArchive", "IncludeAdditionalUserFolders", "IncludeOcsDocuments", "DetailedAppDataCandidateInventory")) {
         if ($developmentOnline.ContainsKey($switchName) -and
             $developmentOnline[$switchName] -is [bool]) {
             $Script:Config.Online[$switchName] = $developmentOnline[$switchName]
@@ -524,10 +603,52 @@ if ($Script:DevelopmentConfig -is [hashtable] -and
     if ($developmentOnline.ContainsKey("MaxTransferGB") -and [double]$developmentOnline.MaxTransferGB -gt 0) {
         $Script:Config.Online.MaxTransferGB = [double]$developmentOnline.MaxTransferGB
     }
+    if ($developmentOnline.ContainsKey("AdditionalFolderCapGB") -and [double]$developmentOnline.AdditionalFolderCapGB -gt 0) {
+        $Script:Config.Online.AdditionalFolderCapGB = [double]$developmentOnline.AdditionalFolderCapGB
+    }
 }
 
 if ($OnlineMaxTransferGB -gt 0) {
     $Script:Config.Online.MaxTransferGB = $OnlineMaxTransferGB
+}
+
+# A UAC relaunch starts a new PowerShell process. Restore the settings chosen
+# immediately before that relaunch so the technician does not need to repeat
+# the Transfer Settings screen.
+if ($RuntimeSettings) {
+    try {
+        $savedSettings = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($RuntimeSettings)) | ConvertFrom-Json
+        foreach ($sectionName in @('Backup', 'Import', 'Export')) {
+            if ($null -eq $savedSettings.$sectionName) { continue }
+            foreach ($switchName in @($Script:Config[$sectionName].Keys)) {
+                if ($null -ne $savedSettings.$sectionName.$switchName -and $savedSettings.$sectionName.$switchName -is [bool]) {
+                    $Script:Config[$sectionName][$switchName] = $savedSettings.$sectionName.$switchName
+                }
+            }
+        }
+        foreach ($settingName in @('OverrideDownloadsCap', 'CreateZipArchive', 'StageNetworkTransfersLocally', 'IncludeChromeProfileArchive', 'IncludeAdditionalUserFolders', 'IncludeOcsDocuments', 'DetailedAppDataCandidateInventory')) {
+            if ($null -ne $savedSettings.Online.$settingName -and $savedSettings.Online.$settingName -is [bool]) {
+                $Script:Config.Online[$settingName] = $savedSettings.Online.$settingName
+            }
+        }
+        foreach ($settingName in @('MaxTransferGB', 'AdditionalFolderCapGB')) {
+            if ($null -ne $savedSettings.Online.$settingName -and [double]$savedSettings.Online.$settingName -gt 0) {
+                $Script:Config.Online[$settingName] = [double]$savedSettings.Online.$settingName
+            }
+        }
+        if ($null -ne $savedSettings.AdditionalAppData) {
+            $Script:SelectedAdditionalAppData = @($savedSettings.AdditionalAppData)
+        }
+        if ($savedSettings.TransferStartedAt) {
+            $parsedTransferStart = [datetime]::MinValue
+            if ([datetime]::TryParse([string]$savedSettings.TransferStartedAt, [ref]$parsedTransferStart)) {
+                $Script:TransferStartedAt = $parsedTransferStart
+            }
+        }
+    }
+    catch {
+        Write-Host "  Could not restore Transfer Settings after elevation; using the configured defaults." -ForegroundColor Yellow
+    }
 }
 
 function Apply-OnlineImportDefaults {
@@ -535,6 +656,194 @@ function Apply-OnlineImportDefaults {
 
     foreach ($switchName in $Script:Config.Online.Import.Keys) {
         $Script:Config.Import[$switchName] = $Script:Config.Online.Import[$switchName]
+    }
+}
+
+function Set-SettingsPreset {
+    param([ValidateSet('Basic', 'Advanced')][string]$Name)
+
+    $Script:Config.Backup.EntireUserProfile = ($Name -eq 'Advanced')
+    $Script:Config.Backup.AdditionalAppData = ($Name -eq 'Advanced')
+    if ($Name -eq 'Basic') { $Script:SelectedAdditionalAppData = @() }
+    $Script:SettingsPreset = $Name
+}
+
+function Resolve-ExportUserFolderPath {
+    param([string]$Folder)
+    if ($Folder -eq 'Start Menu') {
+        return (Join-Path $Script:OriginalAppDataRoaming 'Microsoft\Windows\Start Menu')
+    }
+    return (Join-Path $Script:OriginalUserProfile $Folder)
+}
+
+function Start-TransferSizeEstimateJob {
+    # Run the initial inventory out-of-process so Transfer Settings remains
+    # responsive while large profiles are being scanned.
+    # Keep large profile-related payloads near the end and normal user folders
+    # last. This avoids Documents/Desktop/Downloads competing with the more
+    # useful early estimates while the background job is still running.
+    $normalPaths = @((Join-Path $Script:OriginalAppDataLocal 'Microsoft\Edge\User Data'))
+    $heavyPaths = @($Script:OriginalUserProfile)
+    $heavyPaths += @($Script:Config.BluebeamPaths | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
+    $heavyPaths += @($Script:Config.AppDataRoaming.Values | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
+    $heavyPaths += @(
+        (Join-Path $Script:OriginalAppDataLocal 'Lotus'),
+        (Join-Path $Script:OriginalAppDataLocal 'Google\Chrome\User Data'),
+        (Join-Path $Script:OriginalAppDataRoaming 'Mozilla\Firefox'),
+        (Join-Path $Script:OriginalAppDataLocal 'Mozilla\Firefox')
+    )
+    $userDataPaths = @($Script:Config.UserFolders | ForEach-Object { Resolve-ExportUserFolderPath $_ })
+    $seenPaths = @{}; $inventoryPaths = [System.Collections.Generic.List[string]]::new()
+    foreach ($path in @($normalPaths + $heavyPaths + $userDataPaths)) {
+        if ($path -and -not $seenPaths.ContainsKey($path)) { $seenPaths[$path] = $true; [void]$inventoryPaths.Add($path) }
+    }
+    return Start-Job -ArgumentList (,$inventoryPaths) -ScriptBlock {
+        param([string[]]$InventoryPaths)
+        foreach ($path in $InventoryPaths) {
+            $bytes = 0L; $count = 0
+            try {
+                if (Test-Path -LiteralPath $path) {
+                    $files = @(Get-ChildItem -LiteralPath $path -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) })
+                    $sum = ($files | Measure-Object -Property Length -Sum).Sum
+                    $bytes = [long]$(if ($null -eq $sum) { 0 } else { $sum }); $count = $files.Count
+                }
+            }
+            catch { }
+            [PSCustomObject]@{ Path = $path; FileCount = $count; Bytes = $bytes }
+        }
+    }
+}
+
+function Get-CachedFolderSizeBytes {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not $Script:FolderInventoryCache) { return $null }
+    $key = $Path.TrimEnd([char]92)
+    if ($Script:FolderInventoryCache.ContainsKey($key)) { return [long]$Script:FolderInventoryCache[$key].Bytes }
+    return $null
+}
+
+function Get-CachedFolderSizeSum {
+    param([string[]]$Paths)
+    $sum = [long]0
+    foreach ($path in @($Paths)) {
+        $bytes = Get-CachedFolderSizeBytes -Path $path
+        if ($null -eq $bytes) { return $null }
+        $sum += $bytes
+    }
+    return $sum
+}
+
+function Get-TransferSizeDisplayEstimate {
+    # This version deliberately reads only completed background-job entries.
+    # It must never fall back to Get-FolderInventory, which would make the
+    # interactive menu perform a competing foreground recursive scan.
+    $sizes = @{}
+    foreach ($key in @($Script:Config.Backup.Keys)) { $sizes[$key] = [long]0 }
+    foreach ($key in @('UserData', 'EntireUserProfile', 'AdditionalAppData', 'AppData', 'LotusNotes', 'Chrome', 'Firefox', 'Edge')) {
+        if ($Script:Config.Backup[$key]) { $sizes[$key] = $null }
+    }
+    if ($Script:Config.Backup.UserData) { $sizes.UserData = Get-CachedFolderSizeSum -Paths @($Script:Config.UserFolders | ForEach-Object { Resolve-ExportUserFolderPath $_ }) }
+    if ($Script:Config.Backup.AppData) {
+        $appDataPaths = @($Script:Config.BluebeamPaths | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ }) + @($Script:Config.AppDataRoaming.Values | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
+        $sizes.AppData = Get-CachedFolderSizeSum -Paths $appDataPaths
+    }
+    if ($Script:Config.Backup.LotusNotes) { $sizes.LotusNotes = Get-CachedFolderSizeBytes -Path (Join-Path $Script:OriginalAppDataLocal 'Lotus') }
+    if ($Script:Config.Backup.Chrome) { $sizes.Chrome = Get-CachedFolderSizeBytes -Path (Join-Path $Script:OriginalAppDataLocal 'Google\Chrome\User Data') }
+    if ($Script:Config.Backup.Firefox) { $sizes.Firefox = Get-CachedFolderSizeSum -Paths @((Join-Path $Script:OriginalAppDataRoaming 'Mozilla\Firefox'), (Join-Path $Script:OriginalAppDataLocal 'Mozilla\Firefox')) }
+    # Edge's export is only its Bookmarks files, so retain its placeholder
+    # until the completed estimate performs that lightweight file calculation.
+    if ($Script:Config.Backup.EntireUserProfile) {
+        $profileBytes = Get-CachedFolderSizeBytes -Path $Script:OriginalUserProfile
+        # Start Menu is already below AppData and must not be subtracted twice
+        # from the optional remaining-profile estimate.
+        $profileFolderPaths = @($Script:Config.UserFolders | Where-Object { $_ -ne 'Start Menu' } | ForEach-Object { Join-Path $Script:OriginalUserProfile $_ })
+        $excludedBytes = Get-CachedFolderSizeSum -Paths @($profileFolderPaths + (Join-Path $Script:OriginalUserProfile 'AppData'))
+        if ($null -ne $profileBytes -and $null -ne $excludedBytes) { $sizes.EntireUserProfile = [long]($profileBytes - $excludedBytes) }
+    }
+    if ($Script:Config.Backup.AdditionalAppData -and @($Script:SelectedAdditionalAppData | Where-Object { $null -eq $_.SizeBytes }).Count -eq 0) {
+        $sizes.AdditionalAppData = [long](@($Script:SelectedAdditionalAppData | Measure-Object -Property SizeBytes -Sum).Sum)
+    }
+    $known = @($sizes.Values | Where-Object { $null -ne $_ })
+    return [PSCustomObject]@{ ItemBytes = $sizes; TotalBytes = [long](($known | Measure-Object -Sum).Sum) }
+}
+
+function Receive-TransferSizeEstimateJob {
+    if (-not $Script:TransferSizeEstimateJob) { return $false }
+    $updated = $false
+    foreach ($inventory in @(Receive-Job -Job $Script:TransferSizeEstimateJob -ErrorAction SilentlyContinue)) {
+        if ($inventory -and $inventory.Path) {
+            if (-not $Script:FolderInventoryCache) { $Script:FolderInventoryCache = @{} }
+            $Script:FolderInventoryCache[$inventory.Path.TrimEnd([char]92)] = [PSCustomObject]@{ FileCount = [int]$inventory.FileCount; Bytes = [long]$inventory.Bytes }
+            $updated = $true
+        }
+    }
+    if ($updated) { $Script:TransferSizeDisplayEstimate = Get-TransferSizeDisplayEstimate }
+    if ($Script:TransferSizeEstimateJob.State -eq 'Completed') {
+        $Script:StartupPayloadEstimate = Get-TransferPayloadEstimate
+        $Script:TransferSizeDisplayEstimate = $Script:StartupPayloadEstimate
+    }
+    elseif ($Script:TransferSizeEstimateJob.State -in @('Failed', 'Stopped')) {
+        $Script:StartupPayloadEstimate = [PSCustomObject]@{ ItemBytes = @{}; TotalBytes = [long]0 }
+        foreach ($backupKey in $Script:Config.Backup.Keys) { $Script:StartupPayloadEstimate.ItemBytes[$backupKey] = [long]0 }
+        $Script:TransferSizeDisplayEstimate = $Script:StartupPayloadEstimate
+        Write-Log 'Folder-size background calculation did not complete; sizes are unavailable for this transfer.' -Level Warning
+    }
+    else { return $updated }
+    Remove-Job -Job $Script:TransferSizeEstimateJob -Force -ErrorAction SilentlyContinue
+    $Script:TransferSizeEstimateJob = $null
+    return $true
+}
+
+function Read-MenuInputWithBackgroundRefresh {
+    param([string]$Prompt, [scriptblock]$Poll)
+    try {
+        $rawUi = $Host.UI.RawUI
+        [void]$rawUi.KeyAvailable
+    }
+    catch { return (Read-Host $Prompt).Trim() }
+    $buffer = ''
+    while ($true) {
+        if (& $Poll) { Write-Host ''; return '__MENU_AUTO_REFRESH__' }
+        if ($rawUi.KeyAvailable) {
+            $key = $rawUi.ReadKey('NoEcho,IncludeKeyDown')
+            if ($key.VirtualKeyCode -eq 13) { Write-Host ''; return $buffer.Trim() }
+            if ($key.VirtualKeyCode -eq 8) { if ($buffer.Length) { $buffer = $buffer.Substring(0, $buffer.Length - 1); Write-Host "`b `b" -NoNewline }; continue }
+            if ($key.Character -and -not [char]::IsControl($key.Character)) { $buffer += $key.Character; Write-Host $key.Character -NoNewline }
+        }
+        Start-Sleep -Milliseconds 120
+    }
+}
+
+function Start-ElevatedExport {
+    if ($Script:IsAdmin -or -not $Script:Config.Export.RequestAdministratorPrivileges) { return $true }
+
+    Write-Host "`n  Requesting administrator approval for the export..." -ForegroundColor Cyan
+    $scriptPath = $PSCommandPath
+    $elevatedArgs = "-ExecutionPolicy Bypass -File `"$scriptPath`" -TargetUserProfile `"$env:USERPROFILE`" -TargetUserName `"$env:USERNAME`" -TargetAppDataRoaming `"$env:APPDATA`" -TargetAppDataLocal `"$env:LOCALAPPDATA`""
+    if ($TransferMode) { $elevatedArgs += " -TransferMode `"$TransferMode`"" }
+    if ($DestinationPath) { $elevatedArgs += " -DestinationPath `"$DestinationPath`"" }
+    if ($OnlineMaxTransferGB -gt 0) { $elevatedArgs += " -OnlineMaxTransferGB $OnlineMaxTransferGB" }
+    $settingsToPreserve = [ordered]@{
+        Backup = $Script:Config.Backup
+        Import = $Script:Config.Import
+        Export = $Script:Config.Export
+        Online = $Script:Config.Online
+        AdditionalAppData = @($Script:SelectedAdditionalAppData)
+        TransferStartedAt = if ($Script:Results.StartTime) { $Script:Results.StartTime.ToString('o') } else { $null }
+    }
+    $encodedSettings = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($settingsToPreserve | ConvertTo-Json -Depth 5 -Compress)))
+    $elevatedArgs += " -RuntimeSettings `"$encodedSettings`" -ElevatedFromSettings"
+
+    try {
+        Start-Process PowerShell -Verb RunAs -ArgumentList $elevatedArgs -ErrorAction Stop | Out-Null
+        # The elevated process owns the transfer; stop this standard-user run.
+        return $false
+    }
+    catch {
+        Write-Host "  Administrator approval was cancelled or unavailable; continuing without it." -ForegroundColor Yellow
+        Write-Host "  Admin-only tasks will be included in the manual checklist.`n" -ForegroundColor Gray
+        $Script:Config.Export.RequestAdministratorPrivileges = $false
+        return $true
     }
 }
 
@@ -549,12 +858,56 @@ function Add-DisabledBackupResult {
     Add-Result -Category $Category -Item $Item -Status "Skipped" -Details "Disabled by configuration"
 }
 
+function Show-OnlineAdvancedSettingsMenu {
+    while ($true) {
+        Clear-StoScreen
+        Write-Banner -Title "Advanced Online Controls" -Subtitle "These choices affect this transfer only"
+        $chromePath = Join-Path $Script:OriginalAppDataLocal "Google\Chrome\User Data"
+        $chromeArchiveEstimate = Get-FolderSizeBytes -Path $chromePath
+        $archiveState = if ($Script:Config.Online.IncludeChromeProfileArchive) { "ON " } else { "OFF" }
+        $archiveColor = if ($Script:Config.Online.IncludeChromeProfileArchive) { "Green" } else { "DarkGray" }
+
+        Write-Host "  [1] $archiveState " -ForegroundColor Cyan -NoNewline
+        Write-Host "Chrome full profile archive" -ForegroundColor $archiveColor -NoNewline
+        Write-Host "  up to $(Format-FileSize $chromeArchiveEstimate); OFF = bookmarks + password export only" -ForegroundColor DarkGray
+        foreach ($setting in @(
+            @{ Number = 2; Key = 'IncludeAdditionalUserFolders'; Label = 'Include additional user folders'; Detail = 'OFF skips unlisted profile folders in Online mode' }
+            @{ Number = 3; Key = 'IncludeOcsDocuments'; Label = 'Include C:\\OCS Documents'; Detail = 'OFF skips this optional project folder in Online mode' }
+            @{ Number = 4; Key = 'DetailedAppDataCandidateInventory'; Label = 'Detailed AppData candidate sizes'; Detail = 'OFF records names only and avoids recursive sizing' }
+        )) {
+            $state = if ($Script:Config.Online[$setting.Key]) { 'ON ' } else { 'OFF' }
+            $color = if ($Script:Config.Online[$setting.Key]) { 'Green' } else { 'DarkGray' }
+            Write-Host "  [$($setting.Number)] $state " -ForegroundColor Cyan -NoNewline
+            Write-Host $setting.Label -ForegroundColor $color -NoNewline
+            Write-Host "  $($setting.Detail)" -ForegroundColor DarkGray
+        }
+        Write-Host "  [5] $($Script:Config.Online.AdditionalFolderCapGB) GB " -ForegroundColor Cyan -NoNewline
+        Write-Host "Additional-folder cap" -ForegroundColor Yellow -NoNewline
+        Write-Host "  folders above this require confirmation when included" -ForegroundColor DarkGray
+        $selection = (Read-Host "  Select 1-5, [B] Back").Trim()
+        if ($selection -match '^[Bb]$') { return }
+        if ($selection -eq '5') {
+            $value = 0.0; $entered = Read-Host "  Enter additional-folder cap in GB (current: $($Script:Config.Online.AdditionalFolderCapGB))"
+            if ([double]::TryParse($entered, [ref]$value) -and $value -gt 0) { $Script:Config.Online.AdditionalFolderCapGB = $value }
+            continue
+        }
+        $index = 0
+        if ([int]::TryParse($selection, [ref]$index) -and $index -ge 1 -and $index -le 4) {
+            $key = @('IncludeChromeProfileArchive', 'IncludeAdditionalUserFolders', 'IncludeOcsDocuments', 'DetailedAppDataCandidateInventory')[$index - 1]
+            $Script:Config.Online[$key] = -not [bool]$Script:Config.Online[$key]
+            $Script:SettingsPreset = 'Custom'
+        }
+    }
+}
+
 function Show-TransferSettingsMenu {
     # These are the runtime counterparts of the switches in
     # src\00-development-config.psd1.  Values start with the compiled
     # defaults, but any changes made here apply only to the current transfer.
     $settings = @(
         @{ Section = "Backup"; Key = "UserData";          Label = "User data";          Detail = "Documents, Desktop, Downloads, and other user folders" }
+        @{ Section = "Backup"; Key = "EntireUserProfile"; Label = "Entire user profile"; Detail = "Copy remaining profile folders; excludes data captured by other stages" }
+        @{ Section = "Backup"; Key = "AdditionalAppData"; Label = "Additional AppData folders"; Detail = "Choose extra Local/Roaming folders with size estimates" }
         @{ Section = "Backup"; Key = "AppData";           Label = "AppData";            Detail = "Bluebeam, signatures, and Quick Access" }
         @{ Section = "Backup"; Key = "LotusNotes";        Label = "Lotus Notes";        Detail = "Local Lotus Notes data from AppData\\Local" }
         @{ Section = "Backup"; Key = "SystemSettings";    Label = "System settings";    Detail = "Power, drives, personalization, and related settings" }
@@ -568,6 +921,7 @@ function Show-TransferSettingsMenu {
         @{ Section = "Backup"; Key = "DesktopLayout";     Label = "Desktop layout";     Detail = "Shortcut layout manifest and safe OneDrive duplicate review" }
         @{ Section = "Backup"; Key = "TaskbarLayout";     Label = "Taskbar layout";     Detail = "Pinned app shortcuts and taskbar layout" }
         @{ Section = "Backup"; Key = "DefaultApps";       Label = "Default apps";       Detail = "File and protocol default-app inventory" }
+        @{ Section = "Export"; Key = "RequestAdministratorPrivileges"; Label = "Run export as administrator"; Detail = "Request UAC approval after you start the transfer" }
         @{ Section = "Import"; Key = "LotusNotes";        Label = "Import Lotus Notes"; Detail = "Restore exported Lotus local data on the new laptop" }
         @{ Section = "Import"; Key = "DeletePrintBrmAfterImport"; Label = "Delete PrintBRM after import"; Detail = "Remove the printer package after a successful restore" }
         @{ Section = "Import"; Key = "AppComparison"; Label = "Compare installed apps"; Detail = "Compare old and new PC installed-program inventories" }
@@ -577,20 +931,42 @@ function Show-TransferSettingsMenu {
         @{ Section = "Online"; Key = "CreateZipArchive";  Label = "Create ZIP archive"; Detail = "Create a ZIP beside the package (Online transfers only)" }
         @{ Section = "Online"; Key = "StageNetworkTransfersLocally"; Label = "Stage network transfers locally"; Detail = "Build locally, then upload one ZIP to a network destination" }
     )
+    $Script:TransferSettingsMenuItems = $settings
+
+    # Render the settings screen first, then calculate once and redraw it with
+    # populated sizes. Later toggles reuse the cached inventory.
+    $estimate = if ($Script:StartupPayloadEstimate) { $Script:StartupPayloadEstimate } else { $Script:TransferSizeDisplayEstimate }
+    if ($null -eq $estimate -and -not $Script:TransferSizeEstimateJob) { $Script:TransferSizeEstimateJob = Start-TransferSizeEstimateJob }
 
     while ($true) {
+        if (Receive-TransferSizeEstimateJob) { $estimate = if ($Script:StartupPayloadEstimate) { $Script:StartupPayloadEstimate } else { $Script:TransferSizeDisplayEstimate } }
         Clear-StoScreen
         Write-Banner -Title "Transfer Settings" -Subtitle "$($Script:Config.TransferMode) transfer - changes apply to this transfer only"
         Write-Section "Backup settings"
-        $estimate = Get-TransferPayloadEstimate
 
         for ($index = 0; $index -lt $settings.Count; $index++) {
             $setting = $settings[$index]
-            if ($index -eq 10) {
+            if ($index -eq 16) {
+                Write-Section "Export settings"
+            }
+            if ($index -eq 17) {
                 Write-Section "Generated import settings"
             }
-            if ($index -eq 12) {
+            if ($index -eq 22) {
                 Write-Section "Online transfer settings"
+            }
+
+            if ($index -eq 0) {
+                $presetStyle = switch ($Script:SettingsPreset) {
+                    'Basic' { @{ Foreground = 'Black'; Background = 'Green' } }
+                    'Advanced' { @{ Foreground = 'White'; Background = 'DarkMagenta' } }
+                    default { @{ Foreground = 'Cyan'; Background = 'DarkBlue' } }
+                }
+                Write-Host "  SETTINGS PRESET: $($Script:SettingsPreset.ToUpper()) " -ForegroundColor $presetStyle.Foreground -BackgroundColor $presetStyle.Background -NoNewline
+                Write-Host "  [B] Basic  [V] Advanced" -ForegroundColor Cyan
+                Write-Host "  Basic disables full-profile transfer and extra AppData selection; Advanced enables both." -ForegroundColor DarkGray
+                Write-Host "  Folder-size estimate shown below is refreshed before copying, not when toggles change." -ForegroundColor DarkGray
+                Write-Host ''
             }
 
             $number = ($index + 1).ToString().PadLeft(2)
@@ -598,24 +974,40 @@ function Show-TransferSettingsMenu {
             $isEnabled = if ($isNumber) { $false } else { [bool]$Script:Config[$setting.Section][$setting.Key] }
             $state = if ($isNumber) { "$($Script:Config.Online.MaxTransferGB)GB" } elseif ($isEnabled) { "ON " } else { "OFF" }
             $color = if ($isNumber) { "Yellow" } elseif ($isEnabled) { "Green" } else { "DarkGray" }
-            $sizeText = if ($setting.Section -eq "Backup") { "$(Format-FileSize ([long]$estimate.ItemBytes[$setting.Key]))" } else { "" }
+            $sizeText = if ($setting.Section -eq "Backup") {
+                if ($null -eq $estimate -or $null -eq $estimate.ItemBytes[$setting.Key]) { 'calculating...' } else { "$(Format-FileSize ([long]$estimate.ItemBytes[$setting.Key]))" }
+            } else { "" }
 
             Write-Host "  [$number] " -ForegroundColor Cyan -NoNewline
             Write-Host "$state " -ForegroundColor $color -NoNewline
             Write-Host $setting.Label.PadRight(30) -ForegroundColor White -NoNewline
-            if ($sizeText) { Write-Host "$($sizeText.PadLeft(10)) " -ForegroundColor DarkCyan -NoNewline }
+            if ($sizeText) {
+                Write-Host "$($sizeText.PadLeft(10)) " -ForegroundColor DarkCyan -NoNewline
+            }
             Write-Host $setting.Detail -ForegroundColor DarkGray
         }
 
         Write-Host ""
-        Write-Host "  Select a number to toggle it; select Online payload limit to enter a GB value." -ForegroundColor Gray
+        Write-Host "  Select a number to toggle it; [B] Basic; [V] Advanced; [R] Refresh; select Online payload limit to enter a GB value." -ForegroundColor Gray
+        if ($Script:Config.TransferMode -eq 'Online') { Write-Host "  [A] Advanced Online Controls" -ForegroundColor Cyan }
         Write-Host "  Chrome, Firefox, and Edge are independent backup toggles." -ForegroundColor DarkGray
+        Write-Host "  Administrator mode is requested only after you choose Start transfer." -ForegroundColor DarkGray
         Write-Host "  ZIP archive is ignored for Local transfers." -ForegroundColor DarkGray
         Write-Host "  Import settings are written into the transfer package's generated import script." -ForegroundColor DarkGray
-        $selection = (Read-Host "  [S] Start transfer  [Q] Cancel").Trim()
 
+        if ($Script:TransferSizeEstimateJob) { Write-Host '  Calculating folder sizes in the background. Press R to refresh; the menu refreshes automatically when finished.' -ForegroundColor Cyan }
+        $selection = Read-MenuInputWithBackgroundRefresh -Prompt '  [S] Start transfer  [Q] Cancel  [R] Refresh' -Poll {
+            $wasRunning = [bool]$Script:TransferSizeEstimateJob
+            [void](Receive-TransferSizeEstimateJob)
+            return ($wasRunning -and -not $Script:TransferSizeEstimateJob)
+        }
+
+        if ($selection -eq '__MENU_AUTO_REFRESH__' -or $selection -match '^[Rr]$') { continue }
         if ($selection -match "^[Ss]$") { return $true }
         if ($selection -match "^[Qq]$") { return $false }
+        if ($selection -match "^[Bb]$") { Set-SettingsPreset -Name Basic; Update-AdvancedPayloadEstimate; continue }
+        if ($selection -match "^[Vv]$") { Set-SettingsPreset -Name Advanced; $Script:SelectedAdditionalAppData = Select-AdditionalAppData; $Script:SkipAdditionalAppDataSizing = $false; Update-AdvancedPayloadEstimate; continue }
+        if ($selection -match "^[Aa]$" -and $Script:Config.TransferMode -eq 'Online') { Show-OnlineAdvancedSettingsMenu; continue }
 
         $selectedIndex = 0
         if ([int]::TryParse($selection, [ref]$selectedIndex) -and
@@ -627,7 +1019,18 @@ function Show-TransferSettingsMenu {
                 if ([double]::TryParse($entered, [ref]$value) -and $value -gt 0) { $Script:Config.Online.MaxTransferGB = $value }
                 else { Write-Host "  Enter a positive number of GB." -ForegroundColor Yellow; Start-Sleep -Seconds 1 }
             }
-            else { $Script:Config[$setting.Section][$setting.Key] = -not [bool]$Script:Config[$setting.Section][$setting.Key] }
+            else {
+                $Script:Config[$setting.Section][$setting.Key] = -not [bool]$Script:Config[$setting.Section][$setting.Key]
+                $Script:SettingsPreset = 'Custom'
+                if ($setting.Section -eq 'Backup' -and $setting.Key -eq 'AdditionalAppData') {
+                    if ($Script:Config.Backup.AdditionalAppData) { $Script:SelectedAdditionalAppData = Select-AdditionalAppData; $Script:SkipAdditionalAppDataSizing = $false }
+                    else { $Script:SelectedAdditionalAppData = @() }
+                    Update-AdvancedPayloadEstimate
+                }
+                elseif ($setting.Section -eq 'Backup' -and $setting.Key -eq 'EntireUserProfile') {
+                    Update-AdvancedPayloadEstimate
+                }
+            }
         }
         else {
             Write-Host "  Enter a setting number, S, or Q." -ForegroundColor Yellow
@@ -642,7 +1045,7 @@ function Show-TransferSettingsMenu {
 
 $Script:Log = [System.Collections.ArrayList]::new()
 $Script:Results = @{
-    StartTime = Get-Date
+    StartTime = if ($Script:TransferStartedAt) { [datetime]$Script:TransferStartedAt } else { Get-Date }
     EndTime = $null
     UserName = $Script:OriginalUserName
     ComputerName = $env:COMPUTERNAME
@@ -731,10 +1134,11 @@ function Copy-WithProgress {
         return @{ ExitCode = -1; FilesCopied = 0; BytesCopied = 0; Status = "Warning"; Duration = [TimeSpan]::Zero }
     }
 
-    # Get source size and file count
-    $sourceFiles = Get-ChildItem $Source -Recurse -File -Force -ErrorAction SilentlyContinue
-    $totalFiles = ($sourceFiles | Measure-Object).Count
-    $totalSize = ($sourceFiles | Measure-Object -Property Length -Sum).Sum
+    # Reuse a prior preflight/menu inventory when available. The first caller
+    # performs the walk; all later callers use the cached result.
+    $sourceInventory = Get-FolderInventory -Path $Source
+    $totalFiles = $sourceInventory.FileCount
+    $totalSize = $sourceInventory.Bytes
     
     if ($totalFiles -eq 0) {
         return @{ ExitCode = 0; FilesCopied = 0; Status = "Empty" }
@@ -751,8 +1155,6 @@ function Copy-WithProgress {
     Write-Host "  $(Format-FileSize $totalSize) / $totalFiles files" -ForegroundColor DarkGray
     
     $startTime = Get-Date
-    $progressBarWidth = 34
-    $lastPercent = -1
     $spinIndex = 0
     
     # Build full argument string for robocopy
@@ -775,9 +1177,10 @@ function Copy-WithProgress {
     $abortedByOperator = $false
     Write-Host "    Press S to stop this copy and continue with the next step." -ForegroundColor DarkGray
     
-    # Monitor progress while robocopy runs.
-    # Poll less aggressively than before (recursive sizing of a large USB dest
-    # every 500ms competes with the copy itself); spinner keeps it feeling live.
+    # Do not recursively enumerate the destination while robocopy is writing.
+    # Browser profiles commonly contain tens of thousands of cache files; the
+    # previous 750 ms rescan saturated the same disk and network link as the
+    # transfer. Keep cancellation responsive with a zero-I/O spinner instead.
     while (-not $process.HasExited) {
         Start-Sleep -Milliseconds 750
 
@@ -797,52 +1200,19 @@ function Copy-WithProgress {
         }
         catch { }
         
-        # Get current destination size
-        $destFiles = Get-ChildItem $Destination -Recurse -File -Force -ErrorAction SilentlyContinue
-        $copiedSize = ($destFiles | Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
-        $copiedFiles = ($destFiles | Measure-Object).Count
-        
-        if ($null -eq $copiedSize) { $copiedSize = 0 }
-        
-        # Calculate percentage
-        $percent = if ($totalSize -gt 0) { [math]::Min(100, [math]::Round(($copiedSize / $totalSize) * 100)) } else { 0 }
-        
-        # Advance spinner + redraw every tick (spinner animates even when % is static)
+        # Advance spinner without inspecting the destination tree.
         $spin = $Script:Theme.Spinner[$spinIndex % $Script:Theme.Spinner.Count]
         $spinIndex++
-        $lastPercent = $percent
-        
-        # Build block-character progress bar
-        $filledWidth = [math]::Round(($percent / 100) * $progressBarWidth)
-        $emptyWidth = $progressBarWidth - $filledWidth
-        $progressBar = ([string]$Script:Theme.Bar.Full * $filledWidth) + ([string]$Script:Theme.Bar.Light * $emptyWidth)
-        
-        # Calculate speed
         $elapsed = (Get-Date) - $startTime
-        $speed = if ($elapsed.TotalSeconds -gt 0) { $copiedSize / $elapsed.TotalSeconds } else { 0 }
-        # Force the Int64 overload. The untyped literal 0 selects Int32 and
-        # overflows once the copied bytes exceed 2 GB.
-        $remainingBytes = [math]::Max([long]0, [long]($totalSize - $copiedSize))
-        $eta = if ($speed -gt 0 -and $copiedSize -gt 0) {
-            Format-RemainingTime ($remainingBytes / $speed)
-        }
-        else { "calculating..." }
-        
-        # Build + write status line (carriage return to overwrite)
-        $statusLine = "    $spin $progressBar $($percent.ToString().PadLeft(3))%  $(Format-FileSize $copiedSize) / $(Format-FileSize $totalSize)  $(Format-FileSize $speed)/s  ETA $eta   "
+        $statusLine = "    $spin Copying $(Format-FileSize $totalSize) / $totalFiles files  elapsed $([math]::Round($elapsed.TotalSeconds, 0)) sec   "
         Write-Host "`r$statusLine" -NoNewline
     }
     
     $exitCode = $process.ExitCode
     
-    # Final update
-    $destFiles = Get-ChildItem $Destination -Recurse -File -Force -ErrorAction SilentlyContinue
-    $copiedSize = ($destFiles | Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
-    $copiedFiles = ($destFiles | Measure-Object).Count
-    if ($null -eq $copiedSize) { $copiedSize = 0 }
-    
     $elapsed = (Get-Date) - $startTime
-    $avgSpeed = if ($elapsed.TotalSeconds -gt 0) { $copiedSize / $elapsed.TotalSeconds } else { 0 }
+    $copiedSize = $totalSize
+    $copiedFiles = $totalFiles
     
     # Complete the progress bar (clear the line first, then draw the final state)
     if ($abortedByOperator) {
@@ -860,7 +1230,7 @@ function Copy-WithProgress {
         }
     }
 
-    $progressBar = [string]$Script:Theme.Bar.Full * $progressBarWidth
+    $progressBar = [string]$Script:Theme.Bar.Full * 34
     Write-Host "`r$(' ' * 140)" -NoNewline
     Write-Host "`r    " -NoNewline
     Write-Host "$($Script:Theme.Glyphs.OK) " -ForegroundColor Green -NoNewline
@@ -1047,7 +1417,6 @@ namespace Sto {
 }
 
 function Select-TargetDrive {
-    Write-StoLogo
     Write-Banner -Title "Laptop Transfer  -  Export Tool" -Subtitle "v$($Script:Config.Version)"
     Write-KeyValue "Transferring" $Script:OriginalUserName
     Write-KeyValue "Computer" $env:COMPUTERNAME
@@ -1109,7 +1478,6 @@ function Select-TargetDrive {
 }
 
 function Select-TargetDestination {
-    Write-StoLogo
     Write-Banner -Title "Laptop Transfer  -  Export Tool" -Subtitle "v$($Script:Config.Version)"
     Write-KeyValue "Transferring" $Script:OriginalUserName
     Write-KeyValue "Computer" $env:COMPUTERNAME
@@ -1177,19 +1545,61 @@ function Select-TargetDestination {
 # FOLDER OPERATIONS
 # ============================================================================
 
+function Test-FolderInventoryAbortRequested {
+    if ($Script:SkipAdditionalAppDataSizing) { return $true }
+    if (-not $Script:AdditionalAppDataSizingInProgress) { return $false }
+    try {
+        if ([Console]::KeyAvailable -and [Console]::ReadKey($true).Key -eq [ConsoleKey]::S) {
+            $Script:SkipAdditionalAppDataSizing = $true
+            Write-Host "`r$(' ' * 120)`r  Additional AppData sizing skipped." -ForegroundColor Yellow
+            return $true
+        }
+    }
+    catch { }
+    return $false
+}
+
+function Get-FolderInventory {
+    param([string]$Path)
+
+    if (-not $Script:FolderInventoryCache) { $Script:FolderInventoryCache = @{} }
+    try { $key = [System.IO.Path]::GetFullPath($Path).TrimEnd([char]92) }
+    catch { $key = $Path }
+    if ($Script:FolderInventoryCache.ContainsKey($key)) { return $Script:FolderInventoryCache[$key] }
+    if ($Script:SkipAdditionalAppDataSizing) {
+        return [PSCustomObject]@{ FileCount = 0; Bytes = [long]0; Skipped = $true }
+    }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        $inventory = [PSCustomObject]@{ FileCount = 0; Bytes = [long]0 }
+        $Script:FolderInventoryCache[$key] = $inventory
+        return $inventory
+    }
+
+    # Cache one recursive walk for the settings screen, Online policy checks,
+    # and copy setup. This avoids repeatedly walking the same browser/profile
+    # tree before robocopy starts.
+    $files = [System.Collections.Generic.List[object]]::new()
+    Get-ChildItem -LiteralPath $Path -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        if (Test-FolderInventoryAbortRequested) { break }
+        if (-not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)) { [void]$files.Add($_) }
+    }
+    if ($Script:SkipAdditionalAppDataSizing) {
+        return [PSCustomObject]@{ FileCount = 0; Bytes = [long]0; Skipped = $true }
+    }
+    $sum = ($files | Measure-Object -Property Length -Sum).Sum
+    $inventory = [PSCustomObject]@{ FileCount = $files.Count; Bytes = [long]$(if ($null -eq $sum) { 0 } else { $sum }) }
+    $Script:FolderInventoryCache[$key] = $inventory
+    return $inventory
+}
+
 function Get-FolderSizeBytes {
     param([string]$Path)
-    if (-not (Test-Path $Path)) { return 0 }
-    $sum = (Get-ChildItem $Path -Recurse -File -Force -ErrorAction SilentlyContinue |
-        Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) } |
-        Measure-Object -Property Length -Sum).Sum
-    if ($null -eq $sum) { return 0 }
-    return [long]$sum
+    return (Get-FolderInventory -Path $Path).Bytes
 }
 
 function Get-TransferPayloadEstimate {
     $sizes = @{}
-    foreach ($key in @("UserData","AppData","LotusNotes","SystemSettings","InstalledPrograms","Printers","Chrome","Firefox","Edge","OneDrive")) {
+    foreach ($key in @("UserData","EntireUserProfile","AdditionalAppData","AppData","LotusNotes","SystemSettings","InstalledPrograms","Printers","Chrome","Firefox","Edge","OneDrive")) {
         $sizes[$key] = [long]0
     }
 
@@ -1202,6 +1612,21 @@ function Get-TransferPayloadEstimate {
                 continue
             }
             $sizes.UserData += $bytes
+        }
+    }
+
+    if ($Script:Config.Backup.EntireUserProfile) {
+        # The full-profile stage excludes standard user folders and AppData,
+        # both of which are handled by their dedicated export stages.
+        $sizes.EntireUserProfile = Get-FolderSizeBytes $Script:OriginalUserProfile
+        foreach ($folder in @($Script:Config.UserFolders + 'AppData')) {
+            $sizes.EntireUserProfile -= Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder)
+        }
+    }
+
+    if ($Script:Config.Backup.AdditionalAppData) {
+        foreach ($item in @($Script:SelectedAdditionalAppData)) {
+            if ($null -ne $item -and $null -ne $item.SizeBytes) { $sizes.AdditionalAppData += [long]$item.SizeBytes }
         }
     }
 
@@ -1219,7 +1644,14 @@ function Get-TransferPayloadEstimate {
         -not ($Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.SkipLotusNotes)) {
         $sizes.LotusNotes = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Lotus")
     }
-    if ($Script:Config.Backup.Chrome) { $sizes.Chrome = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Google\Chrome\User Data") }
+    if ($Script:Config.Backup.Chrome) {
+        # Online lean mode exports portable bookmarks and an optional native
+        # password CSV only; do not reserve/archive the raw profile unless
+        # the technician enables it in Advanced Online Controls.
+        if ($Script:Config.TransferMode -ne 'Online' -or $Script:Config.Online.IncludeChromeProfileArchive) {
+            $sizes.Chrome = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Google\Chrome\User Data")
+        }
+    }
     if ($Script:Config.Backup.Firefox) {
         $sizes.Firefox = (Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataRoaming "Mozilla\Firefox")) +
                           (Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Mozilla\Firefox"))
@@ -1233,6 +1665,27 @@ function Get-TransferPayloadEstimate {
         ItemBytes = $sizes
         TotalBytes = [long](($sizes.Values | Measure-Object -Sum).Sum)
     }
+}
+
+function Update-AdvancedPayloadEstimate {
+    # Use the startup inventory cache to update only the advanced rows. This
+    # avoids re-walking the backup tree each time a menu toggle is pressed.
+    if ($null -eq $Script:StartupPayloadEstimate) { return }
+    $items = $Script:StartupPayloadEstimate.ItemBytes
+    $items.EntireUserProfile = [long]0
+    $items.AdditionalAppData = [long]0
+    if ($Script:Config.Backup.EntireUserProfile) {
+        $items.EntireUserProfile = Get-FolderSizeBytes $Script:OriginalUserProfile
+        foreach ($folder in @($Script:Config.UserFolders + 'AppData')) {
+            $items.EntireUserProfile -= Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder)
+        }
+    }
+    if ($Script:Config.Backup.AdditionalAppData) {
+        foreach ($item in @($Script:SelectedAdditionalAppData)) {
+            if ($null -ne $item -and $null -ne $item.SizeBytes) { $items.AdditionalAppData += [long]$item.SizeBytes }
+        }
+    }
+    $Script:StartupPayloadEstimate.TotalBytes = [long](($items.Values | Measure-Object -Sum).Sum)
 }
 
 function Get-DestinationFreeSpaceBytes {
@@ -1423,7 +1876,11 @@ function New-TransferArchive {
         try {
             foreach ($file in $files) {
                 $relativePath = $file.FullName.Substring($TransferBase.Length).TrimStart([char]92)
-                $entry = $archive.CreateEntry($relativePath, [System.IO.Compression.CompressionLevel]::Optimal)
+                # Most transfer payloads (Office/PDF/media) are already
+                # compressed. Fastest avoids spending minutes CPU-compressing
+                # them again, while still packaging thousands of small files
+                # into one network-friendly transfer.
+                $entry = $archive.CreateEntry($relativePath, [System.IO.Compression.CompressionLevel]::Fastest)
                 $input = [System.IO.File]::Open($file.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
                 $output = $entry.Open()
                 try {
@@ -1510,8 +1967,9 @@ function Copy-UserFolders {
         New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
     }
     
+    if ($Script:Config.Backup.UserData) {
     foreach ($folder in $Script:Config.UserFolders) {
-        $sourcePath = Join-Path $userProfile $folder
+        $sourcePath = Resolve-ExportUserFolderPath $folder
         $destPath = Join-Path $destUserData $folder
         
         if (Test-Path $sourcePath) {
@@ -1595,6 +2053,7 @@ function Copy-UserFolders {
             Add-Result -Category "User Folders" -Item $folder -Status "Skipped" -Details "Folder not found"
         }
     }
+    }
     
     # Check for additional folders in user profile (excluding known system folders and cloud sync folders)
     Write-Log "Checking for additional user folders..." -Level Info
@@ -1610,7 +2069,7 @@ function Copy-UserFolders {
         "Dropbox", "Google Drive", "iCloudDrive", "Box", "Box Sync"
     ) + $Script:Config.UserFolders
     
-    $additionalFolders = Get-ChildItem $userProfile -Directory -Force -ErrorAction SilentlyContinue | 
+    $additionalFolders = if ($Script:Config.Backup.EntireUserProfile) { @() } else { Get-ChildItem $userProfile -Directory -Force -ErrorAction SilentlyContinue |
         Where-Object { 
             $folderName = $_.Name
             # Exclude if in explicit list
@@ -1620,12 +2079,30 @@ function Copy-UserFolders {
             -not $_.Attributes.HasFlag([System.IO.FileAttributes]::Hidden) -and
             # Exclude any folder starting with "OneDrive"
             -not $folderName.StartsWith("OneDrive")
-        }
+        } }
     
     foreach ($folder in $additionalFolders) {
         $items = Get-ChildItem $folder.FullName -Force -ErrorAction SilentlyContinue |
             Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) }
         if ($items) {
+            if ($Script:Config.TransferMode -eq 'Online' -and -not $Script:Config.Online.IncludeAdditionalUserFolders) {
+                Write-Log "Additional folder $($folder.Name) omitted by Online policy" -Level Info
+                Add-Result -Category "Additional Folders" -Item $folder.Name -Status "Skipped" -Details "Omitted by Online policy; enable Advanced Online Controls to include it"
+                Add-ManualTask -Task "Review additional folder $($folder.Name)" -Reason "Not included in the lean Online package" -Instructions "Copy C:\Users\$($Script:OriginalUserName)\$($folder.Name) separately if the user needs it."
+                continue
+            }
+            if ($Script:Config.TransferMode -eq 'Online') {
+                $folderBytes = Get-FolderSizeBytes -Path $folder.FullName
+                $folderGB = [math]::Round($folderBytes / 1GB, 2)
+                if ($folderGB -gt $Script:Config.Online.AdditionalFolderCapGB) {
+                    $answer = Read-Host "  Additional folder '$($folder.Name)' is $folderGB GB (cap: $($Script:Config.Online.AdditionalFolderCapGB) GB). Copy it? (Y/N)"
+                    if ($answer -notmatch '^[Yy]') {
+                        Add-Result -Category "Additional Folders" -Item $folder.Name -Status "Skipped" -Details "Online size cap: $folderGB GB; operator chose skip"
+                        Add-ManualTask -Task "Copy additional folder $($folder.Name) manually" -Reason "Skipped above the Online additional-folder cap" -Instructions "Copy C:\Users\$($Script:OriginalUserName)\$($folder.Name) separately if needed."
+                        continue
+                    }
+                }
+            }
             $destPath = Join-Path $destUserData "Additional\$($folder.Name)"
             $robocopyLog = Join-Path $DestinationBase "Logs\robocopy_additional_$($folder.Name).log"
             
@@ -1647,16 +2124,58 @@ function Copy-UserFolders {
         }
     }
     
+    if ($Script:Config.Backup.EntireUserProfile) {
+        Write-Log "Copying remaining user-profile folders (standard folders and AppData are excluded)..." -Level Info
+        $profileDestination = Join-Path $destUserData 'FullProfile'
+        $profileExclusions = @(
+            'AppData', 'Application Data', 'Local Settings', 'NetHood', 'PrintHood',
+            'Recent', 'SendTo', 'Start Menu', 'Templates', 'Cookies', 'Links',
+            'Saved Games', 'Searches', 'Contacts', '3D Objects',
+            'OneDrive', 'OneDrive - STO Building Group', 'STO Building Group',
+            'Dropbox', 'Google Drive', 'iCloudDrive', 'Box', 'Box Sync'
+        ) + $Script:Config.UserFolders
+        $remainingFolders = @(Get-ChildItem -LiteralPath $userProfile -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -notin $profileExclusions -and
+                -not $_.Name.StartsWith('.') -and
+                -not $_.Name.StartsWith('OneDrive') -and
+                -not $_.Attributes.HasFlag([System.IO.FileAttributes]::Hidden) -and
+                -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)
+            })
+
+        foreach ($folder in $remainingFolders) {
+            $result = Copy-WithProgress -Source $folder.FullName `
+                                       -Destination (Join-Path $profileDestination $folder.Name) `
+                                       -FolderName "Profile: $($folder.Name)" `
+                                       -LogPath (Join-Path $logsDir "robocopy_profile_$($folder.Name).log") `
+                                       -RobocopyArgs $Script:Config.RobocopyArgs
+            Add-Result -Category 'Entire User Profile' -Item $folder.Name -Status $result.Status -Details "$($result.FilesCopied) files"
+        }
+
+        # Keep ordinary root files with the full-profile payload. Hidden and
+        # system files remain excluded, matching the existing loose-file policy.
+        $profileFiles = @(Get-ChildItem -LiteralPath $userProfile -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { -not $_.Name.StartsWith('.') -and -not $_.Attributes.HasFlag([System.IO.FileAttributes]::Hidden) -and -not $_.Attributes.HasFlag([System.IO.FileAttributes]::System) })
+        if ($profileFiles.Count) {
+            New-Item -ItemType Directory -Path $profileDestination -Force | Out-Null
+            foreach ($file in $profileFiles) {
+                try { Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $profileDestination $file.Name) -Force -ErrorAction Stop }
+                catch { Write-Log "Could not copy profile-root file '$($file.Name)': $($_.Exception.Message)" -Level Warning }
+            }
+            Add-Result -Category 'Entire User Profile' -Item 'Profile root files' -Status 'Success' -Details "$($profileFiles.Count) file(s)"
+        }
+    }
+
     # Check for loose files directly in user profile root (not in any subfolder)
     Write-Log "Checking for loose files in user profile root..." -Level Info
     
-    $looseFiles = Get-ChildItem $userProfile -File -Force -ErrorAction SilentlyContinue | 
+    $looseFiles = if ($Script:Config.Backup.EntireUserProfile) { @() } else { Get-ChildItem $userProfile -File -Force -ErrorAction SilentlyContinue |
         Where-Object { 
             -not $_.Name.StartsWith(".") -and
             -not $_.Attributes.HasFlag([System.IO.FileAttributes]::Hidden) -and
             -not $_.Attributes.HasFlag([System.IO.FileAttributes]::System) -and
             $_.Extension -notin @(".ini", ".dat", ".log") # Skip system files
-        }
+        } }
     
     if ($looseFiles -and $looseFiles.Count -gt 0) {
         Write-Log "Found $($looseFiles.Count) loose file(s) in profile root" -Level Info
@@ -1700,6 +2219,24 @@ function Copy-UserFolders {
     $ocsPath = "C:\OCS Documents"
     if (Test-Path $ocsPath) {
         Write-Log "Found OCS Documents folder" -Level Info
+        if ($Script:Config.TransferMode -eq 'Online' -and -not $Script:Config.Online.IncludeOcsDocuments) {
+            Write-Log "OCS Documents omitted by Online policy" -Level Info
+            Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Skipped" -Details "Omitted by Online policy; enable Advanced Online Controls to include it"
+            Add-ManualTask -Task "Review OCS Documents" -Reason "Not included in the lean Online package" -Instructions "Copy C:\OCS Documents separately if the user needs it."
+            return
+        }
+        if ($Script:Config.TransferMode -eq 'Online') {
+            $ocsBytes = Get-FolderSizeBytes -Path $ocsPath
+            $ocsGB = [math]::Round($ocsBytes / 1GB, 2)
+            if ($ocsGB -gt $Script:Config.Online.AdditionalFolderCapGB) {
+                $answer = Read-Host "  OCS Documents is $ocsGB GB (cap: $($Script:Config.Online.AdditionalFolderCapGB) GB). Copy it? (Y/N)"
+                if ($answer -notmatch '^[Yy]') {
+                    Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Skipped" -Details "Online size cap: $ocsGB GB; operator chose skip"
+                    Add-ManualTask -Task "Copy OCS Documents manually" -Reason "Skipped above the Online additional-folder cap" -Instructions "Copy C:\OCS Documents separately if needed."
+                    return
+                }
+            }
+        }
         
         $destOcs = Join-Path $destUserData "OCS Documents"
         $robocopyLog = Join-Path $DestinationBase "Logs\robocopy_ocs_documents.log"
@@ -1981,6 +2518,12 @@ function Get-SystemSettings {
         
         $powerScheme = powercfg /getactivescheme
         $settings.PowerScheme = $powerScheme
+        $overlayPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes'
+        $overlayValues = Get-ItemProperty -LiteralPath $overlayPath -ErrorAction SilentlyContinue
+        $settings.PowerModeOverlay = @{
+            ActiveOverlayAcPowerScheme = $overlayValues.ActiveOverlayAcPowerScheme
+            ActiveOverlayDcPowerScheme = $overlayValues.ActiveOverlayDcPowerScheme
+        }
         
         # Extract the GUID from the power scheme output
         $schemeGuid = if ($powerScheme -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
@@ -2088,7 +2631,7 @@ function Get-SystemSettings {
         }
         
         Write-Log "Complete power settings captured" -Level Success
-        Add-Result -Category "Settings" -Item "Power Configuration" -Status $(if ($settings.PowerSettingValueCount -gt 0) { "Success" } else { "Warning" }) -Details "$($settings.PowerSettingValueCount) individual AC/DC values captured$(if ($settings.PowerSchemeExported) { '; full plan also exported' }); lid: AC=$($settings.LidClose.OnAC), DC=$($settings.LidClose.OnBattery)"
+        Add-Result -Category "Settings" -Item "Power Configuration" -Status $(if ($settings.PowerSettingValueCount -gt 0) { "Success" } else { "Warning" }) -Details "$($settings.PowerSettingValueCount) individual AC/DC values captured$(if ($settings.PowerSchemeExported) { '; full plan also exported' }); lid: AC=$($settings.LidClose.OnAC), DC=$($settings.LidClose.OnBattery); power mode overlays captured"
     }
     catch {
         Write-Log "Error capturing power settings: $_" -Level Warning
@@ -2329,6 +2872,87 @@ function Get-ShortcutMetadata {
     return [PSCustomObject]$item
 }
 
+function Initialize-DesktopLayoutInterop {
+    # The shell registry cache is resolution-specific and does not reliably
+    # move visible icons on current Windows builds. Use Explorer's supported
+    # IFolderView API to capture each displayed item's actual coordinates.
+    if ('StoDesktopLayoutInterop' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public sealed class StoDesktopPosition {
+    public string Name { get; set; }
+    public int X { get; set; }
+    public int Y { get; set; }
+}
+public sealed class StoDesktopRestoreResult {
+    public int Positioned { get; set; }
+    public string[] Missing { get; set; }
+}
+public static class StoDesktopLayoutInterop {
+    const int SWC_DESKTOP = 8, SWFO_NEEDDISPATCH = 1;
+    static object GetView() {
+        dynamic app = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
+        dynamic windows = app.Windows;
+        int hwnd = 0;
+        object disp = windows.FindWindowSW(Type.Missing, Type.Missing, SWC_DESKTOP, ref hwnd, SWFO_NEEDDISPATCH);
+        var provider = (IServiceProvider)disp;
+        var service = new Guid("4c96be40-915c-11cf-99d3-00aa004ae837");
+        var browser = (IShellBrowser)provider.QueryService(service, typeof(IShellBrowser).GUID);
+        return browser.QueryActiveShellView();
+    }
+    public static StoDesktopPosition[] Capture() {
+        var view = (IFolderView)GetView(); var view2 = (IFolderView2)view;
+        var positions = new List<StoDesktopPosition>();
+        for (int i = 0; i < view.ItemCount(); i++) {
+            var shellItem = view2.GetItem(i, typeof(IShellItem).GUID);
+            var name = shellItem.GetDisplayName(SIGDN.SIGDN_NORMALDISPLAY);
+            var pidl = view.Item(i); POINT pt; view.GetItemPosition(pidl, out pt);
+            positions.Add(new StoDesktopPosition { Name = name, X = pt.x, Y = pt.y });
+        }
+        return positions.ToArray();
+    }
+    public static StoDesktopRestoreResult Restore(StoDesktopPosition[] saved, double scaleX, double scaleY) {
+        var view = (IFolderView)GetView(); var view2 = (IFolderView2)view;
+        var current = new Dictionary<string, IntPtr>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < view.ItemCount(); i++) {
+            var item = view2.GetItem(i, typeof(IShellItem).GUID);
+            var name = item.GetDisplayName(SIGDN.SIGDN_NORMALDISPLAY);
+            if (!String.IsNullOrEmpty(name) && !current.ContainsKey(name)) { current.Add(name, view.Item(i)); }
+        }
+        var missing = new List<string>(); int positioned = 0;
+        foreach (var savedItem in saved ?? new StoDesktopPosition[0]) {
+            IntPtr pidl;
+            if (String.IsNullOrEmpty(savedItem.Name) || !current.TryGetValue(savedItem.Name, out pidl)) { missing.Add(savedItem.Name ?? "(unnamed)"); continue; }
+            var point = new POINT { x = (int)Math.Round(savedItem.X * scaleX), y = (int)Math.Round(savedItem.Y * scaleY) };
+            view.SelectAndPositionItems(1, new IntPtr[] { pidl }, new POINT[] { point }, SVSIF.SVSI_POSITIONITEM);
+            positioned++;
+        }
+        return new StoDesktopRestoreResult { Positioned = positioned, Missing = missing.ToArray() };
+    }
+    [ComImport, Guid("6D5140C1-7436-11CE-8034-00AA006009FA"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IServiceProvider { [return: MarshalAs(UnmanagedType.IUnknown)] object QueryService([MarshalAs(UnmanagedType.LPStruct)] Guid service, [MarshalAs(UnmanagedType.LPStruct)] Guid riid); }
+    [ComImport, Guid("000214E2-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellBrowser { void _VtblGap1_12(); [return: MarshalAs(UnmanagedType.IUnknown)] object QueryActiveShellView(); }
+    [ComImport, Guid("cde725b0-ccc9-4519-917e-325d72fab4ce"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IFolderView {
+        void _VtblGap1_3(); IntPtr Item(int index); int ItemCount(uint flags = 0); void _VtblGap2_3();
+        void GetItemPosition(IntPtr pidl, out POINT point); void _VtblGap1_4();
+        void SelectAndPositionItems(int count, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex=0)] IntPtr[] pidls, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex=0)] POINT[] points, SVSIF flags);
+    }
+    [ComImport, Guid("1af3a467-214f-4298-908e-06b03e0b39f9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IFolderView2 { void _VtblGap1_26(); IShellItem GetItem(int index, [MarshalAs(UnmanagedType.LPStruct)] Guid riid); }
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItem { [return: MarshalAs(UnmanagedType.IUnknown)] object BindToHandler(System.Runtime.InteropServices.ComTypes.IBindCtx context, [MarshalAs(UnmanagedType.LPStruct)] Guid bhid, [MarshalAs(UnmanagedType.LPStruct)] Guid riid); IShellItem GetParent(); [return: MarshalAs(UnmanagedType.LPWStr)] string GetDisplayName(SIGDN sigdn); }
+    struct POINT { public int x; public int y; }
+    enum SIGDN { SIGDN_NORMALDISPLAY }
+    [Flags] enum SVSIF { SVSI_POSITIONITEM = 0x80 }
+}
+'@ -ErrorAction Stop
+}
+
 function Backup-DesktopLayout {
     param([string]$DestinationBase)
 
@@ -2338,12 +2962,31 @@ function Backup-DesktopLayout {
         $shortcuts = @(Get-ChildItem -LiteralPath $desktopPath -File -Force -ErrorAction Stop |
             Where-Object { $_.Extension -in @('.lnk', '.url') } |
             Sort-Object Name | ForEach-Object -Begin { $ordinal = 0 } -Process { $ordinal++; Get-ShortcutMetadata -File $_ -Ordinal $ordinal })
+        $desktopBagPath = 'HKCU:\Software\Microsoft\Windows\Shell\Bags\1\Desktop'
+        $desktopShellValues = @{}
+        if (Test-Path -LiteralPath $desktopBagPath) {
+            $bag = Get-ItemProperty -LiteralPath $desktopBagPath -ErrorAction SilentlyContinue
+            foreach ($property in @($bag.PSObject.Properties | Where-Object { $_.Name -like 'ItemPos*' -and $_.Value -is [byte[]] })) {
+                $desktopShellValues[$property.Name] = [Convert]::ToBase64String([byte[]]$property.Value)
+            }
+        }
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $workArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        $desktopItems = @()
+        try {
+            Initialize-DesktopLayoutInterop
+            $desktopItems = @([StoDesktopLayoutInterop]::Capture())
+            Write-Log "Desktop shell coordinates captured: $($desktopItems.Count) item(s)" -Level Info
+        }
+        catch { Write-Log "Desktop shell-coordinate capture unavailable: $($_.Exception.Message)" -Level Warning }
         [PSCustomObject]@{
-            CaptureDate = (Get-Date).ToString('o'); DesktopPath = $desktopPath; CoordinateRestore = 'BestEffortShellOrder'
-            Shortcuts = $shortcuts
+            CaptureDate = (Get-Date).ToString('o'); DesktopPath = $desktopPath; CoordinateRestore = 'ScaledShellItemCoordinates'
+            Shortcuts = $shortcuts; ShellPositionValues = $desktopShellValues
+            DesktopItems = $desktopItems
+            SourceWorkArea = @{ X = $workArea.X; Y = $workArea.Y; Width = $workArea.Width; Height = $workArea.Height }
         } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $settingsPath 'DesktopLayout.json') -Encoding UTF8
-        Add-Result -Category 'Settings' -Item 'Desktop Layout' -Status 'Success' -Details "$($shortcuts.Count) shortcut(s) captured"
-        Write-Log "Desktop layout captured: $($shortcuts.Count) shortcut(s)" -Level Success
+        Add-Result -Category 'Settings' -Item 'Desktop Layout' -Status 'Success' -Details "$($desktopItems.Count) visible item position(s); $($shortcuts.Count) shortcut(s) captured"
+        Write-Log "Desktop layout captured: $($desktopItems.Count) visible item(s), $($shortcuts.Count) shortcut(s)" -Level Success
     } catch {
         Write-Log "Desktop layout capture failed: $($_.Exception.Message)" -Level Warning
         Add-Result -Category 'Settings' -Item 'Desktop Layout' -Status 'Warning' -Details $_.Exception.Message
@@ -2358,15 +3001,26 @@ function Backup-TaskbarLayout {
     $packagePath = Join-Path $settingsPath 'TaskbarLayout'
     try {
         $pins = @()
+        $taskbandValues = @{}
+        $taskbandPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Taskband'
+        if (Test-Path -LiteralPath $taskbandPath) {
+            $taskbandProperties = Get-ItemProperty -LiteralPath $taskbandPath -ErrorAction SilentlyContinue
+            foreach ($property in @($taskbandProperties.PSObject.Properties | Where-Object { $_.Name -in @('Favorites', 'FavoritesResolve') -and $_.Value -is [byte[]] })) {
+                $taskbandValues[$property.Name] = [Convert]::ToBase64String([byte[]]$property.Value)
+            }
+        }
         if (Test-Path -LiteralPath $sourcePath) {
             New-Item -ItemType Directory -Path $packagePath -Force | Out-Null
             $ordinal = 0
-            foreach ($file in @(Get-ChildItem -LiteralPath $sourcePath -File -Force | Sort-Object Name)) {
+            # Taskband contains the authoritative pin order. Keep the link
+            # inventory independent of alphabetical file-name sorting so it
+            # cannot obscure that source ordering during restoration.
+            foreach ($file in @(Get-ChildItem -LiteralPath $sourcePath -File -Force | Where-Object { $_.Name -notmatch 'Microsoft Store|WindowsStore' })) {
                 $ordinal++; Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $packagePath $file.Name) -Force -ErrorAction Stop
                 $pins += Get-ShortcutMetadata -File $file -Ordinal $ordinal
             }
         }
-        [PSCustomObject]@{ CaptureDate = (Get-Date).ToString('o'); Pins = @($pins); SourcePath = $sourcePath } |
+        [PSCustomObject]@{ CaptureDate = (Get-Date).ToString('o'); Pins = @($pins); SourcePath = $sourcePath; TaskbandValues = $taskbandValues; MicrosoftStoreExcluded = $true } |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $settingsPath 'TaskbarLayout.json') -Encoding UTF8
         Add-Result -Category 'Settings' -Item 'Taskbar Layout' -Status 'Success' -Details "$($pins.Count) pinned app shortcut(s) captured"
         Write-Log "Taskbar layout captured: $($pins.Count) pin(s)" -Level Success
@@ -2464,7 +3118,10 @@ function Get-ProgramMatchKey {
 }
 
 function Get-AppDataCandidates {
-    param([string]$DestinationBase)
+    param(
+        [string]$DestinationBase,
+        [bool]$IncludeSizes = $true
+    )
 
     $excludedNames = @('Microsoft', 'Packages', 'Temp', 'Temporary Internet Files', 'CrashDumps', 'SquirrelTemp', 'D3DSCache', 'ConnectedDevicesPlatform', 'Comms')
     $curated = @($Script:Config.AppDataRoaming.Keys + $Script:Config.AppDataLocal.Keys + 'Bluebeam')
@@ -2478,7 +3135,9 @@ function Get-AppDataCandidates {
                 if ($folder.Name -in $excludedNames) { continue }
                 $covered = $curated -contains $folder.Name
                 $size = 0L
-                try { $size = Get-FolderSizeBytes -Path $folder.FullName } catch { Write-Log "Could not size AppData candidate $($folder.FullName): $($_.Exception.Message)" -Level Warning }
+                if ($IncludeSizes) {
+                    try { $size = Get-FolderSizeBytes -Path $folder.FullName } catch { Write-Log "Could not size AppData candidate $($folder.FullName): $($_.Exception.Message)" -Level Warning }
+                }
                 [void]$candidates.Add([PSCustomObject]@{
                     Area = $root.Area; RelativePath = $folder.Name; FullPath = $folder.FullName; SizeBytes = $size
                     CoveredByCuratedBackup = $covered; AssociationHint = ConvertTo-ProgramMatchPart $folder.Name
@@ -2495,8 +3154,172 @@ function Get-AppDataCandidates {
     @($candidates | Sort-Object Area, RelativePath) | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $path -Encoding UTF8
     $textPath = Join-Path $settingsPath 'AppDataCandidates.txt'
     @($candidates | Sort-Object Area, RelativePath | ForEach-Object { "[$($_.Area)] $($_.RelativePath) | $(Format-FileSize $_.SizeBytes) | $(if ($_.CoveredByCuratedBackup) { 'already curated' } else { 'review candidate' })" }) | Set-Content -LiteralPath $textPath -Encoding UTF8
-    Add-Result -Category 'Settings' -Item 'AppData candidates' -Status 'Success' -Details "$($candidates.Count) review candidate(s) listed"
+    $detail = if ($IncludeSizes) { "$($candidates.Count) review candidate(s) listed with sizes" } else { "$($candidates.Count) review candidate(s) listed (sizes skipped for Online speed)" }
+    Add-Result -Category 'Settings' -Item 'AppData candidates' -Status 'Success' -Details $detail
     return @($candidates)
+}
+
+function Get-AdditionalAppDataCandidates {
+    param([bool]$IncludeSizes = $true)
+    $excludedNames = @('Microsoft', 'Packages', 'Temp', 'Temporary Internet Files', 'CrashDumps', 'SquirrelTemp', 'D3DSCache', 'ConnectedDevicesPlatform', 'Comms')
+    $curated = @($Script:Config.AppDataRoaming.Keys + $Script:Config.AppDataLocal.Keys + 'Bluebeam', 'Bluebeam Software', 'Mozilla', 'Google')
+    $candidates = [System.Collections.Generic.List[object]]::new()
+    foreach ($root in @(
+        @{ Area = 'Roaming'; Path = $Script:OriginalAppDataRoaming },
+        @{ Area = 'Local'; Path = $Script:OriginalAppDataLocal }
+    )) {
+        try {
+            foreach ($folder in @(Get-ChildItem -LiteralPath $root.Path -Directory -Force -ErrorAction Stop)) {
+                if ($folder.Name -in $excludedNames -or $folder.Name -in $curated) { continue }
+                if ($folder.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)) { continue }
+                $sizeBytes = $null
+                if ($IncludeSizes) {
+                    try { $sizeBytes = Get-FolderSizeBytes -Path $folder.FullName }
+                    catch {
+                        Write-Log "Could not size additional $($root.Area) AppData folder '$($folder.FullName)': $($_.Exception.Message)" -Level Warning
+                        Add-Result -Category 'Additional AppData' -Item "$($root.Area)\$($folder.Name)" -Status 'Warning' -Details 'Size unavailable'
+                    }
+                }
+                [void]$candidates.Add([PSCustomObject]@{
+                    Area = $root.Area; RelativePath = $folder.Name; FullPath = $folder.FullName; SizeBytes = $sizeBytes
+                })
+            }
+        }
+        catch {
+            Write-Log "Could not enumerate $($root.Area) AppData folders for Advanced selection: $($_.Exception.Message)" -Level Warning
+            Add-Result -Category 'Additional AppData' -Item "$($root.Area) candidates" -Status 'Warning' -Details $_.Exception.Message
+        }
+    }
+    return @($candidates | Sort-Object Area, RelativePath)
+}
+
+function Start-AdditionalAppDataSizeJob {
+    param([array]$Candidates)
+    $paths = @($Candidates | ForEach-Object { $_.FullPath } | Where-Object { $_ } | Sort-Object -Unique)
+    return Start-Job -ArgumentList (,$paths) -ScriptBlock {
+        param([string[]]$FolderPaths)
+        foreach ($path in $FolderPaths) {
+            $bytes = 0L
+            try {
+                if (Test-Path -LiteralPath $path) {
+                    $files = @(Get-ChildItem -LiteralPath $path -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) })
+                    $sum = ($files | Measure-Object -Property Length -Sum).Sum
+                    $bytes = [long]$(if ($null -eq $sum) { 0 } else { $sum })
+                }
+            }
+            catch { }
+            [PSCustomObject]@{ Path = $path; Bytes = $bytes }
+        }
+    }
+}
+
+function Receive-AdditionalAppDataSizeJob {
+    param([System.Management.Automation.Job]$Job, [array]$Candidates)
+    if (-not $Job) { return $false }
+    $updated = $false
+    $sizes = @{}
+    foreach ($result in @(Receive-Job -Job $Job -ErrorAction SilentlyContinue)) {
+        if ($result -and $result.Path) { $sizes[$result.Path] = [long]$result.Bytes; $updated = $true }
+    }
+    foreach ($candidate in $Candidates) {
+        if ($sizes.ContainsKey($candidate.FullPath)) { $candidate.SizeBytes = $sizes[$candidate.FullPath] }
+    }
+    return $updated
+}
+
+function Show-AdditionalAppDataMenu {
+    param([array]$Candidates, [bool]$Calculating, [bool]$Skipped)
+    Clear-StoScreen
+    Write-Banner -Title 'Advanced AppData Selection' -Subtitle 'Select additional folders to include in this transfer'
+    Write-Host '  Curated AppData items remain included automatically. Select only extra folders below.' -ForegroundColor DarkGray
+    if ($Calculating) { Write-Host '  Calculating folder sizes in the background. Press R to refresh; the menu refreshes automatically when finished.' -ForegroundColor Cyan }
+    elseif ($Skipped) { Write-Host '  Folder sizing was not completed; unsized folders display as unknown.' -ForegroundColor Yellow }
+    Write-Host ''
+    for ($index = 0; $index -lt $Candidates.Count; $index++) {
+        $item = $Candidates[$index]
+        $sizeText = if ($null -eq $item.SizeBytes) { 'calculating...' } else { Format-FileSize $item.SizeBytes }
+        Write-Host "  [$($index + 1)] $($item.Area.PadRight(7)) $($item.RelativePath.PadRight(32)) $sizeText" -ForegroundColor White
+    }
+    Write-Host ''
+}
+
+function Select-AdditionalAppData {
+    # Draw the selection screen before recursive sizing starts so the
+    # technician immediately sees what is being evaluated.
+    $candidates = @(Get-AdditionalAppDataCandidates -IncludeSizes $false)
+    if ($candidates.Count -eq 0) {
+        Write-Host '  No additional Local or Roaming AppData folders were found.' -ForegroundColor Yellow
+        return @()
+    }
+
+    $sizeJob = Start-AdditionalAppDataSizeJob -Candidates $candidates
+    $Script:AdditionalAppDataSizeJob = $sizeJob
+    $Script:AdditionalAppDataMenuCandidates = $candidates
+    $Script:AdditionalAppDataSizeAutoRefreshed = $false
+    try {
+        while ($true) {
+            Show-AdditionalAppDataMenu -Candidates $Script:AdditionalAppDataMenuCandidates -Calculating ($Script:AdditionalAppDataSizeJob.State -eq 'Running') -Skipped $false
+            Write-Host '  Enter numbers separated by commas, A for all, N for none, or R to refresh' -ForegroundColor Gray -NoNewline
+            $answer = Read-MenuInputWithBackgroundRefresh -Prompt '' -Poll {
+                $wasRunning = [bool]$Script:AdditionalAppDataSizeJob
+                [void](Receive-AdditionalAppDataSizeJob -Job $Script:AdditionalAppDataSizeJob -Candidates $Script:AdditionalAppDataMenuCandidates)
+                if ($wasRunning -and $Script:AdditionalAppDataSizeJob.State -ne 'Running' -and -not $Script:AdditionalAppDataSizeAutoRefreshed) {
+                    $Script:AdditionalAppDataSizeAutoRefreshed = $true
+                    return $true
+                }
+                return $false
+            }
+            if ($answer -eq '__MENU_AUTO_REFRESH__' -or $answer -match '^[Rr]$') { continue }
+            break
+        }
+        if ($sizeJob.State -eq 'Running') { Stop-Job -Job $sizeJob -ErrorAction SilentlyContinue }
+    }
+    finally {
+        Remove-Job -Job $sizeJob -Force -ErrorAction SilentlyContinue
+    }
+    if ($answer -match '^[Aa]$') { return $candidates }
+    if ($answer -match '^[Nn]?$') { return @() }
+
+    $selected = [System.Collections.Generic.List[object]]::new()
+    $invalidEntry = $false
+    foreach ($part in ($answer -split ',')) {
+        $number = 0
+        if ([int]::TryParse($part.Trim(), [ref]$number) -and $number -ge 1 -and $number -le $candidates.Count) {
+            [void]$selected.Add($candidates[$number - 1])
+        }
+        else { $invalidEntry = $true }
+    }
+    if ($invalidEntry) { Write-Host '  Ignored invalid AppData selection entries.' -ForegroundColor Yellow }
+    return @($selected | Sort-Object Area, RelativePath -Unique)
+}
+
+function Copy-SelectedAdditionalAppData {
+    param([string]$DestinationBase)
+
+    foreach ($item in @($Script:SelectedAdditionalAppData)) {
+        $itemName = "$($item.Area)\$($item.RelativePath)"
+        if ($item.Area -notin @('Roaming', 'Local') -or [string]::IsNullOrWhiteSpace($item.RelativePath) -or
+            $item.RelativePath -match '[\\/]') {
+            Write-Log "Skipping invalid additional AppData selection '$itemName'." -Level Warning
+            Add-Result -Category 'Additional AppData' -Item $itemName -Status 'Skipped' -Details 'Invalid selection path'
+            continue
+        }
+        if (-not (Test-Path -LiteralPath $item.FullPath)) {
+            Write-Log "Selected additional AppData folder '$itemName' no longer exists." -Level Warning
+            Add-Result -Category 'Additional AppData' -Item $itemName -Status 'Skipped' -Details 'Source folder no longer exists'
+            continue
+        }
+        try {
+            $destination = Join-Path $DestinationBase "AppData\Additional\$($item.Area)\$($item.RelativePath)"
+            $logPath = Join-Path $DestinationBase "Logs\robocopy_additional_appdata_$($item.Area)_$($item.RelativePath).log"
+            $result = Copy-WithProgress -Source $item.FullPath -Destination $destination -FolderName "Additional AppData: $itemName" -LogPath $logPath -RobocopyArgs $Script:Config.RobocopyArgs
+            Add-Result -Category 'Additional AppData' -Item $itemName -Status $result.Status -Details "$($result.FilesCopied) files; $(Format-FileSize $item.SizeBytes)"
+        }
+        catch {
+            Write-Log "Could not copy additional AppData folder '$itemName': $($_.Exception.Message)" -Level Error
+            Add-Result -Category 'Additional AppData' -Item $itemName -Status 'Error' -Details $_.Exception.Message
+        }
+    }
 }
 
 function Backup-Printers {
@@ -2870,45 +3693,38 @@ function Copy-BrowserData {
         Add-DisabledBackupResult -Item "Chrome" -Category "Browser"
     }
     elseif (Test-Path -LiteralPath $chromeUserDataPath) {
-        # Keep the result: a partial copy while Chrome is open must never be
-        # presented as a fully successful profile archive.
-        $chromeClosed = Request-BrowserClose -ProcessName "chrome" -DisplayName "Google Chrome"
         [void](Export-ChromeBookmarks -ChromeUserDataPath $chromeUserDataPath -BrowserPath $browserPath)
-
-        $chromeRawDestination = Join-Path $browserPath "Chrome\User Data"
-        $chromeRawLog = Join-Path $DestinationBase "Logs\robocopy_chrome_user_data.log"
-        $chromeCopyArgs = @($Script:Config.RobocopyArgs) + @(
-            # These folders hold disposable cache data or Windows-encrypted
-            # network cookies. They add substantial size, are often locked
-            # while Chrome runs, and cannot be meaningfully moved to another
-            # Windows profile.
-            "/XD", "Cache", '"Code Cache"', "GPUCache", "GPUPersistentCache", "ShaderCache", "GrShaderCache", "DawnCache", "Crashpad", "Network", '"Safe Browsing Network"'
-        )
-        $result = Copy-WithProgress -Source $chromeUserDataPath `
-                                    -Destination $chromeRawDestination `
-                                    -FolderName "Chrome profile archive (all profiles)" `
-                                    -LogPath $chromeRawLog `
-                                    -RobocopyArgs $chromeCopyArgs
-        if ($result.Status -eq "Success" -and $chromeClosed) {
-            Write-Log "Chrome profile archive copied: $($result.FilesCopied) files" -Level Success
-            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Success" -Details "$($result.FilesCopied) files; common caches excluded; credentials remain Windows-protected"
-        }
-        elseif ($result.Aborted) {
-            Write-Log "Chrome profile archive copy stopped by operator" -Level Warning
-            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Skipped" -Details "Stopped by operator; partial files may remain and can be resumed by rerunning the export"
-        }
-        else {
-            $detail = if (-not $chromeClosed) {
-                "Chrome was open; active profile databases may be incomplete. Close Chrome and rerun before wiping the old laptop."
+        $includeChromeArchive = $Script:Config.TransferMode -ne 'Online' -or $Script:Config.Online.IncludeChromeProfileArchive
+        if ($includeChromeArchive) {
+            # Keep the result: a partial copy while Chrome is open must never be
+            # presented as a fully successful profile archive.
+            $chromeClosed = Request-BrowserClose -ProcessName "chrome" -DisplayName "Google Chrome"
+            $chromeRawDestination = Join-Path $browserPath "Chrome\User Data"
+            $chromeRawLog = Join-Path $DestinationBase "Logs\robocopy_chrome_user_data.log"
+            $chromeCopyArgs = @($Script:Config.RobocopyArgs) + @(
+                "/XD", "Cache", '"Code Cache"', "GPUCache", "GPUPersistentCache", "ShaderCache", "GrShaderCache", "DawnCache", "Crashpad", "Network", '"Safe Browsing Network"', '"Service Worker\\CacheStorage"', '"Service Worker\\ScriptCache"', "optimization_guide_model_store", "hyphen-data", "MEIPreload"
+            )
+            $result = Copy-WithProgress -Source $chromeUserDataPath -Destination $chromeRawDestination -FolderName "Chrome profile archive (all profiles)" -LogPath $chromeRawLog -RobocopyArgs $chromeCopyArgs
+            if ($result.Status -eq "Success" -and $chromeClosed) {
+                Write-Log "Chrome profile archive copied: $($result.FilesCopied) files" -Level Success
+                Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Success" -Details "$($result.FilesCopied) files; common caches excluded; credentials remain Windows-protected"
+            }
+            elseif ($result.Aborted) {
+                Write-Log "Chrome profile archive copy stopped by operator" -Level Warning
+                Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Skipped" -Details "Stopped by operator; partial files may remain and can be resumed by rerunning the export"
             }
             else {
-                "Check robocopy_chrome_user_data.log"
+                $detail = if (-not $chromeClosed) { "Chrome was open; active profile databases may be incomplete. Close Chrome and rerun before wiping the old laptop." } else { "Check robocopy_chrome_user_data.log" }
+                Write-Log "Chrome profile archive copy completed with warnings" -Level Warning
+                Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Warning" -Details $detail
             }
-            Write-Log "Chrome profile archive copy completed with warnings" -Level Warning
-            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Warning" -Details $detail
+        }
+        else {
+            Write-Log "Chrome raw profile archive omitted by Online policy; portable bookmarks and password export remain available" -Level Info
+            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Skipped" -Details "Online lean mode: bookmarks and optional native password CSV only"
         }
 
-        if (-not $result.Aborted) {
+        if (-not $result -or -not $result.Aborted) {
             $canLaunchChromeForOriginalUser = (-not $Script:IsAdmin) -or ($Script:OriginalUserProfile -eq $env:USERPROFILE)
             Invoke-ChromePasswordExportPrompt -BrowserPath $browserPath -CanLaunchChromeForOriginalUser $canLaunchChromeForOriginalUser
         }
@@ -2967,11 +3783,15 @@ function Copy-BrowserData {
         $firefoxFound = $true
         $firefoxLocalDest = Join-Path $firefoxPackagePath "Local"
         $firefoxLocalLog = Join-Path $DestinationBase "Logs\robocopy_firefox_local.log"
+        # Local Firefox data is largely disposable cache. Preserve profile
+        # metadata and offline data, but skip the cache trees that otherwise
+        # dominate both the export and the later ZIP operation.
+        $firefoxLocalArgs = @($Script:Config.RobocopyArgs) + @("/XD", "cache2", "startupCache", "shader-cache", "thumbnails")
         $result = Copy-WithProgress -Source $firefoxLocalSource `
                                     -Destination $firefoxLocalDest `
                                     -FolderName "Firefox data (Local)" `
                                     -LogPath $firefoxLocalLog `
-                                    -RobocopyArgs $Script:Config.RobocopyArgs
+                                    -RobocopyArgs $firefoxLocalArgs
 
         if ($result.Status -eq "Success") {
             Write-Log "Firefox local data copied: $($result.FilesCopied) files" -Level Success
@@ -3203,6 +4023,22 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+
+# This JSON is embedded from Import.PostImportLaunch in the development
+# configuration.  Keep the launch inventory there so future app changes do
+# not require editing this generated-script template.
+$postImportLaunchConfig = $null
+try {
+    $postImportLaunchConfig = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{POST_IMPORT_LAUNCH_CONFIG_BASE64}')) | ConvertFrom-Json
+}
+catch {
+    Write-Host "  Post-import launch configuration could not be read: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+$appComparisonExcludePatterns = @()
+try {
+    $appComparisonExcludePatterns = @([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{APP_COMPARISON_EXCLUDE_PATTERNS_BASE64}')) | ConvertFrom-Json)
+}
+catch { }
 
 # ============================================================================
 # CONSOLE ENCODING & THEME
@@ -3591,13 +4427,15 @@ Write-Host ""
 Write-Section "Restoring user folders"
 Write-Host ""
 
-$folders = @("Documents", "Desktop", "Downloads", "Pictures", "Videos", "Music", "Favorites")
+$folders = @("Documents", "Desktop", "Downloads", "Pictures", "Videos", "Music", "Favorites", "Start Menu")
 $logsPath = Join-Path $scriptPath "Logs"
 if (-not (Test-Path $logsPath)) { New-Item -ItemType Directory -Path $logsPath -Force | Out-Null }
 
 foreach ($folder in $folders) {
     $sourcePath = Join-Path $scriptPath "UserData\$folder"
-    $destPath = Join-Path $userProfile $folder
+    # Start Menu is a Roaming AppData location. Do not target the legacy
+    # profile-root junction, which Windows may reject or redirect.
+    $destPath = if ($folder -eq 'Start Menu') { Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu' } else { Join-Path $userProfile $folder }
     
     if (Test-Path $sourcePath) {
         $fileCount = (Get-ChildItem $sourcePath -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
@@ -3662,19 +4500,162 @@ function Send-ShortcutToRecycleBin {
     [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($Path, [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
 }
 
+function Remove-MicrosoftStoreTaskbarPin {
+    param([string]$TaskbarPath)
+    foreach ($file in @(Get-ChildItem -LiteralPath $TaskbarPath -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Microsoft Store|WindowsStore' })) {
+        Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+    }
+    try {
+        $appsFolder = (New-Object -ComObject Shell.Application).Namespace('shell:AppsFolder')
+        $storeApp = $appsFolder.ParseName('Microsoft.WindowsStore_8wekyb3d8bbwe!App')
+        $unpinVerb = @($storeApp.Verbs() | Where-Object { ($_.Name -replace '&', '') -match 'Unpin from taskbar|taskbarunpin' }) | Select-Object -First 1
+        if ($unpinVerb) { $unpinVerb.DoIt() }
+    } catch { }
+}
+
+function Initialize-DesktopRestoreInterop {
+    # Use Explorer's supported IFolderView positioning API. Registry ItemPos
+    # values are retained only as a legacy-package fallback.
+    if ('StoDesktopRestoreInterop' -as [type]) { return }
+    Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public sealed class StoDesktopRestoreResult { public int Positioned { get; set; } public string[] Missing { get; set; } }
+public static class StoDesktopRestoreInterop {
+    const int SWC_DESKTOP = 8, SWFO_NEEDDISPATCH = 1;
+    static object GetView() {
+        dynamic app = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application")); dynamic windows = app.Windows;
+        int hwnd = 0; object disp = windows.FindWindowSW(Type.Missing, Type.Missing, SWC_DESKTOP, ref hwnd, SWFO_NEEDDISPATCH);
+        var provider = (IServiceProvider)disp; var service = new Guid("4c96be40-915c-11cf-99d3-00aa004ae837");
+        var browser = (IShellBrowser)provider.QueryService(service, typeof(IShellBrowser).GUID); return browser.QueryActiveShellView();
+    }
+    public static StoDesktopRestoreResult Restore(string[] names, int[] xs, int[] ys, double scaleX, double scaleY, int sourceX, int sourceY, int destinationX, int destinationY) {
+        var view = (IFolderView)GetView(); var view2 = (IFolderView2)view;
+        var current = new Dictionary<string, IntPtr>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < view.ItemCount(); i++) { var item = view2.GetItem(i, typeof(IShellItem).GUID); var name = item.GetDisplayName(SIGDN.SIGDN_NORMALDISPLAY); if (!String.IsNullOrEmpty(name) && !current.ContainsKey(name)) current.Add(name, view.Item(i)); }
+        var missing = new List<string>(); var positioned = 0;
+        for (int i = 0; i < names.Length; i++) {
+            IntPtr pidl; if (String.IsNullOrEmpty(names[i]) || !current.TryGetValue(names[i], out pidl)) { missing.Add(names[i] ?? "(unnamed)"); continue; }
+            var point = new POINT { x = (int)Math.Round((xs[i] - sourceX) * scaleX + destinationX), y = (int)Math.Round((ys[i] - sourceY) * scaleY + destinationY) };
+            view.SelectAndPositionItems(1, new IntPtr[] { pidl }, new POINT[] { point }, SVSIF.SVSI_POSITIONITEM); positioned++;
+        }
+        return new StoDesktopRestoreResult { Positioned = positioned, Missing = missing.ToArray() };
+    }
+    [ComImport, Guid("6D5140C1-7436-11CE-8034-00AA006009FA"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IServiceProvider { [return: MarshalAs(UnmanagedType.IUnknown)] object QueryService([MarshalAs(UnmanagedType.LPStruct)] Guid service, [MarshalAs(UnmanagedType.LPStruct)] Guid riid); }
+    [ComImport, Guid("000214E2-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IShellBrowser { void _VtblGap1_12(); [return: MarshalAs(UnmanagedType.IUnknown)] object QueryActiveShellView(); }
+    [ComImport, Guid("cde725b0-ccc9-4519-917e-325d72fab4ce"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IFolderView { void _VtblGap1_3(); IntPtr Item(int index); int ItemCount(uint flags = 0); void _VtblGap2_3(); void GetItemPosition(IntPtr pidl, out POINT point); void _VtblGap1_4(); void SelectAndPositionItems(int count, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex=0)] IntPtr[] pidls, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex=0)] POINT[] points, SVSIF flags); }
+    [ComImport, Guid("1af3a467-214f-4298-908e-06b03e0b39f9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IFolderView2 { void _VtblGap1_26(); IShellItem GetItem(int index, [MarshalAs(UnmanagedType.LPStruct)] Guid riid); }
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IShellItem { [return: MarshalAs(UnmanagedType.IUnknown)] object BindToHandler(System.Runtime.InteropServices.ComTypes.IBindCtx context, [MarshalAs(UnmanagedType.LPStruct)] Guid bhid, [MarshalAs(UnmanagedType.LPStruct)] Guid riid); IShellItem GetParent(); [return: MarshalAs(UnmanagedType.LPWStr)] string GetDisplayName(SIGDN sigdn); }
+    struct POINT { public int x; public int y; } enum SIGDN { SIGDN_NORMALDISPLAY } [Flags] enum SVSIF { SVSI_POSITIONITEM = 0x80 }
+}
+"@ -ErrorAction Stop
+}
+
+function Get-TaskbarUnpinVerb {
+    param([object]$ShellItem)
+    try {
+        return @($ShellItem.Verbs() | Where-Object {
+            ($_.Name -replace '&', '').Trim() -match 'Unpin from taskbar|taskbarunpin'
+        }) | Select-Object -First 1
+    }
+    catch { return $null }
+}
+
+function Test-SourceTaskbarPin {
+    param([object]$ShellItem, [object[]]$SourcePins)
+    $itemName = [IO.Path]::GetFileNameWithoutExtension([string]$ShellItem.Name)
+    $itemPath = [string]$ShellItem.Path
+    $itemTarget = if ($itemPath) { [IO.Path]::GetFileName($itemPath) } else { '' }
+    foreach ($pin in @($SourcePins)) {
+        if ($pin.Name -match 'Microsoft Store|WindowsStore') { continue }
+        $pinName = [IO.Path]::GetFileNameWithoutExtension([string]$pin.Name)
+        $pinTarget = [string]$pin.TargetPath
+        if ($itemName -and $pinName -and $itemName -ieq $pinName) { return $true }
+        if ($itemPath -and $pinTarget -and $itemPath -ieq $pinTarget) { return $true }
+        if ($itemTarget -and $pinTarget -and $itemTarget -ieq [IO.Path]::GetFileName($pinTarget)) { return $true }
+    }
+    return $false
+}
+
+function Remove-NonSourceTaskbarPins {
+    param([object[]]$SourcePins)
+    $removed = 0
+    try {
+        $appsFolder = (New-Object -ComObject Shell.Application).Namespace('shell:AppsFolder')
+        $shellItems = $appsFolder.Items()
+        for ($index = 0; $index -lt $shellItems.Count; $index++) {
+            $shellItem = $shellItems.Item($index)
+            if (Test-SourceTaskbarPin -ShellItem $shellItem -SourcePins $SourcePins) { continue }
+            $unpinVerb = Get-TaskbarUnpinVerb -ShellItem $shellItem
+            if ($unpinVerb) {
+                try { $unpinVerb.DoIt(); $removed++ }
+                catch { Write-Log "Could not remove unmatched taskbar app '$($shellItem.Name)': $($_.Exception.Message)" -Level 'Warning' }
+            }
+        }
+    }
+    catch { Write-Log "Could not enumerate shell taskbar pins for exact reconciliation: $($_.Exception.Message)" -Level 'Warning' }
+    return $removed
+}
+
 $desktopLayoutFile = Join-Path $scriptPath 'Settings\DesktopLayout.json'
 if (Test-Path -LiteralPath $desktopLayoutFile) {
     try {
         $desktopLayout = Get-Content -LiteralPath $desktopLayoutFile -Raw | ConvertFrom-Json
         $count = @($desktopLayout.Shortcuts).Count
         if ($TestMode) {
-            Write-Log "Desktop layout - Would retain $count transferred shortcut(s) and review OneDrive duplicates" -Level 'Info'
-            Add-Result -Category 'Desktop Layout' -Item 'Shortcut layout' -Status 'TestMode' -Details "$count shortcut(s); no changes made"
+            $shellCoordinateState = 'legacy shell-position fallback'
+            if ($desktopLayout.DesktopItems -and @($desktopLayout.DesktopItems).Count) {
+                try { Initialize-DesktopRestoreInterop; $shellCoordinateState = 'Explorer shell-coordinate restore' }
+                catch { $shellCoordinateState = "Explorer shell-coordinate restore unavailable: $($_.Exception.Message)" }
+            }
+            Write-Log "Desktop layout - Would retain $count transferred shortcut(s) and use $shellCoordinateState" -Level 'Info'
+            Add-Result -Category 'Desktop Layout' -Item 'Shortcut layout' -Status 'TestMode' -Details "$count shortcut(s); $shellCoordinateState; no changes made"
         }
         else {
-            # Desktop shortcut files have already been restored with the Desktop folder. Windows owns physical grid placement;
-            # retain the source ordering as a best-effort manifest and never import opaque Explorer Bag/Taskband registry blobs.
-            Add-Result -Category 'Desktop Layout' -Item 'Shortcut layout' -Status 'Success' -Details "$count shortcut(s) restored with Desktop data (Shell placement best effort)"
+            # Desktop files have already been restored with the Desktop folder.
+            # Position matching visible shell items through Explorer itself so
+            # the saved coordinates work across display resolutions.
+            $positionValues = $desktopLayout.ShellPositionValues
+            $positionRestored = 0
+            $missingDesktopItems = @()
+            $usedShellCoordinates = $false
+            if ($desktopLayout.DesktopItems -and $desktopLayout.SourceWorkArea -and @($desktopLayout.DesktopItems).Count) {
+                try {
+                    Initialize-DesktopRestoreInterop
+                    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+                    $sourceArea = $desktopLayout.SourceWorkArea
+                    $destinationArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+                    if ([int]$sourceArea.Width -le 0 -or [int]$sourceArea.Height -le 0) { throw 'Source work-area dimensions are invalid.' }
+                    $items = @($desktopLayout.DesktopItems)
+                    $restoreResult = [StoDesktopRestoreInterop]::Restore(
+                        [string[]]@($items | ForEach-Object { [string]$_.Name }),
+                        [int[]]@($items | ForEach-Object { [int]$_.X }),
+                        [int[]]@($items | ForEach-Object { [int]$_.Y }),
+                        ([double]$destinationArea.Width / [double]$sourceArea.Width),
+                        ([double]$destinationArea.Height / [double]$sourceArea.Height),
+                        [int]$sourceArea.X, [int]$sourceArea.Y, [int]$destinationArea.X, [int]$destinationArea.Y
+                    )
+                    $positionRestored = [int]$restoreResult.Positioned
+                    $missingDesktopItems = @($restoreResult.Missing)
+                    $usedShellCoordinates = $true
+                }
+                catch { Write-Log "Desktop shell-coordinate restore unavailable: $($_.Exception.Message)" -Level 'Warning' }
+            }
+            if (-not $usedShellCoordinates -and $positionValues) {
+                $desktopBagPath = 'HKCU:\Software\Microsoft\Windows\Shell\Bags\1\Desktop'
+                New-Item -Path $desktopBagPath -Force | Out-Null
+                foreach ($property in $positionValues.PSObject.Properties) {
+                    try { Set-ItemProperty -LiteralPath $desktopBagPath -Name $property.Name -Value ([Convert]::FromBase64String([string]$property.Value)) -Type Binary -ErrorAction Stop; $positionRestored++ }
+                    catch { Write-Log "Desktop position value '$($property.Name)' could not be restored: $($_.Exception.Message)" -Level 'Warning' }
+                }
+                if ($positionRestored) { Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Process explorer.exe }
+            }
+            $layoutStatus = if ($positionRestored) { 'Success' } else { 'Skipped' }
+            $layoutDetail = if ($positionRestored -and $usedShellCoordinates) { "$positionRestored desktop item(s) positioned through Explorer with destination-display scaling" } elseif ($positionRestored) { "$count desktop shortcut(s) restored; $positionRestored legacy shell position value(s) applied" } else { "$count shortcut(s) restored; source package has no usable desktop position state" }
+            Add-Result -Category 'Desktop Layout' -Item 'Shortcut layout' -Status $layoutStatus -Details $layoutDetail
+            if ($missingDesktopItems.Count) { Add-Result -Category 'Desktop Layout' -Item 'Unmatched desktop items' -Status 'Skipped' -Details "$($missingDesktopItems.Count) source item(s) were not present after restore: $(@($missingDesktopItems | Select-Object -First 5) -join ', ')" }
             $localDesktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
             $candidates = @()
             foreach ($cloudDesktop in @(Get-OneDriveDesktopPaths)) {
@@ -3711,23 +4692,52 @@ if (Test-Path -LiteralPath $taskbarLayoutFile) {
     try {
         $taskbarLayout = Get-Content -LiteralPath $taskbarLayoutFile -Raw | ConvertFrom-Json
         $pinCount = @($taskbarLayout.Pins).Count
-        if ($TestMode) { Write-Log "Taskbar layout - Would restore $pinCount source pin(s) without removing destination pins" -Level 'Info'; Add-Result -Category 'Taskbar Layout' -Item 'Pinned apps' -Status 'TestMode' -Details "$pinCount source pin(s)" }
+        if ($TestMode) { Write-Log "Taskbar layout - Would replace destination pins with $pinCount source pin(s), excluding Microsoft Store" -Level 'Info'; Add-Result -Category 'Taskbar Layout' -Item 'Pinned apps' -Status 'TestMode' -Details "$pinCount source pin(s); exact replacement" }
         elseif (Test-Path -LiteralPath $taskbarPackagePath) {
             $destinationPins = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'
             New-Item -ItemType Directory -Path $destinationPins -Force | Out-Null
-            $copied = 0; $skipped = 0
-            foreach ($pin in @($taskbarLayout.Pins | Sort-Object Ordinal)) {
-                $sourcePin = Join-Path $taskbarPackagePath $pin.Name
-                if (-not (Test-Path -LiteralPath $sourcePin)) { $skipped++; continue }
-                if ($pin.TargetPath -and -not (Test-Path -LiteralPath $pin.TargetPath) -and $pin.TargetPath -notmatch '^(shell:|explorer\.exe)') {
-                    Write-Log "Taskbar app unavailable: $($pin.Name) -> $($pin.TargetPath)" -Level 'Warning'; $skipped++; continue
-                }
-                $destinationPin = Join-Path $destinationPins $pin.Name
-                if (Test-Path -LiteralPath $destinationPin) { $skipped++; continue }
-                Copy-Item -LiteralPath $sourcePin -Destination $destinationPin -ErrorAction Stop; $copied++
+            $copied = 0; $skipped = 0; $removed = 0
+            foreach ($destinationPin in @(Get-ChildItem -LiteralPath $destinationPins -File -Force -ErrorAction SilentlyContinue)) {
+                Remove-Item -LiteralPath $destinationPin.FullName -Force -ErrorAction Stop; $removed++
             }
-            if ($copied) { Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Process explorer.exe }
-            Add-Result -Category 'Taskbar Layout' -Item 'Pinned apps' -Status $(if ($skipped) { 'Warning' } else { 'Success' }) -Details "$copied added; $skipped retained/unavailable. Existing destination pins preserved"
+            foreach ($pin in @($taskbarLayout.Pins | Sort-Object Ordinal)) {
+                if ($pin.Name -match 'Microsoft Store|WindowsStore') { continue }
+                $sourcePin = Join-Path $taskbarPackagePath $pin.Name
+                if (-not (Test-Path -LiteralPath $sourcePin)) {
+                    $skipped++
+                    Write-Log "Taskbar source pin payload missing: $($pin.Name)" -Level 'Warning'
+                    Add-Result -Category 'Taskbar Layout' -Item $pin.Name -Status 'Skipped' -Details 'Source pin payload is missing from the transfer package'
+                    continue
+                }
+                if ($pin.TargetPath -and -not (Test-Path -LiteralPath $pin.TargetPath) -and $pin.TargetPath -notmatch '^(shell:|explorer\.exe)') {
+                    Write-Log "Taskbar app unavailable: $($pin.Name) -> $($pin.TargetPath)" -Level 'Warning'
+                    Add-Result -Category 'Taskbar Layout' -Item $pin.Name -Status 'Skipped' -Details "Source app unavailable on destination: $($pin.TargetPath)"
+                    $skipped++; continue
+                }
+                Copy-Item -LiteralPath $sourcePin -Destination (Join-Path $destinationPins $pin.Name) -ErrorAction Stop; $copied++
+            }
+            $taskbandPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Taskband'
+            if ($taskbarLayout.TaskbandValues) {
+                New-Item -Path $taskbandPath -Force | Out-Null
+                foreach ($property in $taskbarLayout.TaskbandValues.PSObject.Properties) {
+                    try { Set-ItemProperty -LiteralPath $taskbandPath -Name $property.Name -Value ([Convert]::FromBase64String([string]$property.Value)) -Type Binary -ErrorAction Stop }
+                    catch { Write-Log "Taskbar order value '$($property.Name)' could not be restored: $($_.Exception.Message)" -Level 'Warning'; $skipped++ }
+                }
+            }
+            Remove-MicrosoftStoreTaskbarPin -TaskbarPath $destinationPins
+            Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Process explorer.exe
+            Start-Sleep -Seconds 2
+            $unmatchedPinsRemoved = Remove-NonSourceTaskbarPins -SourcePins @($taskbarLayout.Pins)
+            Remove-MicrosoftStoreTaskbarPin -TaskbarPath $destinationPins
+            Start-Sleep -Seconds 1
+            $unmatchedPinsRemoved += Remove-NonSourceTaskbarPins -SourcePins @($taskbarLayout.Pins)
+            Remove-MicrosoftStoreTaskbarPin -TaskbarPath $destinationPins
+            $storeReintroduced = @(Get-ChildItem -LiteralPath $destinationPins -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Microsoft Store|WindowsStore' })
+            if ($storeReintroduced.Count) {
+                Write-Log 'Microsoft Store taskbar pin was reintroduced after removal; policy or imaging may be enforcing it.' -Level 'Warning'
+                Add-Result -Category 'Taskbar Layout' -Item 'Microsoft Store' -Status 'Warning' -Details 'Pin was reintroduced after removal; policy or imaging may be enforcing it'
+            }
+            Add-Result -Category 'Taskbar Layout' -Item 'Pinned apps' -Status $(if ($skipped) { 'Warning' } else { 'Success' }) -Details "$copied restored in source order; $removed destination pin(s) removed; $unmatchedPinsRemoved reintroduced/default pin(s) unpinned; Microsoft Store unpinned; $skipped unavailable/order issue(s)"
         }
     } catch { Write-Log "Taskbar layout restore failed: $($_.Exception.Message)" -Level 'Warning'; Add-Result -Category 'Taskbar Layout' -Item 'Pinned apps' -Status 'Warning' -Details $_.Exception.Message }
 }
@@ -3743,6 +4753,29 @@ if (Test-Path -LiteralPath $defaultAppsFile) {
         if ($TestMode) { Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'TestMode' -Details 'No Settings page opened' }
         else { Start-Process 'ms-settings:defaultapps' -ErrorAction SilentlyContinue; Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'Manual' -Details 'See Logs\DefaultAppsRestoreGuide.txt and the opened Settings page' }
     } catch { Write-Log "Default-app guidance failed: $($_.Exception.Message)" -Level 'Warning'; Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'Warning' -Details $_.Exception.Message }
+}
+
+# Remaining folders from the optional entire-profile export. Standard user
+# folders and AppData are intentionally absent here because their dedicated
+# import stages already restored them.
+$fullProfilePath = Join-Path $scriptPath 'UserData\FullProfile'
+if (Test-Path -LiteralPath $fullProfilePath) {
+    Write-Host ''
+    Write-Host '  Restoring remaining user-profile content:' -ForegroundColor Gray
+    foreach ($item in @(Get-ChildItem -LiteralPath $fullProfilePath -Force -ErrorAction SilentlyContinue)) {
+        $destination = Join-Path $userProfile $item.Name
+        if ($TestMode) {
+            Add-Result -Category 'Entire User Profile' -Item $item.Name -Status 'TestMode' -Details 'Would restore'
+        }
+        elseif ($item.PSIsContainer) {
+            $result = Copy-WithProgress -Source $item.FullName -Destination $destination -FolderName "Profile: $($item.Name)" -LogPath (Join-Path $logsPath "import_profile_$($item.Name).log")
+            Add-Result -Category 'Entire User Profile' -Item $item.Name -Status $result.Status -Details "$($result.FilesCopied) files"
+        }
+        else {
+            try { Copy-Item -LiteralPath $item.FullName -Destination $destination -Force -ErrorAction Stop; Add-Result -Category 'Entire User Profile' -Item $item.Name -Status 'Success' -Details 'Profile-root file restored' }
+            catch { Add-Result -Category 'Entire User Profile' -Item $item.Name -Status 'Warning' -Details $_.Exception.Message }
+        }
+    }
 }
 
 # Additional folders
@@ -4044,6 +5077,23 @@ if (Test-Path $qaSource) {
 
 Write-Host ""
 
+# Additional AppData selected in Advanced mode during export.
+$additionalAppDataPath = Join-Path $scriptPath 'AppData\Additional'
+if (Test-Path -LiteralPath $additionalAppDataPath) {
+    foreach ($area in @('Roaming', 'Local')) {
+        $areaPath = Join-Path $additionalAppDataPath $area
+        $destinationRoot = if ($area -eq 'Roaming') { $env:APPDATA } else { $env:LOCALAPPDATA }
+        foreach ($folder in @(Get-ChildItem -LiteralPath $areaPath -Directory -Force -ErrorAction SilentlyContinue)) {
+            if ($TestMode) {
+                Add-Result -Category 'Additional AppData' -Item "$area\$($folder.Name)" -Status 'TestMode' -Details 'Would restore'
+                continue
+            }
+            $result = Copy-WithProgress -Source $folder.FullName -Destination (Join-Path $destinationRoot $folder.Name) -FolderName "Additional AppData: $area\$($folder.Name)" -LogPath (Join-Path $logsPath "import_additional_appdata_$area`_$($folder.Name).log")
+            Add-Result -Category 'Additional AppData' -Item "$area\$($folder.Name)" -Status $result.Status -Details "$($result.FilesCopied) files"
+        }
+    }
+}
+
 # ============================================================================
 # RESTORE SYSTEM SETTINGS
 # ============================================================================
@@ -4118,6 +5168,25 @@ elseif ((Test-Path $powerScheme) -and $hasIndividualPowerSettings) {
 # This is the normal route for the organisation's managed STOBG plan; it is
 # intentionally attempted even without elevation.  Settings rejected by a
 # policy or unsupported by the new hardware are reported individually.
+function Set-ImportedPowerOverlay {
+    param([string]$OverlayGuid)
+    if ([string]::IsNullOrWhiteSpace($OverlayGuid) -or $OverlayGuid -notmatch '^[0-9a-fA-F-]{36}$') { return $false }
+    try {
+        if (-not ('StoPowerOverlay' -as [type])) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class StoPowerOverlay {
+    [DllImport("PowrProf.dll", SetLastError=true)]
+    public static extern uint PowerSetActiveOverlayScheme(IntPtr UserRootPowerKey, ref Guid OverlaySchemeGuid);
+}
+"@ -ErrorAction Stop
+        }
+        $guid = [Guid]$OverlayGuid
+        return ([StoPowerOverlay]::PowerSetActiveOverlayScheme([IntPtr]::Zero, [ref]$guid) -eq 0)
+    } catch { return $false }
+}
+
 if ($hasIndividualPowerSettings) {
     $individualPowerSettings = @($settingsData.PowerSettingValues)
     if ($TestMode) {
@@ -4142,7 +5211,9 @@ if ($hasIndividualPowerSettings) {
                 if ($LASTEXITCODE -eq 0) {
                     $powerValuesApplied++
                 } else {
-                    [void]$powerValueFailures.Add("$settingGuid ($($powerType.Name)): $(($powerOutput | Out-String).Trim())")
+                    $failureDetail = "$settingGuid ($($powerType.Name)): $(($powerOutput | Out-String).Trim())"
+                    [void]$powerValueFailures.Add($failureDetail)
+                    Add-Result -Category 'Settings' -Item "Power setting $settingGuid" -Status 'Skipped' -Details "$($powerType.Name) value rejected: $(($powerOutput | Out-String).Trim())"
                 }
             }
         }
@@ -4161,6 +5232,54 @@ if ($hasIndividualPowerSettings) {
             Add-Result -Category "Settings" -Item "Individual Power Settings" -Status "Warning" -Details "$powerValuesApplied applied; $($powerValueFailures.Count) rejected/unsupported. $failurePreview"
             $Script:Results.Warnings += "Some individual power settings were rejected by the current plan, policy, or hardware. See ImportLog.txt."
         }
+    }
+}
+
+# The Windows Settings Power mode control is represented by distinct AC/DC
+# overlay schemes. Attempt this in the signed-in context; policy or hardware
+# rejection is reported as skipped rather than escalating the import.
+if ($settingsData -and $settingsData.PowerModeOverlay) {
+    if ($TestMode) {
+        Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'TestMode' -Details 'Would apply captured AC/DC power-mode overlay'
+    }
+    else {
+        $overlayResults = @()
+        foreach ($overlay in @($settingsData.PowerModeOverlay.ActiveOverlayAcPowerScheme, $settingsData.PowerModeOverlay.ActiveOverlayDcPowerScheme) | Select-Object -Unique) {
+            if (-not $overlay) { continue }
+            $overlayResults += [bool](Set-ImportedPowerOverlay -OverlayGuid ([string]$overlay))
+        }
+        if ($overlayResults.Count -gt 0 -and ($overlayResults -notcontains $false)) {
+            Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'Success' -Details 'Captured power-mode overlay applied'
+        }
+        else {
+            Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'Skipped' -Details 'Overlay could not be applied without elevation, policy, or supported hardware'
+        }
+    }
+}
+else { Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'Skipped' -Details 'No source power-mode overlay captured' }
+
+# Lid actions must be attempted in the ordinary import path. Verify the
+# actual AC/DC values afterward so an accepted command is not misreported.
+if ($settingsData -and $settingsData.LidClose -and $settingsData.LidClose.OnAC) {
+    $lidActionMap = @{ 'Do Nothing' = 0; Sleep = 1; Hibernate = 2; 'Shut Down' = 3 }
+    if ($TestMode) {
+        Add-Result -Category 'Settings' -Item 'Lid actions' -Status 'TestMode' -Details "AC: $($settingsData.LidClose.OnAC); DC: $($settingsData.LidClose.OnBattery)"
+    }
+    else {
+        $lidFailed = $false
+        foreach ($powerKind in @(@{ Command='/setacvalueindex'; Value=$lidActionMap[$settingsData.LidClose.OnAC] }, @{ Command='/setdcvalueindex'; Value=$lidActionMap[$settingsData.LidClose.OnBattery] })) {
+            if ($null -eq $powerKind.Value) { $lidFailed = $true; continue }
+            & powercfg $powerKind.Command SCHEME_CURRENT SUB_BUTTONS LIDACTION $powerKind.Value 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { $lidFailed = $true }
+        }
+        & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
+        $lidVerify = & powercfg /query SCHEME_CURRENT SUB_BUTTONS LIDACTION 2>&1 | Out-String
+        $expectedAc = ('0x{0:x}' -f $lidActionMap[$settingsData.LidClose.OnAC])
+        $expectedDc = ('0x{0:x}' -f $lidActionMap[$settingsData.LidClose.OnBattery])
+        if (-not $lidFailed -and $lidVerify -match [regex]::Escape($expectedAc) -and $lidVerify -match [regex]::Escape($expectedDc)) {
+            Add-Result -Category 'Settings' -Item 'Lid actions' -Status 'Success' -Details "Verified AC: $($settingsData.LidClose.OnAC); DC: $($settingsData.LidClose.OnBattery)"
+        }
+        else { Add-Result -Category 'Settings' -Item 'Lid actions' -Status 'Skipped' -Details 'Windows, policy, or hardware rejected the non-elevated lid setting' }
     }
 }
 
@@ -4919,6 +6038,16 @@ function ConvertTo-ProgramMatchPart {
     return (($Value.ToLowerInvariant() -replace '[^a-z0-9]+', ' ').Trim() -replace '\s+', ' ')
 }
 
+function Test-UserFacingProgram {
+    param([object]$Program)
+    $name = [string]$Program.DisplayName
+    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    foreach ($pattern in @($appComparisonExcludePatterns)) {
+        if ($name -match [string]$pattern) { return $false }
+    }
+    return $true
+}
+
 function Get-ProgramMatchKey {
     param([string]$DisplayName, [string]$Publisher)
     return "$(ConvertTo-ProgramMatchPart $DisplayName)|$(ConvertTo-ProgramMatchPart $Publisher)"
@@ -4957,14 +6086,100 @@ function ConvertTo-ReviewHtml {
     return "<html><head><meta charset='utf-8'><title>Application Migration Review</title><style>body{font-family:Segoe UI;margin:32px;color:#202020}table{border-collapse:collapse;width:100%;margin-bottom:25px}td,th{padding:8px;border:1px solid #ccc;text-align:left}th{background:#17365d;color:#fff}h1{color:#17365d}</style></head><body><h1>Application Migration Review</h1><p>Review missing applications and AppData candidates before handoff. Candidate folders are review-only and were not copied automatically.</p><h2>Missing applications</h2><table><tr><th>Application</th><th>Publisher</th><th>Old version</th></tr>$rows</table><h2>AppData candidates</h2><table><tr><th>Area</th><th>Folder</th><th>Association</th></tr>$candidateRows</table></body></html>"
 }
 
+function Set-TransferReportMarkedContent {
+    param([string]$Html, [string]$Marker, [string]$Content)
+    $openMarker = "<!-- $Marker -->"
+    $closeMarker = "<!-- /$Marker -->"
+    $start = $Html.IndexOf($openMarker, [StringComparison]::Ordinal)
+    if ($start -lt 0) { return $Html }
+    $end = $Html.IndexOf($closeMarker, $start + $openMarker.Length, [StringComparison]::Ordinal)
+    if ($end -lt 0) { return $Html }
+    return $Html.Substring(0, $start + $openMarker.Length) + $Content + $Html.Substring($end)
+}
+
+function Update-TransferReportFromImport {
+    param(
+        [object[]]$MissingPrograms = @(),
+        [ValidateSet('Complete', 'Disabled', 'Unavailable', 'Failed')][string]$State = 'Complete',
+        [string]$Detail = ''
+    )
+    $reportPath = Join-Path $scriptPath 'TransferReport.html'
+    if (-not (Test-Path -LiteralPath $reportPath)) {
+        Write-Log 'Transfer report update skipped: TransferReport.html is missing.' -Level 'Warning'
+        return
+    }
+    try {
+        $encode = { param($Value) [Security.SecurityElement]::Escape([string]$Value) }
+        if ($State -eq 'Complete') {
+            $appItems = @(@($MissingPrograms) | ForEach-Object {
+                $name = & $encode ([string]$_.DisplayName)
+                $publisher = & $encode ([string]$_.Publisher)
+                $version = & $encode ([string]$_.DisplayVersion)
+                "<li><strong>$name</strong><small>$publisher Â· old version: $version</small></li>"
+            }) -join "`n"
+            if ($MissingPrograms.Count -gt 0) {
+                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><ul class='app-list'>$appItems</ul></div>"
+            }
+            else {
+                $appSection = "<div class='app-summary ok'><h3>Application comparison complete</h3><p>No applications from the old computer are missing on this new computer.</p></div>"
+            }
+        }
+        else {
+            $heading = switch ($State) {
+                'Disabled' { 'Application comparison disabled' }
+                'Unavailable' { 'Application comparison unavailable' }
+                default { 'Application comparison could not be completed' }
+            }
+            $reason = if ($Detail) { & $encode $Detail } else { 'No additional detail was recorded.' }
+            $appSection = "<div class='app-summary ready'><h3>$heading</h3><p>$reason See Logs\ImportLog.txt for details.</p></div>"
+        }
+        $reportHtml = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8
+        $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'DESTINATION_COMPUTER' -Content (& $encode $env:COMPUTERNAME)
+        $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'APP_MIGRATION_SECTION' -Content $appSection
+        Set-Content -LiteralPath $reportPath -Value $reportHtml -Encoding UTF8
+        Write-Log 'Transfer report updated with destination computer and application comparison.' -Level 'Success'
+    }
+    catch {
+        Write-Log "Transfer report update failed: $($_.Exception.Message)" -Level 'Warning'
+    }
+}
+
+function Update-TransferReportImportOutcomes {
+    # The export report remains the handoff document. Surface only import
+    # outcomes that require a technician's attention, ahead of its export log.
+    $reportPath = Join-Path $scriptPath 'TransferReport.html'
+    if (-not (Test-Path -LiteralPath $reportPath)) { return }
+    try {
+        $attention = @($Script:Results.Actions | Where-Object {
+            $_.Category -in @('Settings', 'Taskbar Layout', 'Desktop Layout') -and
+            $_.Status -in @('Warning', 'Error', 'Skipped', 'Manual', 'Pending')
+        })
+        $encode = { param($Value) [Security.SecurityElement]::Escape([string]$Value) }
+        $content = if ($attention.Count) {
+            $items = @($attention | ForEach-Object {
+                "<li><strong>$(& $encode ([string]$_.Item))</strong><small>$(& $encode ([string]$_.Status)) Â· $(& $encode ([string]$_.Details))</small></li>"
+            }) -join "`n"
+            "<section class='section'><div class='section-header'>Import actions needing attention<span class='section-subtitle'>Settings or layout items Windows could not apply</span></div><div class='section-content'><div class='app-summary ready'><ul class='app-list'>$items</ul></div></div></section>"
+        }
+        else { '' }
+        $reportHtml = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8
+        $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'IMPORT_RESULTS' -Content $content
+        Set-Content -LiteralPath $reportPath -Value $reportHtml -Encoding UTF8
+        Write-Log "Transfer report updated with $($attention.Count) import item(s) needing attention." -Level 'Info'
+    }
+    catch { Write-Log "Transfer report import-outcome update failed: $($_.Exception.Message)" -Level 'Warning' }
+}
+
 $programsFile = Join-Path $scriptPath "Settings\InstalledPrograms.txt"
 $sourceProgramsPath = Join-Path $scriptPath 'Settings\InstalledPrograms.json'
 if (-not $compareInstalledApps) {
     Add-Result -Category 'Reference' -Item 'Application comparison' -Status 'Skipped' -Details 'Disabled by package configuration'
+    if (-not $TestMode) { Update-TransferReportFromImport -State Disabled -Detail 'This transfer package was configured not to compare installed applications.' }
 }
 elseif (-not (Test-Path -LiteralPath $sourceProgramsPath)) {
     Write-Log 'Application comparison skipped: source InstalledPrograms.json is missing.' -Level 'Warning'
     Add-Result -Category 'Reference' -Item 'Application comparison' -Status 'Warning' -Details 'Source installed-program inventory is missing'
+    if (-not $TestMode) { Update-TransferReportFromImport -State Unavailable -Detail 'The source InstalledPrograms.json inventory is missing from this transfer package.' }
 }
 else {
     try {
@@ -4980,7 +6195,9 @@ else {
         $newProgramsPath = Join-Path $logsPath 'NewInstalledPrograms.json'
         $newPrograms | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $newProgramsPath -Encoding UTF8
         $newByKey = @{}; foreach ($program in $newPrograms) { if ($program.MatchKey) { $newByKey[$program.MatchKey] = $program } }
-        $missingPrograms = @($sourcePrograms | Where-Object { -not $_.MatchKey -or -not $newByKey.ContainsKey($_.MatchKey) })
+        $allMissingPrograms = @($sourcePrograms | Where-Object { -not $_.MatchKey -or -not $newByKey.ContainsKey($_.MatchKey) })
+        $filteredPrograms = @($allMissingPrograms | Where-Object { -not (Test-UserFacingProgram $_) })
+        $missingPrograms = @($allMissingPrograms | Where-Object { Test-UserFacingProgram $_ })
         $matchedPrograms = @($sourcePrograms | Where-Object { $_.MatchKey -and $newByKey.ContainsKey($_.MatchKey) } | ForEach-Object {
             [PSCustomObject]@{ DisplayName = $_.DisplayName; Publisher = $_.Publisher; OldVersion = $_.DisplayVersion; NewVersion = $newByKey[$_.MatchKey].DisplayVersion; VersionDifferent = ($_.DisplayVersion -ne $newByKey[$_.MatchKey].DisplayVersion) }
         })
@@ -4994,10 +6211,11 @@ else {
             })
         }
         elseif ($reviewAppDataCandidates) { Write-Log 'AppData candidate review skipped: source inventory is missing.' -Level 'Warning' }
-        $comparison = [PSCustomObject]@{ GeneratedAt = (Get-Date).ToString('o'); Missing = $missingPrograms; Matched = $matchedPrograms; AppDataCandidates = $candidateItems }
+        $comparison = [PSCustomObject]@{ GeneratedAt = (Get-Date).ToString('o'); Missing = $missingPrograms; Filtered = $filteredPrograms; Matched = $matchedPrograms; AppDataCandidates = $candidateItems }
         $comparison | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationComparison.json') -Encoding UTF8
-        @('Application migration review', '', "Missing applications: $($missingPrograms.Count)", '') + @($missingPrograms | ForEach-Object { "MISSING | $($_.DisplayName) | $($_.Publisher) | old version: $($_.DisplayVersion)" }) + @('', 'AppData candidates:') + @($candidateItems | ForEach-Object { "[$($_.Area)] $($_.RelativePath) | $($_.Association)" }) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.txt') -Encoding UTF8
+        @('Application migration review', '', "Missing user-facing applications: $($missingPrograms.Count)", "Filtered technical entries: $($filteredPrograms.Count)", '') + @($missingPrograms | ForEach-Object { "MISSING | $($_.DisplayName) | $($_.Publisher) | old version: $($_.DisplayVersion)" }) + @('', 'Filtered technical entries:') + @($filteredPrograms | ForEach-Object { "FILTERED | $($_.DisplayName) | $($_.Publisher)" }) + @('', 'AppData candidates:') + @($candidateItems | ForEach-Object { "[$($_.Area)] $($_.RelativePath) | $($_.Association)" }) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.txt') -Encoding UTF8
         (ConvertTo-ReviewHtml -Missing $missingPrograms -Candidates $candidateItems) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.html') -Encoding UTF8
+        if (-not $TestMode) { Update-TransferReportFromImport -MissingPrograms $missingPrograms }
         $detail = "$($missingPrograms.Count) missing app(s); $($candidateItems.Count) AppData candidate(s)"
         Write-Log "Application migration review created: $detail" -Level $(if ($missingPrograms.Count -gt 0) { 'Warning' } else { 'Success' })
         Add-Result -Category 'Reference' -Item 'Application migration review' -Status $(if ($missingPrograms.Count -gt 0) { 'Manual' } else { 'Success' }) -Details $detail
@@ -5008,6 +6226,7 @@ else {
     } catch {
         Write-Log "Application comparison failed: $($_.Exception.Message)" -Level 'Warning'
         Add-Result -Category 'Reference' -Item 'Application comparison' -Status 'Warning' -Details $_.Exception.Message
+        if (-not $TestMode) { Update-TransferReportFromImport -State Failed -Detail $_.Exception.Message }
     }
 }
 
@@ -5127,6 +6346,77 @@ else {
     }
 }
 
+if (-not $TestMode) { Update-TransferReportImportOutcomes }
+
+function Resolve-PostImportLaunchTarget {
+    param([object]$Alternative, [object]$LaunchConfig)
+    foreach ($folder in @($LaunchConfig.DesktopFolders)) {
+        if ([string]::IsNullOrWhiteSpace([string]$folder)) { continue }
+        $desktopPath = if ([IO.Path]::IsPathRooted([string]$folder)) { [string]$folder } else { Join-Path $env:USERPROFILE ([string]$folder) }
+        foreach ($shortcutName in @($Alternative.DesktopShortcuts)) {
+            $shortcutPath = Join-Path $desktopPath ([string]$shortcutName)
+            if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
+                return [PSCustomObject]@{ Path = $shortcutPath; Source = 'desktop shortcut'; Name = $Alternative.Name }
+            }
+        }
+    }
+    foreach ($commandName in @($Alternative.Commands)) {
+        if ([string]::IsNullOrWhiteSpace([string]$commandName)) { continue }
+        $command = Get-Command -Name ([string]$commandName) -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($command -and $command.Path) {
+            return [PSCustomObject]@{ Path = $command.Path; Source = 'installed command'; Name = $Alternative.Name }
+        }
+    }
+    return $null
+}
+
+function Start-PostImportHandoff {
+    $reportPath = Join-Path $scriptPath 'TransferReport.html'
+    try {
+        if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) { throw 'TransferReport.html is missing from this package.' }
+        Start-Process -FilePath $reportPath -ErrorAction Stop
+        Write-Log 'Opened transfer report at import completion.' -Level 'Success'
+    }
+    catch {
+        Write-Log "Could not open transfer report: $($_.Exception.Message)" -Level 'Warning'
+        Write-Host "  Could not open TransferReport.html: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    if (-not $postImportLaunchConfig -or -not $postImportLaunchConfig.Enabled) { return }
+    $launchApps = Read-Host '  Open the standard handoff applications too? (Y/N) [N]'
+    if ($launchApps -notmatch '^[Yy]') {
+        Write-Log 'Technician chose report-only completion view.' -Level 'Info'
+        return
+    }
+
+    Write-Host '  Opening configured handoff applications...' -ForegroundColor Cyan
+    foreach ($target in @($postImportLaunchConfig.Targets)) {
+        $resolved = $null
+        foreach ($alternative in @($target.Alternatives)) {
+            $resolved = Resolve-PostImportLaunchTarget -Alternative $alternative -LaunchConfig $postImportLaunchConfig
+            if ($resolved) { break }
+        }
+        if (-not $resolved) {
+            Write-Log "Post-import app not found: $($target.Name)" -Level 'Warning'
+            Write-Host "  Skipped: $($target.Name) (not found)" -ForegroundColor Yellow
+            continue
+        }
+        try {
+            Start-Process -FilePath $resolved.Path -ErrorAction Stop
+            Write-Log "Opened post-import app: $($target.Name) using $($resolved.Name) ($($resolved.Source))" -Level 'Success'
+            Write-Host "  Opened: $($target.Name)" -ForegroundColor Green
+        }
+        catch {
+            Write-Log "Could not open post-import app $($target.Name): $($_.Exception.Message)" -Level 'Warning'
+            Write-Host "  Could not open: $($target.Name)" -ForegroundColor Yellow
+        }
+    }
+}
+
+if (-not $TestMode) {
+    Start-PostImportHandoff
+}
+
 if (-not $TestMode) {
     Read-Host "  Press Enter to exit"
 }
@@ -5141,6 +6431,23 @@ if (-not $TestMode) {
     $importScript = $importScript -replace '\{IMPORT_APPDATA_REVIEW\}', $Script:Config.Import.AppDataReview.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{DELETE_PRINTBRM_AFTER_IMPORT\}', $Script:Config.Import.DeletePrintBrmAfterImport.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{ENABLE_ADMIN_HELPER\}', $Script:Config.Import.EnableAdminHelper.ToString().ToLowerInvariant()
+    # Preserve compatibility with callers that construct a minimal Import
+    # hashtable instead of loading the full development configuration.
+    $postImportLaunchProfile = $Script:Config.Import.PostImportLaunch
+    if (-not $postImportLaunchProfile -and $Script:DevelopmentConfig) { $postImportLaunchProfile = $Script:DevelopmentConfig.Import.PostImportLaunch }
+    if (-not $postImportLaunchProfile) { $postImportLaunchProfile = @{ Enabled = $false; DesktopFolders = @(); Targets = @() } }
+    $postImportLaunchJson = $postImportLaunchProfile | ConvertTo-Json -Depth 8 -Compress
+    $postImportLaunchConfigBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($postImportLaunchJson))
+    $importScript = $importScript -replace '\{POST_IMPORT_LAUNCH_CONFIG_BASE64\}', $postImportLaunchConfigBase64
+    $appComparisonPatterns = @($Script:Config.Import.AppComparisonExcludePatterns)
+    if (-not $appComparisonPatterns.Count -and $Script:DevelopmentConfig) { $appComparisonPatterns = @($Script:DevelopmentConfig.Import.AppComparisonExcludePatterns) }
+    # ConvertTo-Json emits no pipeline output for an empty collection in some
+    # Windows PowerShell versions.  Always serialize an array so generated
+    # packages have a valid, decodable filter configuration.
+    $appComparisonPatternsJson = ConvertTo-Json -InputObject @($appComparisonPatterns) -Compress
+    if ($null -eq $appComparisonPatternsJson) { $appComparisonPatternsJson = '[]' }
+    $appComparisonPatternsBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($appComparisonPatternsJson))
+    $importScript = $importScript -replace '\{APP_COMPARISON_EXCLUDE_PATTERNS_BASE64\}', $appComparisonPatternsBase64
     
     $importScriptPath = Join-Path $DestinationBase "Import-LaptopData.ps1"
     $importScript | Out-File $importScriptPath -Encoding UTF8
@@ -5266,442 +6573,76 @@ exit $(if($result.Errors.Count){1}else{0})
 # HTML REPORT GENERATOR
 # ============================================================================
 
+function Get-TransferReportTemplate {
+    if ($Script:TransferReportTemplate) { return $Script:TransferReportTemplate }
+    $templatePath = Join-Path $PSScriptRoot 'TransferReport.template.html'
+    if (-not (Test-Path -LiteralPath $templatePath)) { throw "Transfer report template is missing: $templatePath" }
+    return Get-Content -LiteralPath $templatePath -Raw -Encoding UTF8
+}
+
 function New-TransferReport {
-    param(
-        [string]$DestinationBase
-    )
-    
+    param([string]$DestinationBase)
+
     $Script:Results.EndTime = Get-Date
     $duration = $Script:Results.EndTime - $Script:Results.StartTime
-    
-    $successCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Success" }).Count
-    $warningCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Warning" }).Count
-    $errorCount = @($Script:Results.Actions | Where-Object {
-        $_.Status -eq "Error" -or $_.Status -like "NOT EXPORTED*"
-    }).Count
-    $skippedCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Skipped" }).Count
-    
-    $html = @"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Laptop Transfer Report - $($Script:Results.UserName)</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            color: #e0e0e0;
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .container { max-width: 1000px; margin: 0 auto; }
-        
-        header {
-            background: linear-gradient(135deg, #0f3460 0%, #16213e 100%);
-            border-radius: 16px;
-            padding: 30px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
-            border: 1px solid #0f3460;
-        }
-        header h1 { 
-            font-size: 28px; 
-            margin-bottom: 10px;
-            background: linear-gradient(90deg, #00d4ff, #7c3aed);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .meta { color: #888; font-size: 14px; }
-        .meta span { margin-right: 20px; }
-        
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-        .stat-card {
-            background: rgba(255,255,255,0.05);
-            border-radius: 12px;
-            padding: 20px;
-            text-align: center;
-            border: 1px solid rgba(255,255,255,0.1);
-        }
-        .stat-card .number {
-            font-size: 36px;
-            font-weight: bold;
-            margin-bottom: 5px;
-        }
-        .stat-card .label { color: #888; font-size: 12px; text-transform: uppercase; }
-        .stat-success .number { color: #10b981; }
-        .stat-warning .number { color: #f59e0b; }
-        .stat-error .number { color: #ef4444; }
-        .stat-skipped .number { color: #6b7280; }
-        
-        .section {
-            background: rgba(255,255,255,0.03);
-            border-radius: 12px;
-            margin-bottom: 20px;
-            border: 1px solid rgba(255,255,255,0.1);
-            overflow: hidden;
-        }
-        .section-header {
-            background: rgba(255,255,255,0.05);
-            padding: 15px 20px;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .section-header .icon { font-size: 20px; }
-        .section-content { padding: 20px; }
-        
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); }
-        th { color: #888; font-weight: 500; font-size: 12px; text-transform: uppercase; }
-        tr:last-child td { border-bottom: none; }
-        tr:hover { background: rgba(255,255,255,0.02); }
-        
-        .status {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 500;
-        }
-        .status-success { background: rgba(16, 185, 129, 0.2); color: #10b981; }
-        .status-warning { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
-        .status-error { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
-        .status-skipped { background: rgba(107, 114, 128, 0.2); color: #9ca3af; }
-        .status-manual { background: rgba(139, 92, 246, 0.2); color: #a78bfa; }
-        .status-partial { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
-        
-        .critical-warning {
-            background: linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(220, 38, 38, 0.1) 100%);
-            border: 2px solid #ef4444;
-            border-radius: 12px;
-            padding: 25px;
-            margin-bottom: 25px;
-            text-align: center;
-        }
-        .critical-warning h2 {
-            color: #ef4444;
-            font-size: 22px;
-            margin-bottom: 15px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-        }
-        .critical-warning p {
-            color: #fca5a5;
-            margin-bottom: 10px;
-            font-size: 15px;
-        }
-        .critical-warning .reason {
-            color: #888;
-            font-size: 13px;
-        }
-        
-        .not-captured-section {
-            background: linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(220, 38, 38, 0.05) 100%);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-        }
-        .not-captured-section .section-header {
-            background: rgba(239, 68, 68, 0.15);
-            color: #fca5a5;
-        }
-        .not-captured-item {
-            background: rgba(239, 68, 68, 0.1);
-            border-left: 4px solid #ef4444;
-            padding: 20px;
-            margin-bottom: 15px;
-            border-radius: 0 8px 8px 0;
-        }
-        .not-captured-item h4 { 
-            color: #fca5a5; 
-            margin-bottom: 8px;
-            font-size: 16px;
-        }
-        .not-captured-item .why { 
-            color: #f87171; 
-            font-size: 13px; 
-            margin-bottom: 10px;
-            font-style: italic;
-        }
-        .not-captured-item .instructions { 
-            color: #e0e0e0; 
-            font-size: 14px;
-            line-height: 1.6;
-        }
-        .not-captured-item pre { 
-            background: rgba(0,0,0,0.4); 
-            padding: 15px; 
-            margin-top: 12px; 
-            border-radius: 6px;
-            font-size: 13px;
-            white-space: pre-wrap;
-            color: #fca5a5;
-            border: 1px solid rgba(239, 68, 68, 0.2);
-        }
-        
-        .manual-task {
-            background: rgba(139, 92, 246, 0.1);
-            border-left: 3px solid #7c3aed;
-            padding: 15px;
-            margin-bottom: 10px;
-            border-radius: 0 8px 8px 0;
-        }
-        .manual-task h4 { color: #a78bfa; margin-bottom: 5px; }
-        .manual-task p { color: #888; font-size: 14px; }
-        .manual-task pre { 
-            background: rgba(0,0,0,0.3); 
-            padding: 10px; 
-            margin-top: 10px; 
-            border-radius: 6px;
-            font-size: 13px;
-            white-space: pre-wrap;
-        }
-        
-        .checklist {
-            list-style: none;
-        }
-        .checklist li {
-            padding: 10px 15px;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .checklist li:last-child { border-bottom: none; }
-        .checkbox {
-            width: 20px;
-            height: 20px;
-            border: 2px solid #444;
-            border-radius: 4px;
-            display: inline-block;
-        }
-        
-        footer {
-            text-align: center;
-            padding: 20px;
-            color: #666;
-            font-size: 12px;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <header>
-            <h1>STO Laptop Transfer Report</h1>
-            <div class="meta">
-                <span>User: $($Script:Results.UserName)</span>
-                <span>Computer: $($Script:Results.ComputerName)</span>
-                <span>Mode: $(Out-HtmlEncoded $Script:Config.TransferMode)</span>
-                <span>Date: $(Get-Date -Format "MMMM dd, yyyy 'at' h:mm tt")</span>
-                <span>Duration: $([math]::Round($duration.TotalMinutes, 1)) minutes</span>
-            </div>
-        </header>
-"@
+    $successCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Success' }).Count
+    $warningCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Warning' }).Count
+    $errorCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Error' -or $_.Status -like 'NOT EXPORTED*' }).Count
+    $skippedCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Skipped' }).Count
 
-    # Only mark the export incomplete when a recorded task actually needs
-    # elevation. A standard-user export can otherwise be complete.
-    $adminRequiredTasks = @($Script:Results.ManualTasks | Where-Object { $_.Reason -match "admin|Administrator|privileges" })
-    $adminTaskCount = $adminRequiredTasks.Count
-    if (-not $Script:IsAdmin -and $adminTaskCount -gt 0) {
-        
-        $html += @"
-        
-        <div style="background: linear-gradient(135deg, rgba(220, 38, 38, 0.2) 0%, rgba(185, 28, 28, 0.15) 100%); border: 3px solid #dc2626; border-radius: 16px; padding: 30px; margin-bottom: 25px; text-align: center;">
-            <h2 style="color: #fca5a5; font-size: 26px; margin-bottom: 15px;">&#9888; INCOMPLETE EXPORT - ADMIN RIGHTS REQUIRED &#9888;</h2>
-            <p style="color: #fecaca; font-size: 18px; margin-bottom: 15px;"><strong>This export was run WITHOUT administrator privileges.</strong></p>
-            <p style="color: #fca5a5; font-size: 16px; margin-bottom: 20px;">$adminTaskCount item(s) could <strong>NOT</strong> be automatically captured and <strong>MUST be manually copied BEFORE wiping the old laptop!</strong></p>
-            <p style="color: #f87171; font-size: 14px;">To capture everything automatically, re-run Export-LaptopData.ps1 and select <strong>"Y"</strong> when prompted for administrator rights.</p>
-        </div>
-        
-        <div style="background: rgba(220, 38, 38, 0.1); border: 2px solid #dc2626; border-radius: 12px; margin-bottom: 25px; overflow: hidden;">
-            <div style="background: rgba(220, 38, 38, 0.2); padding: 18px 25px; font-weight: 700; font-size: 18px; color: #fca5a5; display: flex; align-items: center; gap: 12px;">
-                <span style="font-size: 24px;">&#10060;</span>
-                NOT CAPTURED - MUST MANUALLY COPY BEFORE WIPING OLD LAPTOP
-            </div>
-            <div style="padding: 25px;">
-"@
-        foreach ($task in $adminRequiredTasks) {
-            $html += @"
-                <div style="background: rgba(220, 38, 38, 0.1); border-left: 5px solid #dc2626; padding: 20px; margin-bottom: 18px; border-radius: 0 10px 10px 0;">
-                    <h4 style="color: #fca5a5; font-size: 17px; margin-bottom: 10px; font-weight: 600;">$(Out-HtmlEncoded $task.Task)</h4>
-                    <p style="color: #f87171; font-size: 13px; margin-bottom: 12px; font-style: italic;"><strong>Why not captured:</strong> $(Out-HtmlEncoded $task.Reason)</p>
-                    <p style="color: #e0e0e0; font-size: 14px; margin-bottom: 8px;"><strong>What you MUST do:</strong></p>
-                    $(if ($task.Instructions) { "<pre style='background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px; font-size: 13px; white-space: pre-wrap; color: #fecaca; border: 1px solid rgba(220, 38, 38, 0.3); margin-top: 8px;'>$(Out-HtmlEncoded $task.Instructions)</pre>" })
-                </div>
-"@
+    # Keep the handoff blockers visible: an otherwise successful item must not
+    # bury a skipped, manual, warning, or failed action lower in the report.
+    $actionPriority = {
+        param($Action)
+        switch -Regex ([string]$Action.Status) {
+            'Error|NOT EXPORTED|Admin Required' { return 0 }
+            'Warning' { return 1 }
+            'Skipped|Manual|Pending' { return 2 }
+            'Success' { return 4 }
+            default { return 3 }
         }
-        $html += @"
-            </div>
-        </div>
-"@
     }
-    elseif ($Script:IsAdmin) {
-        # Admin mode - show green success banner
-        $html += @"
-        
-        <div style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(5, 150, 105, 0.1) 100%); border: 2px solid #10b981; border-radius: 12px; padding: 20px; margin-bottom: 25px; text-align: center;">
-            <h3 style="color: #6ee7b7; font-size: 18px; margin-bottom: 8px;">&#10003; Full Export Completed with Administrator Rights</h3>
-            <p style="color: #a7f3d0; font-size: 14px;">All settings including power schemes were successfully captured.</p>
-        </div>
-"@
-    }
-
-    $html += @"
-        
-        <div class="stats">
-            <div class="stat-card stat-success">
-                <div class="number">$successCount</div>
-                <div class="label">Successful</div>
-            </div>
-            <div class="stat-card stat-warning">
-                <div class="number">$warningCount</div>
-                <div class="label">Warnings</div>
-            </div>
-            <div class="stat-card stat-error">
-                <div class="number">$errorCount</div>
-                <div class="label">Errors</div>
-            </div>
-            <div class="stat-card stat-skipped">
-                <div class="number">$skippedCount</div>
-                <div class="label">Skipped</div>
-            </div>
-        </div>
-        
-        <div class="section">
-            <div class="section-header">
-                <span class="icon">&#10003;</span>
-                Export Actions
-            </div>
-            <div class="section-content">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Category</th>
-                            <th>Item</th>
-                            <th>Status</th>
-                            <th>Details</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-"@
-
-    foreach ($action in $Script:Results.Actions) {
+    $orderedActions = @($Script:Results.Actions | Sort-Object @{ Expression = { & $actionPriority $_ } }, @{ Expression = { $_.Timestamp } })
+    $actionRows = foreach ($action in $orderedActions) {
         $statusClass = switch -Regex ($action.Status) {
-            "Success" { "status-success" }
-            "Warning" { "status-warning" }
-            "Error" { "status-error" }
-            "Skipped" { "status-skipped" }
-            "NOT EXPORTED|Admin Required" { "status-error" }
-            default { "status-warning" }
+            'Success' { 'status-success'; break }; 'Warning' { 'status-warning'; break }
+            'Error|NOT EXPORTED|Admin Required' { 'status-error'; break }; 'Skipped' { 'status-skipped'; break }
+            default { 'status-warning' }
         }
-        $html += @"
-                        <tr>
-                            <td>$(Out-HtmlEncoded $action.Category)</td>
-                            <td>$(Out-HtmlEncoded $action.Item)</td>
-                            <td><span class="status $statusClass">$($action.Status)</span></td>
-                            <td>$(Out-HtmlEncoded $action.Details)</td>
-                        </tr>
-"@
+        "<tr><td>$(Out-HtmlEncoded $action.Category)</td><td>$(Out-HtmlEncoded $action.Item)</td><td><span class='status $statusClass'>$(Out-HtmlEncoded $action.Status)</span></td><td>$(Out-HtmlEncoded $action.Details)</td></tr>"
     }
+    if (-not $actionRows) { $actionRows = '<tr><td colspan="4">No export actions were recorded.</td></tr>' }
 
-    # Get non-admin related manual tasks (admin ones are shown in the big red box above)
-    $otherManualTasks = if (-not $Script:IsAdmin) {
-        $Script:Results.ManualTasks | Where-Object { $_.Reason -notmatch "admin|Administrator|privileges" }
-    } else {
-        $Script:Results.ManualTasks
-    }
-
-    $html += @"
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        
-        <div class="section">
-            <div class="section-header">
-                <span class="icon">&#128203;</span>
-                Other Manual Tasks
-            </div>
-            <div class="section-content">
-"@
-
-    if ($otherManualTasks -and ($otherManualTasks | Measure-Object).Count -gt 0) {
-        foreach ($task in $otherManualTasks) {
-            $html += @"
-                <div class="manual-task">
-                    <h4>$(Out-HtmlEncoded $task.Task)</h4>
-                    <p>$(Out-HtmlEncoded $task.Reason)</p>
-                    $(if ($task.Instructions) { "<pre>$(Out-HtmlEncoded $task.Instructions)</pre>" })
-                </div>
-"@
+    $adminTasks = @($Script:Results.ManualTasks | Where-Object { $_.Reason -match 'admin|Administrator|privileges' })
+    $adminBanner = ''
+    if (-not $Script:IsAdmin -and $adminTasks.Count) {
+        $adminRows = foreach ($task in $adminTasks) {
+            "<div class='manual-task critical'><h4>$(Out-HtmlEncoded $task.Task)</h4><p><strong>Why not captured:</strong> $(Out-HtmlEncoded $task.Reason)</p><pre>$(Out-HtmlEncoded $task.Instructions)</pre></div>"
         }
+        $adminBanner = "<section class='critical-warning'><h2>INCOMPLETE EXPORT - ADMIN RIGHTS REQUIRED</h2><p>$($adminTasks.Count) item(s) require manual capture before wiping the old laptop.</p></section><section class='section'><div class='section-header'>Not captured - manual action required</div><div class='section-content'>$($adminRows -join "`n")</div></section>"
     }
-    else {
-        $html += @"
-                <p style="color: #10b981; padding: 15px;">&#10003; No additional manual tasks required.</p>
-"@
+    elseif ($Script:IsAdmin) { $adminBanner = "<section class='admin-success'>Full export completed with administrator rights.</section>" }
+
+    $otherTasks = if ($Script:IsAdmin) { @($Script:Results.ManualTasks) } else { @($Script:Results.ManualTasks | Where-Object { $_.Reason -notmatch 'admin|Administrator|privileges' }) }
+    $manualTasks = if ($otherTasks.Count) {
+        ($otherTasks | ForEach-Object { "<div class='manual-task'><h4>$(Out-HtmlEncoded $_.Task)</h4><p>$(Out-HtmlEncoded $_.Reason)</p><pre>$(Out-HtmlEncoded $_.Instructions)</pre></div>" }) -join "`n"
+    } else { '<p class="success-text">No additional manual tasks required.</p>' }
+
+    $html = Get-TransferReportTemplate
+    $replacements = @{
+        '{{USER}}' = Out-HtmlEncoded $Script:Results.UserName; '{{COMPUTER}}' = Out-HtmlEncoded $Script:Results.ComputerName
+        '{{SOURCE_COMPUTER}}' = Out-HtmlEncoded $Script:Results.ComputerName; '{{DESTINATION_COMPUTER}}' = 'Pending import on new computer'
+        '{{MODE}}' = Out-HtmlEncoded $Script:Config.TransferMode; '{{DATE}}' = (Get-Date -Format "MMMM dd, yyyy 'at' h:mm tt")
+        '{{DURATION}}' = "$([math]::Round($duration.TotalMinutes, 1)) minutes"; '{{SUCCESS_COUNT}}' = $successCount
+        '{{WARNING_COUNT}}' = $warningCount; '{{ERROR_COUNT}}' = $errorCount; '{{SKIPPED_COUNT}}' = $skippedCount
+        '{{ADMIN_BANNER}}' = $adminBanner; '{{ACTION_ROWS}}' = ($actionRows -join "`n"); '{{MANUAL_TASKS}}' = $manualTasks
+        '{{APP_MIGRATION_SECTION}}' = '<div class="app-summary"><h3>Comparison pending</h3><p>Run the import on the new computer to identify applications that still need installation.</p></div>'
+        '{{VERSION}}' = $Script:Config.Version; '{{YEAR}}' = (Get-Date -Format 'yyyy')
     }
-
-    $html += @"
-            </div>
-        </div>
-        
-        <div class="section">
-            <div class="section-header">
-                <span class="icon">&#9776;</span>
-                New Machine Checklist
-            </div>
-            <div class="section-content">
-                <ul class="checklist">
-                    <li><span class="checkbox"></span> Run Import-LaptopData.ps1</li>
-                    <li><span class="checkbox"></span> Verify/Resolve Imaging Errors</li>
-                    <li><span class="checkbox"></span> Run Lenovo System Update</li>
-                    <li><span class="checkbox"></span> Uninstall Lenovo System Update</li>
-                    <li><span class="checkbox"></span> Check for Windows Updates</li>
-                    <li><span class="checkbox"></span> Verify BitLocker is enabled</li>
-                    <li><span class="checkbox"></span> Restart Computer</li>
-                    <li><span class="checkbox"></span> Login as User</li>
-                    <li><span class="checkbox"></span> Configure & Test Lotus Notes</li>
-                    <li><span class="checkbox"></span> Configure Office 365</li>
-                    <li><span class="checkbox"></span> Sign in to OneDrive and Teams</li>
-                    <li><span class="checkbox"></span> Test Teams incl. Camera</li>
-                    <li><span class="checkbox"></span> Configure Adobe / Bluebeam Revu</li>
-                    <li><span class="checkbox"></span> Test run all other Applications</li>
-                    <li><span class="checkbox"></span> Review missing applications and AppData candidates in Logs\AppMigrationReview.html</li>
-                    <li><span class="checkbox"></span> Verify printers restored (test page) - add any missing local printers</li>
-                    <li><span class="checkbox"></span> Unpin Store from taskbar</li>
-                    <li><span class="checkbox"></span> Verify printers and shared drives match</li>
-                    <li><span class="checkbox"></span> Verify Power Settings match</li>
-                    <li><span class="checkbox"></span> Verify Default Browser</li>
-                    <li><span class="checkbox"></span> Outlook Signature and Plug-Ins</li>
-                    <li><span class="checkbox"></span> Check for manual drive mappings</li>
-                    <li><span class="checkbox"></span> Connect to STOBG Network Wi-Fi</li>
-                </ul>
-            </div>
-        </div>
-        
-        <footer>
-            Generated by STO Laptop Transfer Tool v$($Script:Config.Version) | $(Get-Date -Format "yyyy")
-        </footer>
-    </div>
-</body>
-</html>
-"@
-
-    $reportPath = Join-Path $DestinationBase "TransferReport.html"
-    $html | Out-File $reportPath -Encoding UTF8
-    
-    Write-Log "Transfer report generated" -Level Success
-    
+    foreach ($token in $replacements.Keys) { $html = $html.Replace($token, [string]$replacements[$token]) }
+    $reportPath = Join-Path $DestinationBase 'TransferReport.html'
+    Set-Content -LiteralPath $reportPath -Value $html -Encoding UTF8
+    Write-Log 'Transfer report generated' -Level Success
     return $reportPath
 }
 function New-QuickImportBatch {
@@ -5750,6 +6691,8 @@ pause >nul
 
 function Start-LaptopExport {
     Clear-StoScreen
+    Write-StoLogo
+    Write-Banner -Title 'Laptop Transfer  -  Export Tool' -Subtitle "v$($Script:Config.Version)"
 
     # Resolve transfer mode: honor -TransferMode param, else prompt.
     if ($TransferMode -in @("Local", "Online")) {
@@ -5760,7 +6703,23 @@ function Start-LaptopExport {
     }
 
     Apply-OnlineImportDefaults
-    if ($NonInteractive) {
+    if (-not $ElevatedFromSettings) {
+        # Each newly selected transfer begins from the safe, lean preset.
+        Set-SettingsPreset -Name Basic
+    }
+    elseif ($Script:Config.Backup.EntireUserProfile -and $Script:Config.Backup.AdditionalAppData) {
+        $Script:SettingsPreset = 'Advanced'
+    }
+    elseif (-not $Script:Config.Backup.EntireUserProfile -and -not $Script:Config.Backup.AdditionalAppData) {
+        $Script:SettingsPreset = 'Basic'
+    }
+    else {
+        $Script:SettingsPreset = 'Custom'
+    }
+    if ($ElevatedFromSettings) {
+        Write-Log "Transfer Settings restored after administrator approval" -Level Info
+    }
+    elseif ($NonInteractive) {
         # Browsers can require a close/password-export prompt. Leave them out
         # of unattended validation runs rather than hanging partway through.
         $Script:Config.Backup.Chrome = $false
@@ -5773,10 +6732,20 @@ function Start-LaptopExport {
         $Script:Config.Online.CreateZipArchive = $false
         Write-Log "Non-interactive mode: browser collection, PrintBRM, and ZIP creation disabled" -Level Info
     }
-    elseif (-not (Show-TransferSettingsMenu)) {
+    if (-not $NonInteractive -and -not (Show-TransferSettingsMenu)) {
         Write-Host "`n  Transfer cancelled." -ForegroundColor Yellow
         return
     }
+
+    # The reported export time starts at the technician's final Start choice,
+    # not while they are reviewing settings. Preserve it through optional UAC.
+    if (-not $ElevatedFromSettings) {
+        $Script:TransferStartedAt = Get-Date
+        $Script:Results.StartTime = $Script:TransferStartedAt
+        Write-Log "Transfer clock started after settings confirmation." -Level Info
+    }
+
+    if (-not (Start-ElevatedExport)) { return }
 
     # Online exports use the Windows folder picker. Local exports retain the
     # external/secondary-drive selector and do not open the picker.
@@ -5818,7 +6787,17 @@ function Start-LaptopExport {
     # and (b) show the operator the size up front. In online mode this reflects
     # the trimmed set (Downloads over cap and Lotus are excluded from the estimate).
     Write-Section "Estimating transfer size"
-    $payloadEstimate = Get-TransferPayloadEstimate
+    if ($null -ne $Script:StartupPayloadEstimate) {
+        $payloadEstimate = $Script:StartupPayloadEstimate
+    }
+    elseif ($Script:TransferSizeEstimateJob) {
+        Stop-Job -Job $Script:TransferSizeEstimateJob -ErrorAction SilentlyContinue
+        Remove-Job -Job $Script:TransferSizeEstimateJob -Force -ErrorAction SilentlyContinue
+        $Script:TransferSizeEstimateJob = $null
+        $payloadEstimate = [PSCustomObject]@{ TotalBytes = [long]0; ItemBytes = @{} }
+        Write-Host '  Folder-size calculation is still running; continuing without a size estimate.' -ForegroundColor Yellow
+    }
+    else { $payloadEstimate = Get-TransferPayloadEstimate }
     $estBytes = $payloadEstimate.TotalBytes
     Write-KeyValue "Estimated size" (Format-FileSize $estBytes)
     if ($Script:Config.TransferMode -eq "Online") {
@@ -5893,15 +6872,17 @@ function Start-LaptopExport {
     # Execute export tasks
     Write-Banner -Title "Starting Export Process ($($Script:Config.TransferMode))"
     
-    # 1. Copy user folders
-    if ($Script:Config.Backup.UserData) {
+    # 1. Copy standard user folders and, when selected, the remainder of the
+    # profile. The latter excludes content captured by other stages.
+    if ($Script:Config.Backup.UserData -or $Script:Config.Backup.EntireUserProfile) {
         Copy-UserFolders -DestinationBase $transferBase
     }
-    else { Add-DisabledBackupResult -Item "User data" -Category "User Folders" }
+    else { Add-DisabledBackupResult -Item "User data" -Category "User Folders"; Add-DisabledBackupResult -Item "Entire user profile" -Category "User Folders" }
     
     # 2. Copy AppData
     if ($Script:Config.Backup.AppData) {
         Copy-AppData -DestinationBase $transferBase
+        if ($Script:Config.Backup.AdditionalAppData) { Copy-SelectedAdditionalAppData -DestinationBase $transferBase }
     }
     else { Add-DisabledBackupResult -Item "AppData" }
     
@@ -5919,7 +6900,8 @@ function Start-LaptopExport {
     else { Add-DisabledBackupResult -Item "Installed programs" }
 
     if ($Script:Config.Backup.AppDataCandidateInventory) {
-        Get-AppDataCandidates -DestinationBase $transferBase
+        $includeCandidateSizes = $Script:Config.TransferMode -ne 'Online' -or $Script:Config.Online.DetailedAppDataCandidateInventory
+        Get-AppDataCandidates -DestinationBase $transferBase -IncludeSizes $includeCandidateSizes
     }
     else { Add-DisabledBackupResult -Item "AppData candidate inventory" -Category "Settings" }
     

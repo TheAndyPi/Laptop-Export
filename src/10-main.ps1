@@ -44,6 +44,8 @@ pause >nul
 
 function Start-LaptopExport {
     Clear-StoScreen
+    Write-StoLogo
+    Write-Banner -Title 'Laptop Transfer  -  Export Tool' -Subtitle "v$($Script:Config.Version)"
 
     # Resolve transfer mode: honor -TransferMode param, else prompt.
     if ($TransferMode -in @("Local", "Online")) {
@@ -54,7 +56,23 @@ function Start-LaptopExport {
     }
 
     Apply-OnlineImportDefaults
-    if ($NonInteractive) {
+    if (-not $ElevatedFromSettings) {
+        # Each newly selected transfer begins from the safe, lean preset.
+        Set-SettingsPreset -Name Basic
+    }
+    elseif ($Script:Config.Backup.EntireUserProfile -and $Script:Config.Backup.AdditionalAppData) {
+        $Script:SettingsPreset = 'Advanced'
+    }
+    elseif (-not $Script:Config.Backup.EntireUserProfile -and -not $Script:Config.Backup.AdditionalAppData) {
+        $Script:SettingsPreset = 'Basic'
+    }
+    else {
+        $Script:SettingsPreset = 'Custom'
+    }
+    if ($ElevatedFromSettings) {
+        Write-Log "Transfer Settings restored after administrator approval" -Level Info
+    }
+    elseif ($NonInteractive) {
         # Browsers can require a close/password-export prompt. Leave them out
         # of unattended validation runs rather than hanging partway through.
         $Script:Config.Backup.Chrome = $false
@@ -67,10 +85,20 @@ function Start-LaptopExport {
         $Script:Config.Online.CreateZipArchive = $false
         Write-Log "Non-interactive mode: browser collection, PrintBRM, and ZIP creation disabled" -Level Info
     }
-    elseif (-not (Show-TransferSettingsMenu)) {
+    if (-not $NonInteractive -and -not (Show-TransferSettingsMenu)) {
         Write-Host "`n  Transfer cancelled." -ForegroundColor Yellow
         return
     }
+
+    # The reported export time starts at the technician's final Start choice,
+    # not while they are reviewing settings. Preserve it through optional UAC.
+    if (-not $ElevatedFromSettings) {
+        $Script:TransferStartedAt = Get-Date
+        $Script:Results.StartTime = $Script:TransferStartedAt
+        Write-Log "Transfer clock started after settings confirmation." -Level Info
+    }
+
+    if (-not (Start-ElevatedExport)) { return }
 
     # Online exports use the Windows folder picker. Local exports retain the
     # external/secondary-drive selector and do not open the picker.
@@ -112,7 +140,17 @@ function Start-LaptopExport {
     # and (b) show the operator the size up front. In online mode this reflects
     # the trimmed set (Downloads over cap and Lotus are excluded from the estimate).
     Write-Section "Estimating transfer size"
-    $payloadEstimate = Get-TransferPayloadEstimate
+    if ($null -ne $Script:StartupPayloadEstimate) {
+        $payloadEstimate = $Script:StartupPayloadEstimate
+    }
+    elseif ($Script:TransferSizeEstimateJob) {
+        Stop-Job -Job $Script:TransferSizeEstimateJob -ErrorAction SilentlyContinue
+        Remove-Job -Job $Script:TransferSizeEstimateJob -Force -ErrorAction SilentlyContinue
+        $Script:TransferSizeEstimateJob = $null
+        $payloadEstimate = [PSCustomObject]@{ TotalBytes = [long]0; ItemBytes = @{} }
+        Write-Host '  Folder-size calculation is still running; continuing without a size estimate.' -ForegroundColor Yellow
+    }
+    else { $payloadEstimate = Get-TransferPayloadEstimate }
     $estBytes = $payloadEstimate.TotalBytes
     Write-KeyValue "Estimated size" (Format-FileSize $estBytes)
     if ($Script:Config.TransferMode -eq "Online") {
@@ -187,15 +225,17 @@ function Start-LaptopExport {
     # Execute export tasks
     Write-Banner -Title "Starting Export Process ($($Script:Config.TransferMode))"
     
-    # 1. Copy user folders
-    if ($Script:Config.Backup.UserData) {
+    # 1. Copy standard user folders and, when selected, the remainder of the
+    # profile. The latter excludes content captured by other stages.
+    if ($Script:Config.Backup.UserData -or $Script:Config.Backup.EntireUserProfile) {
         Copy-UserFolders -DestinationBase $transferBase
     }
-    else { Add-DisabledBackupResult -Item "User data" -Category "User Folders" }
+    else { Add-DisabledBackupResult -Item "User data" -Category "User Folders"; Add-DisabledBackupResult -Item "Entire user profile" -Category "User Folders" }
     
     # 2. Copy AppData
     if ($Script:Config.Backup.AppData) {
         Copy-AppData -DestinationBase $transferBase
+        if ($Script:Config.Backup.AdditionalAppData) { Copy-SelectedAdditionalAppData -DestinationBase $transferBase }
     }
     else { Add-DisabledBackupResult -Item "AppData" }
     
@@ -213,7 +253,8 @@ function Start-LaptopExport {
     else { Add-DisabledBackupResult -Item "Installed programs" }
 
     if ($Script:Config.Backup.AppDataCandidateInventory) {
-        Get-AppDataCandidates -DestinationBase $transferBase
+        $includeCandidateSizes = $Script:Config.TransferMode -ne 'Online' -or $Script:Config.Online.DetailedAppDataCandidateInventory
+        Get-AppDataCandidates -DestinationBase $transferBase -IncludeSizes $includeCandidateSizes
     }
     else { Add-DisabledBackupResult -Item "AppData candidate inventory" -Category "Settings" }
     

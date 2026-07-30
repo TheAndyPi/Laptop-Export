@@ -56,6 +56,22 @@ param(
 
 $ErrorActionPreference = "Continue"
 
+# This JSON is embedded from Import.PostImportLaunch in the development
+# configuration.  Keep the launch inventory there so future app changes do
+# not require editing this generated-script template.
+$postImportLaunchConfig = $null
+try {
+    $postImportLaunchConfig = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{POST_IMPORT_LAUNCH_CONFIG_BASE64}')) | ConvertFrom-Json
+}
+catch {
+    Write-Host "  Post-import launch configuration could not be read: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+$appComparisonExcludePatterns = @()
+try {
+    $appComparisonExcludePatterns = @([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{APP_COMPARISON_EXCLUDE_PATTERNS_BASE64}')) | ConvertFrom-Json)
+}
+catch { }
+
 # ============================================================================
 # CONSOLE ENCODING & THEME
 # ============================================================================
@@ -443,13 +459,15 @@ Write-Host ""
 Write-Section "Restoring user folders"
 Write-Host ""
 
-$folders = @("Documents", "Desktop", "Downloads", "Pictures", "Videos", "Music", "Favorites")
+$folders = @("Documents", "Desktop", "Downloads", "Pictures", "Videos", "Music", "Favorites", "Start Menu")
 $logsPath = Join-Path $scriptPath "Logs"
 if (-not (Test-Path $logsPath)) { New-Item -ItemType Directory -Path $logsPath -Force | Out-Null }
 
 foreach ($folder in $folders) {
     $sourcePath = Join-Path $scriptPath "UserData\$folder"
-    $destPath = Join-Path $userProfile $folder
+    # Start Menu is a Roaming AppData location. Do not target the legacy
+    # profile-root junction, which Windows may reject or redirect.
+    $destPath = if ($folder -eq 'Start Menu') { Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu' } else { Join-Path $userProfile $folder }
     
     if (Test-Path $sourcePath) {
         $fileCount = (Get-ChildItem $sourcePath -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
@@ -514,19 +532,162 @@ function Send-ShortcutToRecycleBin {
     [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($Path, [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
 }
 
+function Remove-MicrosoftStoreTaskbarPin {
+    param([string]$TaskbarPath)
+    foreach ($file in @(Get-ChildItem -LiteralPath $TaskbarPath -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Microsoft Store|WindowsStore' })) {
+        Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+    }
+    try {
+        $appsFolder = (New-Object -ComObject Shell.Application).Namespace('shell:AppsFolder')
+        $storeApp = $appsFolder.ParseName('Microsoft.WindowsStore_8wekyb3d8bbwe!App')
+        $unpinVerb = @($storeApp.Verbs() | Where-Object { ($_.Name -replace '&', '') -match 'Unpin from taskbar|taskbarunpin' }) | Select-Object -First 1
+        if ($unpinVerb) { $unpinVerb.DoIt() }
+    } catch { }
+}
+
+function Initialize-DesktopRestoreInterop {
+    # Use Explorer's supported IFolderView positioning API. Registry ItemPos
+    # values are retained only as a legacy-package fallback.
+    if ('StoDesktopRestoreInterop' -as [type]) { return }
+    Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public sealed class StoDesktopRestoreResult { public int Positioned { get; set; } public string[] Missing { get; set; } }
+public static class StoDesktopRestoreInterop {
+    const int SWC_DESKTOP = 8, SWFO_NEEDDISPATCH = 1;
+    static object GetView() {
+        dynamic app = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application")); dynamic windows = app.Windows;
+        int hwnd = 0; object disp = windows.FindWindowSW(Type.Missing, Type.Missing, SWC_DESKTOP, ref hwnd, SWFO_NEEDDISPATCH);
+        var provider = (IServiceProvider)disp; var service = new Guid("4c96be40-915c-11cf-99d3-00aa004ae837");
+        var browser = (IShellBrowser)provider.QueryService(service, typeof(IShellBrowser).GUID); return browser.QueryActiveShellView();
+    }
+    public static StoDesktopRestoreResult Restore(string[] names, int[] xs, int[] ys, double scaleX, double scaleY, int sourceX, int sourceY, int destinationX, int destinationY) {
+        var view = (IFolderView)GetView(); var view2 = (IFolderView2)view;
+        var current = new Dictionary<string, IntPtr>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < view.ItemCount(); i++) { var item = view2.GetItem(i, typeof(IShellItem).GUID); var name = item.GetDisplayName(SIGDN.SIGDN_NORMALDISPLAY); if (!String.IsNullOrEmpty(name) && !current.ContainsKey(name)) current.Add(name, view.Item(i)); }
+        var missing = new List<string>(); var positioned = 0;
+        for (int i = 0; i < names.Length; i++) {
+            IntPtr pidl; if (String.IsNullOrEmpty(names[i]) || !current.TryGetValue(names[i], out pidl)) { missing.Add(names[i] ?? "(unnamed)"); continue; }
+            var point = new POINT { x = (int)Math.Round((xs[i] - sourceX) * scaleX + destinationX), y = (int)Math.Round((ys[i] - sourceY) * scaleY + destinationY) };
+            view.SelectAndPositionItems(1, new IntPtr[] { pidl }, new POINT[] { point }, SVSIF.SVSI_POSITIONITEM); positioned++;
+        }
+        return new StoDesktopRestoreResult { Positioned = positioned, Missing = missing.ToArray() };
+    }
+    [ComImport, Guid("6D5140C1-7436-11CE-8034-00AA006009FA"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IServiceProvider { [return: MarshalAs(UnmanagedType.IUnknown)] object QueryService([MarshalAs(UnmanagedType.LPStruct)] Guid service, [MarshalAs(UnmanagedType.LPStruct)] Guid riid); }
+    [ComImport, Guid("000214E2-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IShellBrowser { void _VtblGap1_12(); [return: MarshalAs(UnmanagedType.IUnknown)] object QueryActiveShellView(); }
+    [ComImport, Guid("cde725b0-ccc9-4519-917e-325d72fab4ce"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IFolderView { void _VtblGap1_3(); IntPtr Item(int index); int ItemCount(uint flags = 0); void _VtblGap2_3(); void GetItemPosition(IntPtr pidl, out POINT point); void _VtblGap1_4(); void SelectAndPositionItems(int count, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex=0)] IntPtr[] pidls, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex=0)] POINT[] points, SVSIF flags); }
+    [ComImport, Guid("1af3a467-214f-4298-908e-06b03e0b39f9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IFolderView2 { void _VtblGap1_26(); IShellItem GetItem(int index, [MarshalAs(UnmanagedType.LPStruct)] Guid riid); }
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IShellItem { [return: MarshalAs(UnmanagedType.IUnknown)] object BindToHandler(System.Runtime.InteropServices.ComTypes.IBindCtx context, [MarshalAs(UnmanagedType.LPStruct)] Guid bhid, [MarshalAs(UnmanagedType.LPStruct)] Guid riid); IShellItem GetParent(); [return: MarshalAs(UnmanagedType.LPWStr)] string GetDisplayName(SIGDN sigdn); }
+    struct POINT { public int x; public int y; } enum SIGDN { SIGDN_NORMALDISPLAY } [Flags] enum SVSIF { SVSI_POSITIONITEM = 0x80 }
+}
+"@ -ErrorAction Stop
+}
+
+function Get-TaskbarUnpinVerb {
+    param([object]$ShellItem)
+    try {
+        return @($ShellItem.Verbs() | Where-Object {
+            ($_.Name -replace '&', '').Trim() -match 'Unpin from taskbar|taskbarunpin'
+        }) | Select-Object -First 1
+    }
+    catch { return $null }
+}
+
+function Test-SourceTaskbarPin {
+    param([object]$ShellItem, [object[]]$SourcePins)
+    $itemName = [IO.Path]::GetFileNameWithoutExtension([string]$ShellItem.Name)
+    $itemPath = [string]$ShellItem.Path
+    $itemTarget = if ($itemPath) { [IO.Path]::GetFileName($itemPath) } else { '' }
+    foreach ($pin in @($SourcePins)) {
+        if ($pin.Name -match 'Microsoft Store|WindowsStore') { continue }
+        $pinName = [IO.Path]::GetFileNameWithoutExtension([string]$pin.Name)
+        $pinTarget = [string]$pin.TargetPath
+        if ($itemName -and $pinName -and $itemName -ieq $pinName) { return $true }
+        if ($itemPath -and $pinTarget -and $itemPath -ieq $pinTarget) { return $true }
+        if ($itemTarget -and $pinTarget -and $itemTarget -ieq [IO.Path]::GetFileName($pinTarget)) { return $true }
+    }
+    return $false
+}
+
+function Remove-NonSourceTaskbarPins {
+    param([object[]]$SourcePins)
+    $removed = 0
+    try {
+        $appsFolder = (New-Object -ComObject Shell.Application).Namespace('shell:AppsFolder')
+        $shellItems = $appsFolder.Items()
+        for ($index = 0; $index -lt $shellItems.Count; $index++) {
+            $shellItem = $shellItems.Item($index)
+            if (Test-SourceTaskbarPin -ShellItem $shellItem -SourcePins $SourcePins) { continue }
+            $unpinVerb = Get-TaskbarUnpinVerb -ShellItem $shellItem
+            if ($unpinVerb) {
+                try { $unpinVerb.DoIt(); $removed++ }
+                catch { Write-Log "Could not remove unmatched taskbar app '$($shellItem.Name)': $($_.Exception.Message)" -Level 'Warning' }
+            }
+        }
+    }
+    catch { Write-Log "Could not enumerate shell taskbar pins for exact reconciliation: $($_.Exception.Message)" -Level 'Warning' }
+    return $removed
+}
+
 $desktopLayoutFile = Join-Path $scriptPath 'Settings\DesktopLayout.json'
 if (Test-Path -LiteralPath $desktopLayoutFile) {
     try {
         $desktopLayout = Get-Content -LiteralPath $desktopLayoutFile -Raw | ConvertFrom-Json
         $count = @($desktopLayout.Shortcuts).Count
         if ($TestMode) {
-            Write-Log "Desktop layout - Would retain $count transferred shortcut(s) and review OneDrive duplicates" -Level 'Info'
-            Add-Result -Category 'Desktop Layout' -Item 'Shortcut layout' -Status 'TestMode' -Details "$count shortcut(s); no changes made"
+            $shellCoordinateState = 'legacy shell-position fallback'
+            if ($desktopLayout.DesktopItems -and @($desktopLayout.DesktopItems).Count) {
+                try { Initialize-DesktopRestoreInterop; $shellCoordinateState = 'Explorer shell-coordinate restore' }
+                catch { $shellCoordinateState = "Explorer shell-coordinate restore unavailable: $($_.Exception.Message)" }
+            }
+            Write-Log "Desktop layout - Would retain $count transferred shortcut(s) and use $shellCoordinateState" -Level 'Info'
+            Add-Result -Category 'Desktop Layout' -Item 'Shortcut layout' -Status 'TestMode' -Details "$count shortcut(s); $shellCoordinateState; no changes made"
         }
         else {
-            # Desktop shortcut files have already been restored with the Desktop folder. Windows owns physical grid placement;
-            # retain the source ordering as a best-effort manifest and never import opaque Explorer Bag/Taskband registry blobs.
-            Add-Result -Category 'Desktop Layout' -Item 'Shortcut layout' -Status 'Success' -Details "$count shortcut(s) restored with Desktop data (Shell placement best effort)"
+            # Desktop files have already been restored with the Desktop folder.
+            # Position matching visible shell items through Explorer itself so
+            # the saved coordinates work across display resolutions.
+            $positionValues = $desktopLayout.ShellPositionValues
+            $positionRestored = 0
+            $missingDesktopItems = @()
+            $usedShellCoordinates = $false
+            if ($desktopLayout.DesktopItems -and $desktopLayout.SourceWorkArea -and @($desktopLayout.DesktopItems).Count) {
+                try {
+                    Initialize-DesktopRestoreInterop
+                    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+                    $sourceArea = $desktopLayout.SourceWorkArea
+                    $destinationArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+                    if ([int]$sourceArea.Width -le 0 -or [int]$sourceArea.Height -le 0) { throw 'Source work-area dimensions are invalid.' }
+                    $items = @($desktopLayout.DesktopItems)
+                    $restoreResult = [StoDesktopRestoreInterop]::Restore(
+                        [string[]]@($items | ForEach-Object { [string]$_.Name }),
+                        [int[]]@($items | ForEach-Object { [int]$_.X }),
+                        [int[]]@($items | ForEach-Object { [int]$_.Y }),
+                        ([double]$destinationArea.Width / [double]$sourceArea.Width),
+                        ([double]$destinationArea.Height / [double]$sourceArea.Height),
+                        [int]$sourceArea.X, [int]$sourceArea.Y, [int]$destinationArea.X, [int]$destinationArea.Y
+                    )
+                    $positionRestored = [int]$restoreResult.Positioned
+                    $missingDesktopItems = @($restoreResult.Missing)
+                    $usedShellCoordinates = $true
+                }
+                catch { Write-Log "Desktop shell-coordinate restore unavailable: $($_.Exception.Message)" -Level 'Warning' }
+            }
+            if (-not $usedShellCoordinates -and $positionValues) {
+                $desktopBagPath = 'HKCU:\Software\Microsoft\Windows\Shell\Bags\1\Desktop'
+                New-Item -Path $desktopBagPath -Force | Out-Null
+                foreach ($property in $positionValues.PSObject.Properties) {
+                    try { Set-ItemProperty -LiteralPath $desktopBagPath -Name $property.Name -Value ([Convert]::FromBase64String([string]$property.Value)) -Type Binary -ErrorAction Stop; $positionRestored++ }
+                    catch { Write-Log "Desktop position value '$($property.Name)' could not be restored: $($_.Exception.Message)" -Level 'Warning' }
+                }
+                if ($positionRestored) { Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Process explorer.exe }
+            }
+            $layoutStatus = if ($positionRestored) { 'Success' } else { 'Skipped' }
+            $layoutDetail = if ($positionRestored -and $usedShellCoordinates) { "$positionRestored desktop item(s) positioned through Explorer with destination-display scaling" } elseif ($positionRestored) { "$count desktop shortcut(s) restored; $positionRestored legacy shell position value(s) applied" } else { "$count shortcut(s) restored; source package has no usable desktop position state" }
+            Add-Result -Category 'Desktop Layout' -Item 'Shortcut layout' -Status $layoutStatus -Details $layoutDetail
+            if ($missingDesktopItems.Count) { Add-Result -Category 'Desktop Layout' -Item 'Unmatched desktop items' -Status 'Skipped' -Details "$($missingDesktopItems.Count) source item(s) were not present after restore: $(@($missingDesktopItems | Select-Object -First 5) -join ', ')" }
             $localDesktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
             $candidates = @()
             foreach ($cloudDesktop in @(Get-OneDriveDesktopPaths)) {
@@ -563,23 +724,52 @@ if (Test-Path -LiteralPath $taskbarLayoutFile) {
     try {
         $taskbarLayout = Get-Content -LiteralPath $taskbarLayoutFile -Raw | ConvertFrom-Json
         $pinCount = @($taskbarLayout.Pins).Count
-        if ($TestMode) { Write-Log "Taskbar layout - Would restore $pinCount source pin(s) without removing destination pins" -Level 'Info'; Add-Result -Category 'Taskbar Layout' -Item 'Pinned apps' -Status 'TestMode' -Details "$pinCount source pin(s)" }
+        if ($TestMode) { Write-Log "Taskbar layout - Would replace destination pins with $pinCount source pin(s), excluding Microsoft Store" -Level 'Info'; Add-Result -Category 'Taskbar Layout' -Item 'Pinned apps' -Status 'TestMode' -Details "$pinCount source pin(s); exact replacement" }
         elseif (Test-Path -LiteralPath $taskbarPackagePath) {
             $destinationPins = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'
             New-Item -ItemType Directory -Path $destinationPins -Force | Out-Null
-            $copied = 0; $skipped = 0
-            foreach ($pin in @($taskbarLayout.Pins | Sort-Object Ordinal)) {
-                $sourcePin = Join-Path $taskbarPackagePath $pin.Name
-                if (-not (Test-Path -LiteralPath $sourcePin)) { $skipped++; continue }
-                if ($pin.TargetPath -and -not (Test-Path -LiteralPath $pin.TargetPath) -and $pin.TargetPath -notmatch '^(shell:|explorer\.exe)') {
-                    Write-Log "Taskbar app unavailable: $($pin.Name) -> $($pin.TargetPath)" -Level 'Warning'; $skipped++; continue
-                }
-                $destinationPin = Join-Path $destinationPins $pin.Name
-                if (Test-Path -LiteralPath $destinationPin) { $skipped++; continue }
-                Copy-Item -LiteralPath $sourcePin -Destination $destinationPin -ErrorAction Stop; $copied++
+            $copied = 0; $skipped = 0; $removed = 0
+            foreach ($destinationPin in @(Get-ChildItem -LiteralPath $destinationPins -File -Force -ErrorAction SilentlyContinue)) {
+                Remove-Item -LiteralPath $destinationPin.FullName -Force -ErrorAction Stop; $removed++
             }
-            if ($copied) { Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Process explorer.exe }
-            Add-Result -Category 'Taskbar Layout' -Item 'Pinned apps' -Status $(if ($skipped) { 'Warning' } else { 'Success' }) -Details "$copied added; $skipped retained/unavailable. Existing destination pins preserved"
+            foreach ($pin in @($taskbarLayout.Pins | Sort-Object Ordinal)) {
+                if ($pin.Name -match 'Microsoft Store|WindowsStore') { continue }
+                $sourcePin = Join-Path $taskbarPackagePath $pin.Name
+                if (-not (Test-Path -LiteralPath $sourcePin)) {
+                    $skipped++
+                    Write-Log "Taskbar source pin payload missing: $($pin.Name)" -Level 'Warning'
+                    Add-Result -Category 'Taskbar Layout' -Item $pin.Name -Status 'Skipped' -Details 'Source pin payload is missing from the transfer package'
+                    continue
+                }
+                if ($pin.TargetPath -and -not (Test-Path -LiteralPath $pin.TargetPath) -and $pin.TargetPath -notmatch '^(shell:|explorer\.exe)') {
+                    Write-Log "Taskbar app unavailable: $($pin.Name) -> $($pin.TargetPath)" -Level 'Warning'
+                    Add-Result -Category 'Taskbar Layout' -Item $pin.Name -Status 'Skipped' -Details "Source app unavailable on destination: $($pin.TargetPath)"
+                    $skipped++; continue
+                }
+                Copy-Item -LiteralPath $sourcePin -Destination (Join-Path $destinationPins $pin.Name) -ErrorAction Stop; $copied++
+            }
+            $taskbandPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Taskband'
+            if ($taskbarLayout.TaskbandValues) {
+                New-Item -Path $taskbandPath -Force | Out-Null
+                foreach ($property in $taskbarLayout.TaskbandValues.PSObject.Properties) {
+                    try { Set-ItemProperty -LiteralPath $taskbandPath -Name $property.Name -Value ([Convert]::FromBase64String([string]$property.Value)) -Type Binary -ErrorAction Stop }
+                    catch { Write-Log "Taskbar order value '$($property.Name)' could not be restored: $($_.Exception.Message)" -Level 'Warning'; $skipped++ }
+                }
+            }
+            Remove-MicrosoftStoreTaskbarPin -TaskbarPath $destinationPins
+            Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Process explorer.exe
+            Start-Sleep -Seconds 2
+            $unmatchedPinsRemoved = Remove-NonSourceTaskbarPins -SourcePins @($taskbarLayout.Pins)
+            Remove-MicrosoftStoreTaskbarPin -TaskbarPath $destinationPins
+            Start-Sleep -Seconds 1
+            $unmatchedPinsRemoved += Remove-NonSourceTaskbarPins -SourcePins @($taskbarLayout.Pins)
+            Remove-MicrosoftStoreTaskbarPin -TaskbarPath $destinationPins
+            $storeReintroduced = @(Get-ChildItem -LiteralPath $destinationPins -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Microsoft Store|WindowsStore' })
+            if ($storeReintroduced.Count) {
+                Write-Log 'Microsoft Store taskbar pin was reintroduced after removal; policy or imaging may be enforcing it.' -Level 'Warning'
+                Add-Result -Category 'Taskbar Layout' -Item 'Microsoft Store' -Status 'Warning' -Details 'Pin was reintroduced after removal; policy or imaging may be enforcing it'
+            }
+            Add-Result -Category 'Taskbar Layout' -Item 'Pinned apps' -Status $(if ($skipped) { 'Warning' } else { 'Success' }) -Details "$copied restored in source order; $removed destination pin(s) removed; $unmatchedPinsRemoved reintroduced/default pin(s) unpinned; Microsoft Store unpinned; $skipped unavailable/order issue(s)"
         }
     } catch { Write-Log "Taskbar layout restore failed: $($_.Exception.Message)" -Level 'Warning'; Add-Result -Category 'Taskbar Layout' -Item 'Pinned apps' -Status 'Warning' -Details $_.Exception.Message }
 }
@@ -595,6 +785,29 @@ if (Test-Path -LiteralPath $defaultAppsFile) {
         if ($TestMode) { Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'TestMode' -Details 'No Settings page opened' }
         else { Start-Process 'ms-settings:defaultapps' -ErrorAction SilentlyContinue; Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'Manual' -Details 'See Logs\DefaultAppsRestoreGuide.txt and the opened Settings page' }
     } catch { Write-Log "Default-app guidance failed: $($_.Exception.Message)" -Level 'Warning'; Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'Warning' -Details $_.Exception.Message }
+}
+
+# Remaining folders from the optional entire-profile export. Standard user
+# folders and AppData are intentionally absent here because their dedicated
+# import stages already restored them.
+$fullProfilePath = Join-Path $scriptPath 'UserData\FullProfile'
+if (Test-Path -LiteralPath $fullProfilePath) {
+    Write-Host ''
+    Write-Host '  Restoring remaining user-profile content:' -ForegroundColor Gray
+    foreach ($item in @(Get-ChildItem -LiteralPath $fullProfilePath -Force -ErrorAction SilentlyContinue)) {
+        $destination = Join-Path $userProfile $item.Name
+        if ($TestMode) {
+            Add-Result -Category 'Entire User Profile' -Item $item.Name -Status 'TestMode' -Details 'Would restore'
+        }
+        elseif ($item.PSIsContainer) {
+            $result = Copy-WithProgress -Source $item.FullName -Destination $destination -FolderName "Profile: $($item.Name)" -LogPath (Join-Path $logsPath "import_profile_$($item.Name).log")
+            Add-Result -Category 'Entire User Profile' -Item $item.Name -Status $result.Status -Details "$($result.FilesCopied) files"
+        }
+        else {
+            try { Copy-Item -LiteralPath $item.FullName -Destination $destination -Force -ErrorAction Stop; Add-Result -Category 'Entire User Profile' -Item $item.Name -Status 'Success' -Details 'Profile-root file restored' }
+            catch { Add-Result -Category 'Entire User Profile' -Item $item.Name -Status 'Warning' -Details $_.Exception.Message }
+        }
+    }
 }
 
 # Additional folders
@@ -896,6 +1109,23 @@ if (Test-Path $qaSource) {
 
 Write-Host ""
 
+# Additional AppData selected in Advanced mode during export.
+$additionalAppDataPath = Join-Path $scriptPath 'AppData\Additional'
+if (Test-Path -LiteralPath $additionalAppDataPath) {
+    foreach ($area in @('Roaming', 'Local')) {
+        $areaPath = Join-Path $additionalAppDataPath $area
+        $destinationRoot = if ($area -eq 'Roaming') { $env:APPDATA } else { $env:LOCALAPPDATA }
+        foreach ($folder in @(Get-ChildItem -LiteralPath $areaPath -Directory -Force -ErrorAction SilentlyContinue)) {
+            if ($TestMode) {
+                Add-Result -Category 'Additional AppData' -Item "$area\$($folder.Name)" -Status 'TestMode' -Details 'Would restore'
+                continue
+            }
+            $result = Copy-WithProgress -Source $folder.FullName -Destination (Join-Path $destinationRoot $folder.Name) -FolderName "Additional AppData: $area\$($folder.Name)" -LogPath (Join-Path $logsPath "import_additional_appdata_$area`_$($folder.Name).log")
+            Add-Result -Category 'Additional AppData' -Item "$area\$($folder.Name)" -Status $result.Status -Details "$($result.FilesCopied) files"
+        }
+    }
+}
+
 # ============================================================================
 # RESTORE SYSTEM SETTINGS
 # ============================================================================
@@ -970,6 +1200,25 @@ elseif ((Test-Path $powerScheme) -and $hasIndividualPowerSettings) {
 # This is the normal route for the organisation's managed STOBG plan; it is
 # intentionally attempted even without elevation.  Settings rejected by a
 # policy or unsupported by the new hardware are reported individually.
+function Set-ImportedPowerOverlay {
+    param([string]$OverlayGuid)
+    if ([string]::IsNullOrWhiteSpace($OverlayGuid) -or $OverlayGuid -notmatch '^[0-9a-fA-F-]{36}$') { return $false }
+    try {
+        if (-not ('StoPowerOverlay' -as [type])) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class StoPowerOverlay {
+    [DllImport("PowrProf.dll", SetLastError=true)]
+    public static extern uint PowerSetActiveOverlayScheme(IntPtr UserRootPowerKey, ref Guid OverlaySchemeGuid);
+}
+"@ -ErrorAction Stop
+        }
+        $guid = [Guid]$OverlayGuid
+        return ([StoPowerOverlay]::PowerSetActiveOverlayScheme([IntPtr]::Zero, [ref]$guid) -eq 0)
+    } catch { return $false }
+}
+
 if ($hasIndividualPowerSettings) {
     $individualPowerSettings = @($settingsData.PowerSettingValues)
     if ($TestMode) {
@@ -994,7 +1243,9 @@ if ($hasIndividualPowerSettings) {
                 if ($LASTEXITCODE -eq 0) {
                     $powerValuesApplied++
                 } else {
-                    [void]$powerValueFailures.Add("$settingGuid ($($powerType.Name)): $(($powerOutput | Out-String).Trim())")
+                    $failureDetail = "$settingGuid ($($powerType.Name)): $(($powerOutput | Out-String).Trim())"
+                    [void]$powerValueFailures.Add($failureDetail)
+                    Add-Result -Category 'Settings' -Item "Power setting $settingGuid" -Status 'Skipped' -Details "$($powerType.Name) value rejected: $(($powerOutput | Out-String).Trim())"
                 }
             }
         }
@@ -1013,6 +1264,54 @@ if ($hasIndividualPowerSettings) {
             Add-Result -Category "Settings" -Item "Individual Power Settings" -Status "Warning" -Details "$powerValuesApplied applied; $($powerValueFailures.Count) rejected/unsupported. $failurePreview"
             $Script:Results.Warnings += "Some individual power settings were rejected by the current plan, policy, or hardware. See ImportLog.txt."
         }
+    }
+}
+
+# The Windows Settings Power mode control is represented by distinct AC/DC
+# overlay schemes. Attempt this in the signed-in context; policy or hardware
+# rejection is reported as skipped rather than escalating the import.
+if ($settingsData -and $settingsData.PowerModeOverlay) {
+    if ($TestMode) {
+        Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'TestMode' -Details 'Would apply captured AC/DC power-mode overlay'
+    }
+    else {
+        $overlayResults = @()
+        foreach ($overlay in @($settingsData.PowerModeOverlay.ActiveOverlayAcPowerScheme, $settingsData.PowerModeOverlay.ActiveOverlayDcPowerScheme) | Select-Object -Unique) {
+            if (-not $overlay) { continue }
+            $overlayResults += [bool](Set-ImportedPowerOverlay -OverlayGuid ([string]$overlay))
+        }
+        if ($overlayResults.Count -gt 0 -and ($overlayResults -notcontains $false)) {
+            Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'Success' -Details 'Captured power-mode overlay applied'
+        }
+        else {
+            Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'Skipped' -Details 'Overlay could not be applied without elevation, policy, or supported hardware'
+        }
+    }
+}
+else { Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'Skipped' -Details 'No source power-mode overlay captured' }
+
+# Lid actions must be attempted in the ordinary import path. Verify the
+# actual AC/DC values afterward so an accepted command is not misreported.
+if ($settingsData -and $settingsData.LidClose -and $settingsData.LidClose.OnAC) {
+    $lidActionMap = @{ 'Do Nothing' = 0; Sleep = 1; Hibernate = 2; 'Shut Down' = 3 }
+    if ($TestMode) {
+        Add-Result -Category 'Settings' -Item 'Lid actions' -Status 'TestMode' -Details "AC: $($settingsData.LidClose.OnAC); DC: $($settingsData.LidClose.OnBattery)"
+    }
+    else {
+        $lidFailed = $false
+        foreach ($powerKind in @(@{ Command='/setacvalueindex'; Value=$lidActionMap[$settingsData.LidClose.OnAC] }, @{ Command='/setdcvalueindex'; Value=$lidActionMap[$settingsData.LidClose.OnBattery] })) {
+            if ($null -eq $powerKind.Value) { $lidFailed = $true; continue }
+            & powercfg $powerKind.Command SCHEME_CURRENT SUB_BUTTONS LIDACTION $powerKind.Value 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { $lidFailed = $true }
+        }
+        & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
+        $lidVerify = & powercfg /query SCHEME_CURRENT SUB_BUTTONS LIDACTION 2>&1 | Out-String
+        $expectedAc = ('0x{0:x}' -f $lidActionMap[$settingsData.LidClose.OnAC])
+        $expectedDc = ('0x{0:x}' -f $lidActionMap[$settingsData.LidClose.OnBattery])
+        if (-not $lidFailed -and $lidVerify -match [regex]::Escape($expectedAc) -and $lidVerify -match [regex]::Escape($expectedDc)) {
+            Add-Result -Category 'Settings' -Item 'Lid actions' -Status 'Success' -Details "Verified AC: $($settingsData.LidClose.OnAC); DC: $($settingsData.LidClose.OnBattery)"
+        }
+        else { Add-Result -Category 'Settings' -Item 'Lid actions' -Status 'Skipped' -Details 'Windows, policy, or hardware rejected the non-elevated lid setting' }
     }
 }
 
@@ -1771,6 +2070,16 @@ function ConvertTo-ProgramMatchPart {
     return (($Value.ToLowerInvariant() -replace '[^a-z0-9]+', ' ').Trim() -replace '\s+', ' ')
 }
 
+function Test-UserFacingProgram {
+    param([object]$Program)
+    $name = [string]$Program.DisplayName
+    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    foreach ($pattern in @($appComparisonExcludePatterns)) {
+        if ($name -match [string]$pattern) { return $false }
+    }
+    return $true
+}
+
 function Get-ProgramMatchKey {
     param([string]$DisplayName, [string]$Publisher)
     return "$(ConvertTo-ProgramMatchPart $DisplayName)|$(ConvertTo-ProgramMatchPart $Publisher)"
@@ -1809,14 +2118,100 @@ function ConvertTo-ReviewHtml {
     return "<html><head><meta charset='utf-8'><title>Application Migration Review</title><style>body{font-family:Segoe UI;margin:32px;color:#202020}table{border-collapse:collapse;width:100%;margin-bottom:25px}td,th{padding:8px;border:1px solid #ccc;text-align:left}th{background:#17365d;color:#fff}h1{color:#17365d}</style></head><body><h1>Application Migration Review</h1><p>Review missing applications and AppData candidates before handoff. Candidate folders are review-only and were not copied automatically.</p><h2>Missing applications</h2><table><tr><th>Application</th><th>Publisher</th><th>Old version</th></tr>$rows</table><h2>AppData candidates</h2><table><tr><th>Area</th><th>Folder</th><th>Association</th></tr>$candidateRows</table></body></html>"
 }
 
+function Set-TransferReportMarkedContent {
+    param([string]$Html, [string]$Marker, [string]$Content)
+    $openMarker = "<!-- $Marker -->"
+    $closeMarker = "<!-- /$Marker -->"
+    $start = $Html.IndexOf($openMarker, [StringComparison]::Ordinal)
+    if ($start -lt 0) { return $Html }
+    $end = $Html.IndexOf($closeMarker, $start + $openMarker.Length, [StringComparison]::Ordinal)
+    if ($end -lt 0) { return $Html }
+    return $Html.Substring(0, $start + $openMarker.Length) + $Content + $Html.Substring($end)
+}
+
+function Update-TransferReportFromImport {
+    param(
+        [object[]]$MissingPrograms = @(),
+        [ValidateSet('Complete', 'Disabled', 'Unavailable', 'Failed')][string]$State = 'Complete',
+        [string]$Detail = ''
+    )
+    $reportPath = Join-Path $scriptPath 'TransferReport.html'
+    if (-not (Test-Path -LiteralPath $reportPath)) {
+        Write-Log 'Transfer report update skipped: TransferReport.html is missing.' -Level 'Warning'
+        return
+    }
+    try {
+        $encode = { param($Value) [Security.SecurityElement]::Escape([string]$Value) }
+        if ($State -eq 'Complete') {
+            $appItems = @(@($MissingPrograms) | ForEach-Object {
+                $name = & $encode ([string]$_.DisplayName)
+                $publisher = & $encode ([string]$_.Publisher)
+                $version = & $encode ([string]$_.DisplayVersion)
+                "<li><strong>$name</strong><small>$publisher · old version: $version</small></li>"
+            }) -join "`n"
+            if ($MissingPrograms.Count -gt 0) {
+                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><ul class='app-list'>$appItems</ul></div>"
+            }
+            else {
+                $appSection = "<div class='app-summary ok'><h3>Application comparison complete</h3><p>No applications from the old computer are missing on this new computer.</p></div>"
+            }
+        }
+        else {
+            $heading = switch ($State) {
+                'Disabled' { 'Application comparison disabled' }
+                'Unavailable' { 'Application comparison unavailable' }
+                default { 'Application comparison could not be completed' }
+            }
+            $reason = if ($Detail) { & $encode $Detail } else { 'No additional detail was recorded.' }
+            $appSection = "<div class='app-summary ready'><h3>$heading</h3><p>$reason See Logs\ImportLog.txt for details.</p></div>"
+        }
+        $reportHtml = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8
+        $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'DESTINATION_COMPUTER' -Content (& $encode $env:COMPUTERNAME)
+        $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'APP_MIGRATION_SECTION' -Content $appSection
+        Set-Content -LiteralPath $reportPath -Value $reportHtml -Encoding UTF8
+        Write-Log 'Transfer report updated with destination computer and application comparison.' -Level 'Success'
+    }
+    catch {
+        Write-Log "Transfer report update failed: $($_.Exception.Message)" -Level 'Warning'
+    }
+}
+
+function Update-TransferReportImportOutcomes {
+    # The export report remains the handoff document. Surface only import
+    # outcomes that require a technician's attention, ahead of its export log.
+    $reportPath = Join-Path $scriptPath 'TransferReport.html'
+    if (-not (Test-Path -LiteralPath $reportPath)) { return }
+    try {
+        $attention = @($Script:Results.Actions | Where-Object {
+            $_.Category -in @('Settings', 'Taskbar Layout', 'Desktop Layout') -and
+            $_.Status -in @('Warning', 'Error', 'Skipped', 'Manual', 'Pending')
+        })
+        $encode = { param($Value) [Security.SecurityElement]::Escape([string]$Value) }
+        $content = if ($attention.Count) {
+            $items = @($attention | ForEach-Object {
+                "<li><strong>$(& $encode ([string]$_.Item))</strong><small>$(& $encode ([string]$_.Status)) · $(& $encode ([string]$_.Details))</small></li>"
+            }) -join "`n"
+            "<section class='section'><div class='section-header'>Import actions needing attention<span class='section-subtitle'>Settings or layout items Windows could not apply</span></div><div class='section-content'><div class='app-summary ready'><ul class='app-list'>$items</ul></div></div></section>"
+        }
+        else { '' }
+        $reportHtml = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8
+        $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'IMPORT_RESULTS' -Content $content
+        Set-Content -LiteralPath $reportPath -Value $reportHtml -Encoding UTF8
+        Write-Log "Transfer report updated with $($attention.Count) import item(s) needing attention." -Level 'Info'
+    }
+    catch { Write-Log "Transfer report import-outcome update failed: $($_.Exception.Message)" -Level 'Warning' }
+}
+
 $programsFile = Join-Path $scriptPath "Settings\InstalledPrograms.txt"
 $sourceProgramsPath = Join-Path $scriptPath 'Settings\InstalledPrograms.json'
 if (-not $compareInstalledApps) {
     Add-Result -Category 'Reference' -Item 'Application comparison' -Status 'Skipped' -Details 'Disabled by package configuration'
+    if (-not $TestMode) { Update-TransferReportFromImport -State Disabled -Detail 'This transfer package was configured not to compare installed applications.' }
 }
 elseif (-not (Test-Path -LiteralPath $sourceProgramsPath)) {
     Write-Log 'Application comparison skipped: source InstalledPrograms.json is missing.' -Level 'Warning'
     Add-Result -Category 'Reference' -Item 'Application comparison' -Status 'Warning' -Details 'Source installed-program inventory is missing'
+    if (-not $TestMode) { Update-TransferReportFromImport -State Unavailable -Detail 'The source InstalledPrograms.json inventory is missing from this transfer package.' }
 }
 else {
     try {
@@ -1832,7 +2227,9 @@ else {
         $newProgramsPath = Join-Path $logsPath 'NewInstalledPrograms.json'
         $newPrograms | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $newProgramsPath -Encoding UTF8
         $newByKey = @{}; foreach ($program in $newPrograms) { if ($program.MatchKey) { $newByKey[$program.MatchKey] = $program } }
-        $missingPrograms = @($sourcePrograms | Where-Object { -not $_.MatchKey -or -not $newByKey.ContainsKey($_.MatchKey) })
+        $allMissingPrograms = @($sourcePrograms | Where-Object { -not $_.MatchKey -or -not $newByKey.ContainsKey($_.MatchKey) })
+        $filteredPrograms = @($allMissingPrograms | Where-Object { -not (Test-UserFacingProgram $_) })
+        $missingPrograms = @($allMissingPrograms | Where-Object { Test-UserFacingProgram $_ })
         $matchedPrograms = @($sourcePrograms | Where-Object { $_.MatchKey -and $newByKey.ContainsKey($_.MatchKey) } | ForEach-Object {
             [PSCustomObject]@{ DisplayName = $_.DisplayName; Publisher = $_.Publisher; OldVersion = $_.DisplayVersion; NewVersion = $newByKey[$_.MatchKey].DisplayVersion; VersionDifferent = ($_.DisplayVersion -ne $newByKey[$_.MatchKey].DisplayVersion) }
         })
@@ -1846,10 +2243,11 @@ else {
             })
         }
         elseif ($reviewAppDataCandidates) { Write-Log 'AppData candidate review skipped: source inventory is missing.' -Level 'Warning' }
-        $comparison = [PSCustomObject]@{ GeneratedAt = (Get-Date).ToString('o'); Missing = $missingPrograms; Matched = $matchedPrograms; AppDataCandidates = $candidateItems }
+        $comparison = [PSCustomObject]@{ GeneratedAt = (Get-Date).ToString('o'); Missing = $missingPrograms; Filtered = $filteredPrograms; Matched = $matchedPrograms; AppDataCandidates = $candidateItems }
         $comparison | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationComparison.json') -Encoding UTF8
-        @('Application migration review', '', "Missing applications: $($missingPrograms.Count)", '') + @($missingPrograms | ForEach-Object { "MISSING | $($_.DisplayName) | $($_.Publisher) | old version: $($_.DisplayVersion)" }) + @('', 'AppData candidates:') + @($candidateItems | ForEach-Object { "[$($_.Area)] $($_.RelativePath) | $($_.Association)" }) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.txt') -Encoding UTF8
+        @('Application migration review', '', "Missing user-facing applications: $($missingPrograms.Count)", "Filtered technical entries: $($filteredPrograms.Count)", '') + @($missingPrograms | ForEach-Object { "MISSING | $($_.DisplayName) | $($_.Publisher) | old version: $($_.DisplayVersion)" }) + @('', 'Filtered technical entries:') + @($filteredPrograms | ForEach-Object { "FILTERED | $($_.DisplayName) | $($_.Publisher)" }) + @('', 'AppData candidates:') + @($candidateItems | ForEach-Object { "[$($_.Area)] $($_.RelativePath) | $($_.Association)" }) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.txt') -Encoding UTF8
         (ConvertTo-ReviewHtml -Missing $missingPrograms -Candidates $candidateItems) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.html') -Encoding UTF8
+        if (-not $TestMode) { Update-TransferReportFromImport -MissingPrograms $missingPrograms }
         $detail = "$($missingPrograms.Count) missing app(s); $($candidateItems.Count) AppData candidate(s)"
         Write-Log "Application migration review created: $detail" -Level $(if ($missingPrograms.Count -gt 0) { 'Warning' } else { 'Success' })
         Add-Result -Category 'Reference' -Item 'Application migration review' -Status $(if ($missingPrograms.Count -gt 0) { 'Manual' } else { 'Success' }) -Details $detail
@@ -1860,6 +2258,7 @@ else {
     } catch {
         Write-Log "Application comparison failed: $($_.Exception.Message)" -Level 'Warning'
         Add-Result -Category 'Reference' -Item 'Application comparison' -Status 'Warning' -Details $_.Exception.Message
+        if (-not $TestMode) { Update-TransferReportFromImport -State Failed -Detail $_.Exception.Message }
     }
 }
 
@@ -1979,6 +2378,77 @@ else {
     }
 }
 
+if (-not $TestMode) { Update-TransferReportImportOutcomes }
+
+function Resolve-PostImportLaunchTarget {
+    param([object]$Alternative, [object]$LaunchConfig)
+    foreach ($folder in @($LaunchConfig.DesktopFolders)) {
+        if ([string]::IsNullOrWhiteSpace([string]$folder)) { continue }
+        $desktopPath = if ([IO.Path]::IsPathRooted([string]$folder)) { [string]$folder } else { Join-Path $env:USERPROFILE ([string]$folder) }
+        foreach ($shortcutName in @($Alternative.DesktopShortcuts)) {
+            $shortcutPath = Join-Path $desktopPath ([string]$shortcutName)
+            if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
+                return [PSCustomObject]@{ Path = $shortcutPath; Source = 'desktop shortcut'; Name = $Alternative.Name }
+            }
+        }
+    }
+    foreach ($commandName in @($Alternative.Commands)) {
+        if ([string]::IsNullOrWhiteSpace([string]$commandName)) { continue }
+        $command = Get-Command -Name ([string]$commandName) -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($command -and $command.Path) {
+            return [PSCustomObject]@{ Path = $command.Path; Source = 'installed command'; Name = $Alternative.Name }
+        }
+    }
+    return $null
+}
+
+function Start-PostImportHandoff {
+    $reportPath = Join-Path $scriptPath 'TransferReport.html'
+    try {
+        if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) { throw 'TransferReport.html is missing from this package.' }
+        Start-Process -FilePath $reportPath -ErrorAction Stop
+        Write-Log 'Opened transfer report at import completion.' -Level 'Success'
+    }
+    catch {
+        Write-Log "Could not open transfer report: $($_.Exception.Message)" -Level 'Warning'
+        Write-Host "  Could not open TransferReport.html: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    if (-not $postImportLaunchConfig -or -not $postImportLaunchConfig.Enabled) { return }
+    $launchApps = Read-Host '  Open the standard handoff applications too? (Y/N) [N]'
+    if ($launchApps -notmatch '^[Yy]') {
+        Write-Log 'Technician chose report-only completion view.' -Level 'Info'
+        return
+    }
+
+    Write-Host '  Opening configured handoff applications...' -ForegroundColor Cyan
+    foreach ($target in @($postImportLaunchConfig.Targets)) {
+        $resolved = $null
+        foreach ($alternative in @($target.Alternatives)) {
+            $resolved = Resolve-PostImportLaunchTarget -Alternative $alternative -LaunchConfig $postImportLaunchConfig
+            if ($resolved) { break }
+        }
+        if (-not $resolved) {
+            Write-Log "Post-import app not found: $($target.Name)" -Level 'Warning'
+            Write-Host "  Skipped: $($target.Name) (not found)" -ForegroundColor Yellow
+            continue
+        }
+        try {
+            Start-Process -FilePath $resolved.Path -ErrorAction Stop
+            Write-Log "Opened post-import app: $($target.Name) using $($resolved.Name) ($($resolved.Source))" -Level 'Success'
+            Write-Host "  Opened: $($target.Name)" -ForegroundColor Green
+        }
+        catch {
+            Write-Log "Could not open post-import app $($target.Name): $($_.Exception.Message)" -Level 'Warning'
+            Write-Host "  Could not open: $($target.Name)" -ForegroundColor Yellow
+        }
+    }
+}
+
+if (-not $TestMode) {
+    Start-PostImportHandoff
+}
+
 if (-not $TestMode) {
     Read-Host "  Press Enter to exit"
 }
@@ -1993,6 +2463,23 @@ if (-not $TestMode) {
     $importScript = $importScript -replace '\{IMPORT_APPDATA_REVIEW\}', $Script:Config.Import.AppDataReview.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{DELETE_PRINTBRM_AFTER_IMPORT\}', $Script:Config.Import.DeletePrintBrmAfterImport.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{ENABLE_ADMIN_HELPER\}', $Script:Config.Import.EnableAdminHelper.ToString().ToLowerInvariant()
+    # Preserve compatibility with callers that construct a minimal Import
+    # hashtable instead of loading the full development configuration.
+    $postImportLaunchProfile = $Script:Config.Import.PostImportLaunch
+    if (-not $postImportLaunchProfile -and $Script:DevelopmentConfig) { $postImportLaunchProfile = $Script:DevelopmentConfig.Import.PostImportLaunch }
+    if (-not $postImportLaunchProfile) { $postImportLaunchProfile = @{ Enabled = $false; DesktopFolders = @(); Targets = @() } }
+    $postImportLaunchJson = $postImportLaunchProfile | ConvertTo-Json -Depth 8 -Compress
+    $postImportLaunchConfigBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($postImportLaunchJson))
+    $importScript = $importScript -replace '\{POST_IMPORT_LAUNCH_CONFIG_BASE64\}', $postImportLaunchConfigBase64
+    $appComparisonPatterns = @($Script:Config.Import.AppComparisonExcludePatterns)
+    if (-not $appComparisonPatterns.Count -and $Script:DevelopmentConfig) { $appComparisonPatterns = @($Script:DevelopmentConfig.Import.AppComparisonExcludePatterns) }
+    # ConvertTo-Json emits no pipeline output for an empty collection in some
+    # Windows PowerShell versions.  Always serialize an array so generated
+    # packages have a valid, decodable filter configuration.
+    $appComparisonPatternsJson = ConvertTo-Json -InputObject @($appComparisonPatterns) -Compress
+    if ($null -eq $appComparisonPatternsJson) { $appComparisonPatternsJson = '[]' }
+    $appComparisonPatternsBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($appComparisonPatternsJson))
+    $importScript = $importScript -replace '\{APP_COMPARISON_EXCLUDE_PATTERNS_BASE64\}', $appComparisonPatternsBase64
     
     $importScriptPath = Join-Path $DestinationBase "Import-LaptopData.ps1"
     $importScript | Out-File $importScriptPath -Encoding UTF8

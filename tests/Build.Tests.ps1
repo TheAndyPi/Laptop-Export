@@ -11,6 +11,7 @@ Describe 'Deployment build' {
         [void][System.Management.Automation.Language.Parser]::ParseFile($output, [ref]$tokens, [ref]$errors)
         $errors.Count | Should Be 0
         (Get-Content -LiteralPath $output -Raw) | Should Match '\$Script:DevelopmentConfig\s*='
+        (Get-Content -LiteralPath $output -Raw) | Should Match '\$Script:TransferReportTemplate\s*='
         (Get-Content -LiteralPath $output -Raw) | Should Match 'Start-LaptopExport'
     }
 }

@@ -27,9 +27,9 @@ non-interactive generated-import `-TestMode` run; it never runs a real export
 or import. Pester is required (`Install-Module Pester
 -Scope CurrentUser` if it is not already installed).
 
-When running the export script, a **Transfer Settings** master panel shows the backup, import, and Online ZIP switches. Enter a setting number to toggle it, then press `S` to start. Those menu choices affect only the current transfer and do not change the compiled defaults.
+When running the export script, a **Transfer Settings** master panel shows the backup, import, and Online ZIP switches. It begins in the **Basic** preset after you choose Local or Online mode. Choose **Advanced** to enable the remaining-profile transfer and open a second screen where the technician selects additional Local/Roaming AppData folders to include, with size estimates. Curated AppData items remain included in every preset. Changing any individual setting marks the preset **Custom**. Enter a setting number to toggle it, then press `S` to start. Those menu choices affect only the current transfer and do not change the compiled defaults.
 
-For an Online export to a network share, the default workflow stages the package under `%LOCALAPPDATA%\STO Building Group\LaptopTransferStaging`, creates the ZIP locally, then uploads and size-verifies the single ZIP at the selected network destination. The local staging package is retained for recovery.
+For an Online export to a network share, the default workflow stages the package under `%LOCALAPPDATA%\STO Building Group\LaptopTransferStaging`, creates a fast ZIP locally, then uploads and size-verifies the single ZIP at the selected network destination. The local staging package is retained for recovery. Browser cache trees are excluded from profile archives because they are disposable and commonly account for most of the files and ZIP time. Online mode defaults to portable Chrome bookmarks and the optional native password CSV rather than Chrome's full profile archive; use **Advanced Online Controls** in Transfer Settings to show its size estimate and opt in when recovery/reference data is needed.
 
 ## Deploy / Run
 
@@ -41,20 +41,22 @@ powershell -ExecutionPolicy Bypass -File ".\Export-LaptopData.ps1"
 
 The script is interactive. It will prompt you to:
 
-1. **Elevate to Administrator** (Y/N/Skip) — recommended. Accepting re-launches via UAC, preserving the original user's profile context.
-2. **Choose a transfer mode** — `Local` or `Online` (see below).
+1. **Choose a transfer mode** — `Local` or `Online` (see below).
+2. **Review Transfer Settings** — toggle **Run export as administrator** if a complete power-plan or PrintBRM export is needed. UAC is requested only after you select Start transfer.
 3. **Choose a destination**:
    - **Local:** Select an external or secondary drive from the console; the Windows folder picker is not opened.
    - **Online:** A Windows folder picker opens. Choose a network share, cloud-synced folder, or any local folder.
 
 It then runs the export and opens the HTML report when finished. **Online** transfers also create `LaptopTransfer_<timestamp>.zip` beside the package folder; **Local** transfers keep only the folder.
 
+For lean Online packages, choose `A` in **Transfer Settings** to open **Advanced Online Controls**. There you can opt into the full Chrome profile archive, extra profile folders, `C:\OCS Documents`, detailed AppData candidate sizing, and set the confirmation cap for included extra folders. All advanced options default to off for Online transfers; Local transfers remain comprehensive.
+
 ## Requirements
 
 - **Windows PowerShell 5.1+** (`#Requires -Version 5.1`)
 - An **external/USB drive** (or second fixed drive) with enough free space for **Local** transfers
 - For **Online** transfers, a writable destination folder (network share, cloud-synced folder, or local folder); no external drive is required
-- **Administrator rights** — *recommended*. Windows requires elevation to export/import the complete power-plan mirror and may require it for a full PrintBRM package. The script offers to self-elevate and logs the precise result.
+- **Administrator rights** — *recommended*. Toggle **Run export as administrator** in Transfer Settings when a complete power-plan mirror or full PrintBRM package is needed. The script requests UAC approval after settings are confirmed and logs the result.
 
 ## Transfer modes
 
@@ -65,7 +67,7 @@ It then runs the export and opens the HTML report when finished. **Online** tran
 
 ## What it captures
 
-- **User folders** — Documents, Desktop, Downloads, Pictures, Videos, Music, Favorites, loose profile files, and OCS Documents
+- **User folders** — Documents, Desktop, Downloads, Pictures, Videos, Music, Favorites, loose profile files, and OCS Documents. Transfer Settings also offers an opt-in **Entire user profile** copy; it adds remaining profile content without duplicating folders already captured by the standard user-data, AppData, or browser stages.
 - **AppData** — Bluebeam, Outlook email signatures, Quick Access pins, Lotus Notes
 - **System settings** — individual active power-plan values are applied to the existing STOBG plan (all available AC/DC settings, including the advanced Control Panel and Power & battery settings); an elevated run also includes a complete plan export, plus mapped network drives, personalization (colors, dark mode, taskbar), wallpaper, desktop shortcut layout, taskbar pins, and a default-app inventory
 - **Installed programs** — captured from the old PC and compared against the signed-in user's new-PC inventory during import; missing apps and version differences are written to `Logs\AppMigrationReview.html`

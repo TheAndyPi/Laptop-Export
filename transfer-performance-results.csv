@@ -1,0 +1,3 @@
+﻿"Approach","DurationSeconds","ProgressScanCount","ProgressScanSeconds","ExitCode"
+"Old: /Z /MT:8 + recursive progress scans","6.473","4","3.395","1"
+"New: /MT:16 + zero-I/O progress monitor","5.313","0","0","1"

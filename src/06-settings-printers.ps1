@@ -26,6 +26,12 @@ function Get-SystemSettings {
         
         $powerScheme = powercfg /getactivescheme
         $settings.PowerScheme = $powerScheme
+        $overlayPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes'
+        $overlayValues = Get-ItemProperty -LiteralPath $overlayPath -ErrorAction SilentlyContinue
+        $settings.PowerModeOverlay = @{
+            ActiveOverlayAcPowerScheme = $overlayValues.ActiveOverlayAcPowerScheme
+            ActiveOverlayDcPowerScheme = $overlayValues.ActiveOverlayDcPowerScheme
+        }
         
         # Extract the GUID from the power scheme output
         $schemeGuid = if ($powerScheme -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
@@ -133,7 +139,7 @@ function Get-SystemSettings {
         }
         
         Write-Log "Complete power settings captured" -Level Success
-        Add-Result -Category "Settings" -Item "Power Configuration" -Status $(if ($settings.PowerSettingValueCount -gt 0) { "Success" } else { "Warning" }) -Details "$($settings.PowerSettingValueCount) individual AC/DC values captured$(if ($settings.PowerSchemeExported) { '; full plan also exported' }); lid: AC=$($settings.LidClose.OnAC), DC=$($settings.LidClose.OnBattery)"
+        Add-Result -Category "Settings" -Item "Power Configuration" -Status $(if ($settings.PowerSettingValueCount -gt 0) { "Success" } else { "Warning" }) -Details "$($settings.PowerSettingValueCount) individual AC/DC values captured$(if ($settings.PowerSchemeExported) { '; full plan also exported' }); lid: AC=$($settings.LidClose.OnAC), DC=$($settings.LidClose.OnBattery); power mode overlays captured"
     }
     catch {
         Write-Log "Error capturing power settings: $_" -Level Warning
@@ -374,6 +380,87 @@ function Get-ShortcutMetadata {
     return [PSCustomObject]$item
 }
 
+function Initialize-DesktopLayoutInterop {
+    # The shell registry cache is resolution-specific and does not reliably
+    # move visible icons on current Windows builds. Use Explorer's supported
+    # IFolderView API to capture each displayed item's actual coordinates.
+    if ('StoDesktopLayoutInterop' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public sealed class StoDesktopPosition {
+    public string Name { get; set; }
+    public int X { get; set; }
+    public int Y { get; set; }
+}
+public sealed class StoDesktopRestoreResult {
+    public int Positioned { get; set; }
+    public string[] Missing { get; set; }
+}
+public static class StoDesktopLayoutInterop {
+    const int SWC_DESKTOP = 8, SWFO_NEEDDISPATCH = 1;
+    static object GetView() {
+        dynamic app = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
+        dynamic windows = app.Windows;
+        int hwnd = 0;
+        object disp = windows.FindWindowSW(Type.Missing, Type.Missing, SWC_DESKTOP, ref hwnd, SWFO_NEEDDISPATCH);
+        var provider = (IServiceProvider)disp;
+        var service = new Guid("4c96be40-915c-11cf-99d3-00aa004ae837");
+        var browser = (IShellBrowser)provider.QueryService(service, typeof(IShellBrowser).GUID);
+        return browser.QueryActiveShellView();
+    }
+    public static StoDesktopPosition[] Capture() {
+        var view = (IFolderView)GetView(); var view2 = (IFolderView2)view;
+        var positions = new List<StoDesktopPosition>();
+        for (int i = 0; i < view.ItemCount(); i++) {
+            var shellItem = view2.GetItem(i, typeof(IShellItem).GUID);
+            var name = shellItem.GetDisplayName(SIGDN.SIGDN_NORMALDISPLAY);
+            var pidl = view.Item(i); POINT pt; view.GetItemPosition(pidl, out pt);
+            positions.Add(new StoDesktopPosition { Name = name, X = pt.x, Y = pt.y });
+        }
+        return positions.ToArray();
+    }
+    public static StoDesktopRestoreResult Restore(StoDesktopPosition[] saved, double scaleX, double scaleY) {
+        var view = (IFolderView)GetView(); var view2 = (IFolderView2)view;
+        var current = new Dictionary<string, IntPtr>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < view.ItemCount(); i++) {
+            var item = view2.GetItem(i, typeof(IShellItem).GUID);
+            var name = item.GetDisplayName(SIGDN.SIGDN_NORMALDISPLAY);
+            if (!String.IsNullOrEmpty(name) && !current.ContainsKey(name)) { current.Add(name, view.Item(i)); }
+        }
+        var missing = new List<string>(); int positioned = 0;
+        foreach (var savedItem in saved ?? new StoDesktopPosition[0]) {
+            IntPtr pidl;
+            if (String.IsNullOrEmpty(savedItem.Name) || !current.TryGetValue(savedItem.Name, out pidl)) { missing.Add(savedItem.Name ?? "(unnamed)"); continue; }
+            var point = new POINT { x = (int)Math.Round(savedItem.X * scaleX), y = (int)Math.Round(savedItem.Y * scaleY) };
+            view.SelectAndPositionItems(1, new IntPtr[] { pidl }, new POINT[] { point }, SVSIF.SVSI_POSITIONITEM);
+            positioned++;
+        }
+        return new StoDesktopRestoreResult { Positioned = positioned, Missing = missing.ToArray() };
+    }
+    [ComImport, Guid("6D5140C1-7436-11CE-8034-00AA006009FA"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IServiceProvider { [return: MarshalAs(UnmanagedType.IUnknown)] object QueryService([MarshalAs(UnmanagedType.LPStruct)] Guid service, [MarshalAs(UnmanagedType.LPStruct)] Guid riid); }
+    [ComImport, Guid("000214E2-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellBrowser { void _VtblGap1_12(); [return: MarshalAs(UnmanagedType.IUnknown)] object QueryActiveShellView(); }
+    [ComImport, Guid("cde725b0-ccc9-4519-917e-325d72fab4ce"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IFolderView {
+        void _VtblGap1_3(); IntPtr Item(int index); int ItemCount(uint flags = 0); void _VtblGap2_3();
+        void GetItemPosition(IntPtr pidl, out POINT point); void _VtblGap1_4();
+        void SelectAndPositionItems(int count, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex=0)] IntPtr[] pidls, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex=0)] POINT[] points, SVSIF flags);
+    }
+    [ComImport, Guid("1af3a467-214f-4298-908e-06b03e0b39f9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IFolderView2 { void _VtblGap1_26(); IShellItem GetItem(int index, [MarshalAs(UnmanagedType.LPStruct)] Guid riid); }
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItem { [return: MarshalAs(UnmanagedType.IUnknown)] object BindToHandler(System.Runtime.InteropServices.ComTypes.IBindCtx context, [MarshalAs(UnmanagedType.LPStruct)] Guid bhid, [MarshalAs(UnmanagedType.LPStruct)] Guid riid); IShellItem GetParent(); [return: MarshalAs(UnmanagedType.LPWStr)] string GetDisplayName(SIGDN sigdn); }
+    struct POINT { public int x; public int y; }
+    enum SIGDN { SIGDN_NORMALDISPLAY }
+    [Flags] enum SVSIF { SVSI_POSITIONITEM = 0x80 }
+}
+'@ -ErrorAction Stop
+}
+
 function Backup-DesktopLayout {
     param([string]$DestinationBase)
 
@@ -383,12 +470,31 @@ function Backup-DesktopLayout {
         $shortcuts = @(Get-ChildItem -LiteralPath $desktopPath -File -Force -ErrorAction Stop |
             Where-Object { $_.Extension -in @('.lnk', '.url') } |
             Sort-Object Name | ForEach-Object -Begin { $ordinal = 0 } -Process { $ordinal++; Get-ShortcutMetadata -File $_ -Ordinal $ordinal })
+        $desktopBagPath = 'HKCU:\Software\Microsoft\Windows\Shell\Bags\1\Desktop'
+        $desktopShellValues = @{}
+        if (Test-Path -LiteralPath $desktopBagPath) {
+            $bag = Get-ItemProperty -LiteralPath $desktopBagPath -ErrorAction SilentlyContinue
+            foreach ($property in @($bag.PSObject.Properties | Where-Object { $_.Name -like 'ItemPos*' -and $_.Value -is [byte[]] })) {
+                $desktopShellValues[$property.Name] = [Convert]::ToBase64String([byte[]]$property.Value)
+            }
+        }
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $workArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        $desktopItems = @()
+        try {
+            Initialize-DesktopLayoutInterop
+            $desktopItems = @([StoDesktopLayoutInterop]::Capture())
+            Write-Log "Desktop shell coordinates captured: $($desktopItems.Count) item(s)" -Level Info
+        }
+        catch { Write-Log "Desktop shell-coordinate capture unavailable: $($_.Exception.Message)" -Level Warning }
         [PSCustomObject]@{
-            CaptureDate = (Get-Date).ToString('o'); DesktopPath = $desktopPath; CoordinateRestore = 'BestEffortShellOrder'
-            Shortcuts = $shortcuts
+            CaptureDate = (Get-Date).ToString('o'); DesktopPath = $desktopPath; CoordinateRestore = 'ScaledShellItemCoordinates'
+            Shortcuts = $shortcuts; ShellPositionValues = $desktopShellValues
+            DesktopItems = $desktopItems
+            SourceWorkArea = @{ X = $workArea.X; Y = $workArea.Y; Width = $workArea.Width; Height = $workArea.Height }
         } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $settingsPath 'DesktopLayout.json') -Encoding UTF8
-        Add-Result -Category 'Settings' -Item 'Desktop Layout' -Status 'Success' -Details "$($shortcuts.Count) shortcut(s) captured"
-        Write-Log "Desktop layout captured: $($shortcuts.Count) shortcut(s)" -Level Success
+        Add-Result -Category 'Settings' -Item 'Desktop Layout' -Status 'Success' -Details "$($desktopItems.Count) visible item position(s); $($shortcuts.Count) shortcut(s) captured"
+        Write-Log "Desktop layout captured: $($desktopItems.Count) visible item(s), $($shortcuts.Count) shortcut(s)" -Level Success
     } catch {
         Write-Log "Desktop layout capture failed: $($_.Exception.Message)" -Level Warning
         Add-Result -Category 'Settings' -Item 'Desktop Layout' -Status 'Warning' -Details $_.Exception.Message
@@ -403,15 +509,26 @@ function Backup-TaskbarLayout {
     $packagePath = Join-Path $settingsPath 'TaskbarLayout'
     try {
         $pins = @()
+        $taskbandValues = @{}
+        $taskbandPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Taskband'
+        if (Test-Path -LiteralPath $taskbandPath) {
+            $taskbandProperties = Get-ItemProperty -LiteralPath $taskbandPath -ErrorAction SilentlyContinue
+            foreach ($property in @($taskbandProperties.PSObject.Properties | Where-Object { $_.Name -in @('Favorites', 'FavoritesResolve') -and $_.Value -is [byte[]] })) {
+                $taskbandValues[$property.Name] = [Convert]::ToBase64String([byte[]]$property.Value)
+            }
+        }
         if (Test-Path -LiteralPath $sourcePath) {
             New-Item -ItemType Directory -Path $packagePath -Force | Out-Null
             $ordinal = 0
-            foreach ($file in @(Get-ChildItem -LiteralPath $sourcePath -File -Force | Sort-Object Name)) {
+            # Taskband contains the authoritative pin order. Keep the link
+            # inventory independent of alphabetical file-name sorting so it
+            # cannot obscure that source ordering during restoration.
+            foreach ($file in @(Get-ChildItem -LiteralPath $sourcePath -File -Force | Where-Object { $_.Name -notmatch 'Microsoft Store|WindowsStore' })) {
                 $ordinal++; Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $packagePath $file.Name) -Force -ErrorAction Stop
                 $pins += Get-ShortcutMetadata -File $file -Ordinal $ordinal
             }
         }
-        [PSCustomObject]@{ CaptureDate = (Get-Date).ToString('o'); Pins = @($pins); SourcePath = $sourcePath } |
+        [PSCustomObject]@{ CaptureDate = (Get-Date).ToString('o'); Pins = @($pins); SourcePath = $sourcePath; TaskbandValues = $taskbandValues; MicrosoftStoreExcluded = $true } |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $settingsPath 'TaskbarLayout.json') -Encoding UTF8
         Add-Result -Category 'Settings' -Item 'Taskbar Layout' -Status 'Success' -Details "$($pins.Count) pinned app shortcut(s) captured"
         Write-Log "Taskbar layout captured: $($pins.Count) pin(s)" -Level Success
@@ -509,7 +626,10 @@ function Get-ProgramMatchKey {
 }
 
 function Get-AppDataCandidates {
-    param([string]$DestinationBase)
+    param(
+        [string]$DestinationBase,
+        [bool]$IncludeSizes = $true
+    )
 
     $excludedNames = @('Microsoft', 'Packages', 'Temp', 'Temporary Internet Files', 'CrashDumps', 'SquirrelTemp', 'D3DSCache', 'ConnectedDevicesPlatform', 'Comms')
     $curated = @($Script:Config.AppDataRoaming.Keys + $Script:Config.AppDataLocal.Keys + 'Bluebeam')
@@ -523,7 +643,9 @@ function Get-AppDataCandidates {
                 if ($folder.Name -in $excludedNames) { continue }
                 $covered = $curated -contains $folder.Name
                 $size = 0L
-                try { $size = Get-FolderSizeBytes -Path $folder.FullName } catch { Write-Log "Could not size AppData candidate $($folder.FullName): $($_.Exception.Message)" -Level Warning }
+                if ($IncludeSizes) {
+                    try { $size = Get-FolderSizeBytes -Path $folder.FullName } catch { Write-Log "Could not size AppData candidate $($folder.FullName): $($_.Exception.Message)" -Level Warning }
+                }
                 [void]$candidates.Add([PSCustomObject]@{
                     Area = $root.Area; RelativePath = $folder.Name; FullPath = $folder.FullName; SizeBytes = $size
                     CoveredByCuratedBackup = $covered; AssociationHint = ConvertTo-ProgramMatchPart $folder.Name
@@ -540,8 +662,172 @@ function Get-AppDataCandidates {
     @($candidates | Sort-Object Area, RelativePath) | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $path -Encoding UTF8
     $textPath = Join-Path $settingsPath 'AppDataCandidates.txt'
     @($candidates | Sort-Object Area, RelativePath | ForEach-Object { "[$($_.Area)] $($_.RelativePath) | $(Format-FileSize $_.SizeBytes) | $(if ($_.CoveredByCuratedBackup) { 'already curated' } else { 'review candidate' })" }) | Set-Content -LiteralPath $textPath -Encoding UTF8
-    Add-Result -Category 'Settings' -Item 'AppData candidates' -Status 'Success' -Details "$($candidates.Count) review candidate(s) listed"
+    $detail = if ($IncludeSizes) { "$($candidates.Count) review candidate(s) listed with sizes" } else { "$($candidates.Count) review candidate(s) listed (sizes skipped for Online speed)" }
+    Add-Result -Category 'Settings' -Item 'AppData candidates' -Status 'Success' -Details $detail
     return @($candidates)
+}
+
+function Get-AdditionalAppDataCandidates {
+    param([bool]$IncludeSizes = $true)
+    $excludedNames = @('Microsoft', 'Packages', 'Temp', 'Temporary Internet Files', 'CrashDumps', 'SquirrelTemp', 'D3DSCache', 'ConnectedDevicesPlatform', 'Comms')
+    $curated = @($Script:Config.AppDataRoaming.Keys + $Script:Config.AppDataLocal.Keys + 'Bluebeam', 'Bluebeam Software', 'Mozilla', 'Google')
+    $candidates = [System.Collections.Generic.List[object]]::new()
+    foreach ($root in @(
+        @{ Area = 'Roaming'; Path = $Script:OriginalAppDataRoaming },
+        @{ Area = 'Local'; Path = $Script:OriginalAppDataLocal }
+    )) {
+        try {
+            foreach ($folder in @(Get-ChildItem -LiteralPath $root.Path -Directory -Force -ErrorAction Stop)) {
+                if ($folder.Name -in $excludedNames -or $folder.Name -in $curated) { continue }
+                if ($folder.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)) { continue }
+                $sizeBytes = $null
+                if ($IncludeSizes) {
+                    try { $sizeBytes = Get-FolderSizeBytes -Path $folder.FullName }
+                    catch {
+                        Write-Log "Could not size additional $($root.Area) AppData folder '$($folder.FullName)': $($_.Exception.Message)" -Level Warning
+                        Add-Result -Category 'Additional AppData' -Item "$($root.Area)\$($folder.Name)" -Status 'Warning' -Details 'Size unavailable'
+                    }
+                }
+                [void]$candidates.Add([PSCustomObject]@{
+                    Area = $root.Area; RelativePath = $folder.Name; FullPath = $folder.FullName; SizeBytes = $sizeBytes
+                })
+            }
+        }
+        catch {
+            Write-Log "Could not enumerate $($root.Area) AppData folders for Advanced selection: $($_.Exception.Message)" -Level Warning
+            Add-Result -Category 'Additional AppData' -Item "$($root.Area) candidates" -Status 'Warning' -Details $_.Exception.Message
+        }
+    }
+    return @($candidates | Sort-Object Area, RelativePath)
+}
+
+function Start-AdditionalAppDataSizeJob {
+    param([array]$Candidates)
+    $paths = @($Candidates | ForEach-Object { $_.FullPath } | Where-Object { $_ } | Sort-Object -Unique)
+    return Start-Job -ArgumentList (,$paths) -ScriptBlock {
+        param([string[]]$FolderPaths)
+        foreach ($path in $FolderPaths) {
+            $bytes = 0L
+            try {
+                if (Test-Path -LiteralPath $path) {
+                    $files = @(Get-ChildItem -LiteralPath $path -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) })
+                    $sum = ($files | Measure-Object -Property Length -Sum).Sum
+                    $bytes = [long]$(if ($null -eq $sum) { 0 } else { $sum })
+                }
+            }
+            catch { }
+            [PSCustomObject]@{ Path = $path; Bytes = $bytes }
+        }
+    }
+}
+
+function Receive-AdditionalAppDataSizeJob {
+    param([System.Management.Automation.Job]$Job, [array]$Candidates)
+    if (-not $Job) { return $false }
+    $updated = $false
+    $sizes = @{}
+    foreach ($result in @(Receive-Job -Job $Job -ErrorAction SilentlyContinue)) {
+        if ($result -and $result.Path) { $sizes[$result.Path] = [long]$result.Bytes; $updated = $true }
+    }
+    foreach ($candidate in $Candidates) {
+        if ($sizes.ContainsKey($candidate.FullPath)) { $candidate.SizeBytes = $sizes[$candidate.FullPath] }
+    }
+    return $updated
+}
+
+function Show-AdditionalAppDataMenu {
+    param([array]$Candidates, [bool]$Calculating, [bool]$Skipped)
+    Clear-StoScreen
+    Write-Banner -Title 'Advanced AppData Selection' -Subtitle 'Select additional folders to include in this transfer'
+    Write-Host '  Curated AppData items remain included automatically. Select only extra folders below.' -ForegroundColor DarkGray
+    if ($Calculating) { Write-Host '  Calculating folder sizes in the background. Press R to refresh; the menu refreshes automatically when finished.' -ForegroundColor Cyan }
+    elseif ($Skipped) { Write-Host '  Folder sizing was not completed; unsized folders display as unknown.' -ForegroundColor Yellow }
+    Write-Host ''
+    for ($index = 0; $index -lt $Candidates.Count; $index++) {
+        $item = $Candidates[$index]
+        $sizeText = if ($null -eq $item.SizeBytes) { 'calculating...' } else { Format-FileSize $item.SizeBytes }
+        Write-Host "  [$($index + 1)] $($item.Area.PadRight(7)) $($item.RelativePath.PadRight(32)) $sizeText" -ForegroundColor White
+    }
+    Write-Host ''
+}
+
+function Select-AdditionalAppData {
+    # Draw the selection screen before recursive sizing starts so the
+    # technician immediately sees what is being evaluated.
+    $candidates = @(Get-AdditionalAppDataCandidates -IncludeSizes $false)
+    if ($candidates.Count -eq 0) {
+        Write-Host '  No additional Local or Roaming AppData folders were found.' -ForegroundColor Yellow
+        return @()
+    }
+
+    $sizeJob = Start-AdditionalAppDataSizeJob -Candidates $candidates
+    $Script:AdditionalAppDataSizeJob = $sizeJob
+    $Script:AdditionalAppDataMenuCandidates = $candidates
+    $Script:AdditionalAppDataSizeAutoRefreshed = $false
+    try {
+        while ($true) {
+            Show-AdditionalAppDataMenu -Candidates $Script:AdditionalAppDataMenuCandidates -Calculating ($Script:AdditionalAppDataSizeJob.State -eq 'Running') -Skipped $false
+            Write-Host '  Enter numbers separated by commas, A for all, N for none, or R to refresh' -ForegroundColor Gray -NoNewline
+            $answer = Read-MenuInputWithBackgroundRefresh -Prompt '' -Poll {
+                $wasRunning = [bool]$Script:AdditionalAppDataSizeJob
+                [void](Receive-AdditionalAppDataSizeJob -Job $Script:AdditionalAppDataSizeJob -Candidates $Script:AdditionalAppDataMenuCandidates)
+                if ($wasRunning -and $Script:AdditionalAppDataSizeJob.State -ne 'Running' -and -not $Script:AdditionalAppDataSizeAutoRefreshed) {
+                    $Script:AdditionalAppDataSizeAutoRefreshed = $true
+                    return $true
+                }
+                return $false
+            }
+            if ($answer -eq '__MENU_AUTO_REFRESH__' -or $answer -match '^[Rr]$') { continue }
+            break
+        }
+        if ($sizeJob.State -eq 'Running') { Stop-Job -Job $sizeJob -ErrorAction SilentlyContinue }
+    }
+    finally {
+        Remove-Job -Job $sizeJob -Force -ErrorAction SilentlyContinue
+    }
+    if ($answer -match '^[Aa]$') { return $candidates }
+    if ($answer -match '^[Nn]?$') { return @() }
+
+    $selected = [System.Collections.Generic.List[object]]::new()
+    $invalidEntry = $false
+    foreach ($part in ($answer -split ',')) {
+        $number = 0
+        if ([int]::TryParse($part.Trim(), [ref]$number) -and $number -ge 1 -and $number -le $candidates.Count) {
+            [void]$selected.Add($candidates[$number - 1])
+        }
+        else { $invalidEntry = $true }
+    }
+    if ($invalidEntry) { Write-Host '  Ignored invalid AppData selection entries.' -ForegroundColor Yellow }
+    return @($selected | Sort-Object Area, RelativePath -Unique)
+}
+
+function Copy-SelectedAdditionalAppData {
+    param([string]$DestinationBase)
+
+    foreach ($item in @($Script:SelectedAdditionalAppData)) {
+        $itemName = "$($item.Area)\$($item.RelativePath)"
+        if ($item.Area -notin @('Roaming', 'Local') -or [string]::IsNullOrWhiteSpace($item.RelativePath) -or
+            $item.RelativePath -match '[\\/]') {
+            Write-Log "Skipping invalid additional AppData selection '$itemName'." -Level Warning
+            Add-Result -Category 'Additional AppData' -Item $itemName -Status 'Skipped' -Details 'Invalid selection path'
+            continue
+        }
+        if (-not (Test-Path -LiteralPath $item.FullPath)) {
+            Write-Log "Selected additional AppData folder '$itemName' no longer exists." -Level Warning
+            Add-Result -Category 'Additional AppData' -Item $itemName -Status 'Skipped' -Details 'Source folder no longer exists'
+            continue
+        }
+        try {
+            $destination = Join-Path $DestinationBase "AppData\Additional\$($item.Area)\$($item.RelativePath)"
+            $logPath = Join-Path $DestinationBase "Logs\robocopy_additional_appdata_$($item.Area)_$($item.RelativePath).log"
+            $result = Copy-WithProgress -Source $item.FullPath -Destination $destination -FolderName "Additional AppData: $itemName" -LogPath $logPath -RobocopyArgs $Script:Config.RobocopyArgs
+            Add-Result -Category 'Additional AppData' -Item $itemName -Status $result.Status -Details "$($result.FilesCopied) files; $(Format-FileSize $item.SizeBytes)"
+        }
+        catch {
+            Write-Log "Could not copy additional AppData folder '$itemName': $($_.Exception.Message)" -Level Error
+            Add-Result -Category 'Additional AppData' -Item $itemName -Status 'Error' -Details $_.Exception.Message
+        }
+    }
 }
 
 function Backup-Printers {
