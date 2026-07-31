@@ -252,6 +252,10 @@ function Get-SystemSettings {
         if ($cursors) {
             $personalization.CursorScheme = $cursors.'(default)'
             $personalization.CursorBaseSize = $cursors.CursorBaseSize
+            $personalization.CursorSettings = @{}
+            $cursors.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object {
+                $personalization.CursorSettings[$_.Name] = $_.Value
+            }
         }
         
         # Desktop Icon Settings
@@ -275,6 +279,25 @@ function Get-SystemSettings {
             $personalization.LogPixels = $desktop.LogPixels
             $personalization.Win8DpiScaling = $desktop.Win8DpiScaling
         }
+
+        # Windows 10/11 stores display scaling per monitor.  Monitor IDs do
+        # not survive a hardware migration, so retain the DPI values in JSON
+        # for the importer to apply to the destination monitor entries.
+        $perMonitorDpi = @(Get-ChildItem -Path 'HKCU:\Control Panel\Desktop\PerMonitorSettings' -ErrorAction SilentlyContinue | ForEach-Object {
+            $dpi = (Get-ItemProperty -LiteralPath $_.PSPath -Name DpiValue -ErrorAction SilentlyContinue).DpiValue
+            if ($null -ne $dpi) { [int]$dpi }
+        })
+        $personalization.ScreenScale = @{
+            LogPixels = $personalization.LogPixels
+            Win8DpiScaling = $personalization.Win8DpiScaling
+            PerMonitorDpiValues = $perMonitorDpi
+        }
+
+        # Accessibility > Text size is a percentage stored per user.
+        $accessibility = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Accessibility' -ErrorAction SilentlyContinue
+        if ($accessibility -and $null -ne $accessibility.TextScaleFactor) {
+            $personalization.TextScaleFactor = [int]$accessibility.TextScaleFactor
+        }
         
         $settings.Personalization = $personalization
         
@@ -295,7 +318,9 @@ Windows Registry Editor Version 5.00
             "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Accent",
             "HKCU\Software\Microsoft\Windows\CurrentVersion\Search",
             "HKCU\Control Panel\Cursors",
-            "HKCU\Control Panel\Desktop"
+            "HKCU\Control Panel\Desktop",
+            "HKCU\Control Panel\Desktop\PerMonitorSettings",
+            "HKCU\Software\Microsoft\Accessibility"
         )
         
         foreach ($key in $regKeys) {
@@ -312,8 +337,8 @@ Windows Registry Editor Version 5.00
         
         $regContent | Out-File $regExportPath -Encoding Unicode
         
-        Write-Log "Personalization settings captured (colors, taskbar, cursors)" -Level Success
-        Add-Result -Category "Settings" -Item "Personalization" -Status "Success" -Details "Colors, taskbar, visual effects captured"
+        Write-Log "Personalization settings captured (colors, taskbar, display scale, cursors, text size)" -Level Success
+        Add-Result -Category "Settings" -Item "Personalization" -Status "Success" -Details "Colors, taskbar, display scale, cursors, text size, and visual effects captured"
     }
     catch {
         Write-Log "Error capturing personalization: $_" -Level Warning
@@ -710,9 +735,14 @@ function Start-AdditionalAppDataSizeJob {
             $bytes = 0L
             try {
                 if (Test-Path -LiteralPath $path) {
-                    $files = @(Get-ChildItem -LiteralPath $path -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) })
-                    $sum = ($files | Measure-Object -Property Length -Sum).Sum
-                    $bytes = [long]$(if ($null -eq $sum) { 0 } else { $sum })
+                    # Do not collect every file into an array before adding
+                    # its length.  AppData folders can contain hundreds of
+                    # thousands of files, and the streaming measure keeps the
+                    # selection screen responsive.
+                    $measure = Get-ChildItem -LiteralPath $path -Recurse -File -Force -ErrorAction SilentlyContinue |
+                        Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) } |
+                        Measure-Object -Property Length -Sum
+                    $bytes = [long]$(if ($null -eq $measure.Sum) { 0 } else { $measure.Sum })
                 }
             }
             catch { }

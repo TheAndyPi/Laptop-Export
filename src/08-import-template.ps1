@@ -1663,6 +1663,61 @@ if (-not $TestMode -and (Test-Path $settingsFile)) {
                     Add-Result -Category "Settings" -Item "Taskbar Search Mode" -Status "Success" -Details "Mode $($p.SearchboxTaskbarMode)"
                 }
             }
+
+            # Restore display scaling to the current destination display(s),
+            # rather than importing source monitor IDs that cannot exist on
+            # the replacement computer.  Windows applies this at next sign-in.
+            $scaleApplied = $false
+            if ($p.ScreenScale) {
+                $desktopKey = 'HKCU:\Control Panel\Desktop'
+                if ($null -ne $p.ScreenScale.LogPixels) {
+                    Set-ItemProperty -Path $desktopKey -Name 'LogPixels' -Value $p.ScreenScale.LogPixels -Type DWord -ErrorAction Stop
+                    $scaleApplied = $true
+                }
+                if ($null -ne $p.ScreenScale.Win8DpiScaling) {
+                    Set-ItemProperty -Path $desktopKey -Name 'Win8DpiScaling' -Value $p.ScreenScale.Win8DpiScaling -Type DWord -ErrorAction Stop
+                    $scaleApplied = $true
+                }
+                $sourceDpiValues = @($p.ScreenScale.PerMonitorDpiValues | Where-Object { $null -ne $_ })
+                if ($sourceDpiValues.Count -gt 0) {
+                    $targetMonitorKeys = @(Get-ChildItem -Path 'HKCU:\Control Panel\Desktop\PerMonitorSettings' -ErrorAction SilentlyContinue)
+                    foreach ($monitorKey in $targetMonitorKeys) {
+                        Set-ItemProperty -LiteralPath $monitorKey.PSPath -Name 'DpiValue' -Value ([int]$sourceDpiValues[0]) -Type DWord -ErrorAction Stop
+                        $scaleApplied = $true
+                    }
+                }
+            }
+            if ($scaleApplied) {
+                $Script:DisplayAccessibilitySettingsChanged = $true
+                Write-Log 'Screen scale restored; Windows will apply it after sign-out/sign-in.' -Level 'Success'
+                Add-Result -Category 'Settings' -Item 'Screen scale' -Status 'Success' -Details 'Applied to destination display settings; sign out/in required'
+            }
+
+            # The registry import preserves all cursor role mappings.  Set the
+            # scheme and size explicitly as well, so the current user receives
+            # them even if the registry file was partially imported.
+            $cursorApplied = $false
+            $cursorKey = 'HKCU:\Control Panel\Cursors'
+            if ($null -ne $p.CursorScheme) {
+                Set-ItemProperty -Path $cursorKey -Name '(default)' -Value $p.CursorScheme -ErrorAction Stop
+                $cursorApplied = $true
+            }
+            if ($null -ne $p.CursorBaseSize) {
+                Set-ItemProperty -Path $cursorKey -Name 'CursorBaseSize' -Value $p.CursorBaseSize -Type DWord -ErrorAction Stop
+                $cursorApplied = $true
+            }
+            if ($cursorApplied) {
+                $Script:DisplayAccessibilitySettingsChanged = $true
+                Add-Result -Category 'Settings' -Item 'Cursor settings' -Status 'Success' -Details 'Scheme and size restored; sign out/in may be required'
+            }
+
+            if ($null -ne $p.TextScaleFactor) {
+                $accessibilityKey = 'HKCU:\Software\Microsoft\Accessibility'
+                if (-not (Test-Path -LiteralPath $accessibilityKey)) { New-Item -Path $accessibilityKey -Force | Out-Null }
+                Set-ItemProperty -Path $accessibilityKey -Name 'TextScaleFactor' -Value $p.TextScaleFactor -Type DWord -ErrorAction Stop
+                $Script:DisplayAccessibilitySettingsChanged = $true
+                Add-Result -Category 'Settings' -Item 'Text size' -Status 'Success' -Details "$($p.TextScaleFactor)% restored; sign out/in required"
+            }
         }
     }
     catch {
@@ -1681,6 +1736,9 @@ if (-not $TestMode -and (Test-Path $settingsFile)) {
         catch {
             Write-Log "Could not restart Explorer automatically - sign out/in to apply taskbar settings" -Level "Warning"
         }
+    }
+    if ($Script:DisplayAccessibilitySettingsChanged) {
+        Write-Host '    Display scale, cursor settings, and text size will take full effect after sign-out/sign-in.' -ForegroundColor Yellow
     }
 }
 

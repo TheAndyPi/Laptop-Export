@@ -291,9 +291,13 @@ function Start-TransferSizeEstimateJob {
             $bytes = 0L; $count = 0
             try {
                 if (Test-Path -LiteralPath $path) {
-                    $files = @(Get-ChildItem -LiteralPath $path -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) })
-                    $sum = ($files | Measure-Object -Property Length -Sum).Sum
-                    $bytes = [long]$(if ($null -eq $sum) { 0 } else { $sum }); $count = $files.Count
+                    # Keep this pipeline streaming.  Materializing the whole
+                    # file list before measuring it makes large profiles much
+                    # slower and consumes substantial memory.
+                    $measure = Get-ChildItem -LiteralPath $path -Recurse -File -Force -ErrorAction SilentlyContinue |
+                        Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) } |
+                        Measure-Object -Property Length -Sum
+                    $bytes = [long]$(if ($null -eq $measure.Sum) { 0 } else { $measure.Sum }); $count = $measure.Count
                 }
             }
             catch { }
