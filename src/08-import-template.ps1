@@ -1583,6 +1583,12 @@ Write-Host ""
 Write-Host "  See TransferReport.html for full export details." -ForegroundColor DarkGray
 Write-Host ""
 
+$reportPath = Join-Path $scriptPath "TransferReport.html"
+if (Test-Path $reportPath) {
+    Write-Host "  Opening transfer report..." -ForegroundColor DarkGray
+    Start-Process -FilePath $reportPath
+}
+
 Read-Host "  Press Enter to exit"
 '@
 
