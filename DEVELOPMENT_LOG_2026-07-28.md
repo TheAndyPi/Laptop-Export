@@ -30,7 +30,7 @@ were syntax-checked only.
 - Added Online transfer payload estimation before copying begins.
 - Added a configurable Online maximum transfer size (default: 5 GB), an
   explicit oversized-transfer confirmation, and a command-line override.
-- Added a Downloads-cap override for Online transfers.
+- Replaced the Downloads cap with a standalone Downloads backup toggle, disabled by default for Online transfers.
 - Moved network-transfer staging into the transferring user’s Local AppData:
   `%LOCALAPPDATA%\STO Building Group\LaptopTransferStaging`.
 - Added safeguards for an Online destination that points into the source

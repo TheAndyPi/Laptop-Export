@@ -71,11 +71,11 @@ function Start-LaptopExport {
         Resolve-TransferMode
     }
 
-    Apply-OnlineImportDefaults
+    Apply-OnlineTransferDefaults
     if ($NonInteractive) {
         # Browsers can require a close/password-export prompt. Leave them out
         # of unattended validation runs rather than hanging partway through.
-        $Script:Config.Backup.Chrome = $false
+        $Script:Config.Backup.Chrome = "Off"
         $Script:Config.Backup.Firefox = $false
         $Script:Config.Backup.Edge = $false
         # PrintBRM and ZIP compression can outlive automation time limits; the
@@ -85,7 +85,7 @@ function Start-LaptopExport {
         $Script:Config.Online.CreateZipArchive = $false
         Write-Log "Non-interactive mode: browser collection, PrintBRM, and ZIP creation disabled" -Level Info
     }
-    elseif (-not (Show-TransferSettingsMenu)) {
+    elseif (-not (Show-BackupOverview)) {
         Write-Host "`n  Transfer cancelled." -ForegroundColor Yellow
         return
     }
@@ -206,10 +206,13 @@ function Start-LaptopExport {
     Write-Banner -Title "Starting Export Process ($($Script:Config.TransferMode))"
     
     # 1. Copy user folders
-    if ($Script:Config.Backup.UserData) {
+    if ($Script:Config.Backup.UserData -or $Script:Config.Backup.Downloads) {
         Copy-UserFolders -DestinationBase $transferBase
     }
-    else { Add-DisabledBackupResult -Item "User data" -Category "User Folders" }
+    else {
+        Add-DisabledBackupResult -Item "User data" -Category "User Folders"
+        Add-DisabledBackupResult -Item "Downloads" -Category "User Folders"
+    }
     
     # 2. Copy AppData
     if ($Script:Config.Backup.AppData) {
@@ -310,7 +313,7 @@ function Start-LaptopExport {
     else {
         Write-Status "Printers" "SKIP" "disabled by configuration"
     }
-    if ($Script:Config.Backup.Chrome) { Write-Status "Chrome" "INFO" "selected" } else { Write-Status "Chrome" "SKIP" "disabled by configuration" }
+    if ($Script:Config.Backup.Chrome -ne "Off") { Write-Status "Chrome" "INFO" $Script:Config.Backup.Chrome } else { Write-Status "Chrome" "SKIP" "disabled by configuration" }
     if ($Script:Config.Backup.Firefox) { Write-Status "Firefox" "INFO" "selected" } else { Write-Status "Firefox" "SKIP" "disabled by configuration" }
     if ($Script:Config.Backup.Edge) { Write-Status "Edge" "INFO" "selected" } else { Write-Status "Edge" "SKIP" "disabled by configuration" }
     Write-Status "Import-LaptopData.ps1"  "OK"   "run on new machine"

@@ -284,20 +284,19 @@ function Get-FolderSizeBytes {
 
 function Get-TransferPayloadEstimate {
     $sizes = @{}
-    foreach ($key in @("UserData","AppData","LotusNotes","SystemSettings","InstalledPrograms","Printers","Chrome","Firefox","Edge","OneDrive")) {
+    foreach ($key in @("UserData","Downloads","AppData","LotusNotes","SystemSettings","InstalledPrograms","Printers","Chrome","Firefox","Edge","OneDrive")) {
         $sizes[$key] = [long]0
     }
 
     if ($Script:Config.Backup.UserData) {
         foreach ($folder in $Script:Config.UserFolders) {
+            if ($folder -eq "Downloads") { continue }
             $bytes = Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder)
-            if ($Script:Config.TransferMode -eq "Online" -and $folder -eq "Downloads" -and
-                -not $Script:Config.Online.OverrideDownloadsCap -and
-                ($bytes / 1GB) -gt $Script:Config.Online.DownloadsCapGB) {
-                continue
-            }
             $sizes.UserData += $bytes
         }
+    }
+    if ($Script:Config.Backup.Downloads) {
+        $sizes.Downloads = Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile "Downloads")
     }
 
     if ($Script:Config.Backup.AppData) {
@@ -314,7 +313,13 @@ function Get-TransferPayloadEstimate {
         -not ($Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.SkipLotusNotes)) {
         $sizes.LotusNotes = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Lotus")
     }
-    if ($Script:Config.Backup.Chrome) { $sizes.Chrome = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Google\Chrome\User Data") }
+    if ($Script:Config.Backup.Chrome -eq "FullProfile") {
+        $sizes.Chrome = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Google\Chrome\User Data")
+    }
+    elseif ($Script:Config.Backup.Chrome -eq "BookmarksAndPasswords") {
+        $chromeRoot = Join-Path $Script:OriginalAppDataLocal "Google\Chrome\User Data"
+        $sizes.Chrome = [long]((Get-ChildItem -LiteralPath $chromeRoot -Recurse -File -Filter "Bookmarks" -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum)
+    }
     if ($Script:Config.Backup.Firefox) {
         $sizes.Firefox = (Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataRoaming "Mozilla\Firefox")) +
                           (Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Mozilla\Firefox"))
@@ -575,16 +580,20 @@ function Resolve-TransferMode {
     if ($Script:Config.TransferMode -in @("Local", "Online") -and $TransferMode) {
         return  # already set from param
     }
+    Write-StoLogo
     Write-Section "Transfer mode"
     Write-Host "  [1] Local  " -ForegroundColor Cyan -NoNewline
     Write-Host "- full copy (USB / on-site)" -ForegroundColor DarkGray
     Write-Host "  [2] Online " -ForegroundColor Cyan -NoNewline
-    Write-Host "- trimmed for slow/remote links (caps Downloads at $($Script:Config.Online.DownloadsCapGB)GB, skips Lotus)" -ForegroundColor DarkGray
+    Write-Host "- trimmed for slow/remote links (Downloads disabled by default, skips Lotus)" -ForegroundColor DarkGray
+    Write-Host "  [0] Administrator" -ForegroundColor Cyan -NoNewline
+    Write-Host "- restart with administrator privileges" -ForegroundColor DarkGray
     Write-Host ""
     do {
-        $m = Read-Host "  Select transfer mode (1-2)"
+        $m = Read-Host "  Select transfer mode (0-2)"
         if ($m -eq "1") { $Script:Config.TransferMode = "Local"; break }
         if ($m -eq "2") { $Script:Config.TransferMode = "Online"; break }
+        if ($m -eq "0") { Restart-AsAdministrator; continue }
         Write-Host "  Invalid selection." -ForegroundColor Red
     } while ($true)
 }

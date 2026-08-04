@@ -12,7 +12,7 @@ The deployed `Export-LaptopData.ps1` remains a single, self-contained script. Fo
 powershell -ExecutionPolicy Bypass -File ".\Build-Deployment.ps1"
 ```
 
-For development, [`src/00-development-config.psd1`](src/00-development-config.psd1) controls each export stage. All switches default to `$true`; rebuild after changing a value. The config is embedded in the generated deployment script, so it is not a separate technician-side dependency. Set `Backup.Chrome` to `$false` to skip Chrome while still exporting Edge and Firefox. Under `Import`, disable only the Lotus Notes or Firefox restore as needed. Under `Online`, set `CreateZipArchive` to `$false` to retain only the transfer folder, set `StageNetworkTransfersLocally` to `$false` to disable local staging, and set `Online.Import` values to the defaults that should apply whenever an Online transfer is selected.
+For development, [`src/00-development-config.psd1`](src/00-development-config.psd1) controls each export stage. Rebuild after changing a value; the config is embedded in the generated deployment script, so it is not a separate technician-side dependency. Set `Backup.Chrome` to `Off`, `BookmarksAndPasswords`, or `FullProfile`. The lightweight Chrome mode exports bookmarks and prompts for Chrome's native password CSV without copying the profile. Under `Import`, disable only the Lotus Notes or Firefox restore as needed. Under `Online`, set `CreateZipArchive` to `$false` to retain only the transfer folder, set `StageNetworkTransfersLocally` to `$false` to disable local staging, and set `Online.Import` values to the defaults that should apply whenever an Online transfer is selected.
 
 When running the export script, a **Transfer Settings** master panel shows the backup, import, and Online ZIP switches. Enter a setting number to toggle it, then press `S` to start. Those menu choices affect only the current transfer and do not change the compiled defaults.
 
@@ -28,8 +28,8 @@ powershell -ExecutionPolicy Bypass -File ".\Export-LaptopData.ps1"
 
 The script is interactive. It will prompt you to:
 
-1. **Elevate to Administrator** (Y/N/Skip) — recommended. Accepting re-launches via UAC, preserving the original user's profile context.
-2. **Choose a transfer mode** — `Local` or `Online` (see below).
+1. **Choose a transfer mode** — `Local` or `Online` (see below). Select `0` on this screen to relaunch as Administrator when needed.
+2. **Review the backup overview** — select `S` to start, `C` to open the transfer settings, or `Q` to cancel.
 3. **Choose a destination**:
    - **Local:** Select an external or secondary drive from the console; the Windows folder picker is not opened.
    - **Online:** A Windows folder picker opens. Choose a network share, cloud-synced folder, or any local folder.
@@ -41,14 +41,14 @@ It then runs the export and opens the HTML report when finished. **Online** tran
 - **Windows PowerShell 5.1+** (`#Requires -Version 5.1`)
 - An **external/USB drive** (or second fixed drive) with enough free space for **Local** transfers
 - For **Online** transfers, a writable destination folder (network share, cloud-synced folder, or local folder); no external drive is required
-- **Administrator rights** — *optional but recommended*. The script always attempts the printer export, but Windows can require elevation for a full PrintBRM package. The script offers to self-elevate and logs the precise PrintBRM result.
+- **Administrator rights** — *optional but recommended*. The script always attempts the printer export, but Windows can require elevation for a full PrintBRM package. Select `0` from the transfer-mode screen to relaunch as Administrator; the package logs the precise PrintBRM result.
 
 ## Transfer modes
 
 | Mode | Use case | Behavior |
 |------|----------|----------|
 | **Local** | USB / on-site | Full copy of everything; no ZIP is created. |
-| **Online** | Slow / remote links | Trimmed: caps `Downloads` at 5 GB (omits if larger), skips Lotus Notes data, prompts on any folder over 10 GB, skips OneDrive re-hydration, and creates a ZIP. |
+| **Online** | Slow / remote links | Trimmed: disables the standalone `Downloads` toggle by default, skips Lotus Notes data, prompts on any selected folder over 10 GB, skips OneDrive re-hydration, and creates a ZIP. |
 
 ## What it captures
 
@@ -57,7 +57,7 @@ It then runs the export and opens the HTML report when finished. **Online** tran
 - **System settings** — power scheme, lid-close actions (AC/DC), mapped network drives, personalization (colors, dark mode, taskbar), wallpaper
 - **Installed programs** — documented to a list
 - **Printers** — a `Printers.printerExport` PrintBRM migration file is attempted for every run, plus a driverless network-connection list. Windows may require elevation to create a full PrintBRM package; the package log records the exact result.
-- **Browser data** — Chrome and Edge bookmarks from every profile (automatic restore for Default/matching profiles plus portable HTML), a Chrome profile archive with common cache directories excluded for recovery/reference, and an optional native Chrome Password Manager CSV export that requires Windows authentication; full Firefox profile data, including bookmarks, saved logins, history, extensions, settings, and companion local data
+- **Browser data** — Chrome can be set to bookmarks-and-passwords only or a full profile archive; both modes export Chrome bookmarks from every profile and offer Chrome's native password CSV export. Edge bookmarks and full Firefox profile data are also supported.
 - **OneDrive** — sync-state handling
 
 ## Output package

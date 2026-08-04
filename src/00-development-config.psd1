@@ -1,17 +1,19 @@
 @{
     # Development-time defaults. Edit these values, then run
     # Build-Deployment.ps1 to embed the configuration in Export-LaptopData.ps1.
-    # Every backup stage is enabled by default.
     Backup = @{
         UserData          = $true
+        Downloads         = $true
         AppData           = $true
         LotusNotes        = $true
         SystemSettings    = $true
         InstalledPrograms = $true
         Printers          = $true
-        Chrome            = $true
+        # Off, BookmarksAndPasswords, or FullProfile. The lightweight option
+        # exports bookmarks and prompts for Chrome's native password CSV export.
+        Chrome            = "BookmarksAndPasswords"
         Firefox           = $true
-        Edge              = $true
+        Edge              = $false  # Microsoft account already syncs Edge settings
         OneDrive          = $true
     }
 
@@ -30,8 +32,9 @@
     Online = @{
         # Online transfers warn before starting when selected payload exceeds this size.
         MaxTransferGB = 5
-        # Set true only when the technician deliberately wants Downloads above the cap.
-        OverrideDownloadsCap = $false
+        # Downloads is excluded from Online transfers by default. The technician
+        # can enable its standalone toggle for an individual transfer.
+        Downloads = $true
         # Online transfers create a ZIP beside the transfer folder by default.
         CreateZipArchive = $true
 

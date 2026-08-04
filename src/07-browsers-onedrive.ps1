@@ -164,7 +164,8 @@ function Export-ChromeBookmarks {
 function Invoke-ChromePasswordExportPrompt {
     param(
         [string]$BrowserPath,
-        [bool]$CanLaunchChromeForOriginalUser
+        [bool]$CanLaunchChromeForOriginalUser,
+        [bool]$HasProfileArchive
     )
 
     $passwordExportPath = Join-Path $BrowserPath "Chrome\PasswordExport"
@@ -177,14 +178,16 @@ function Invoke-ChromePasswordExportPrompt {
 
     $exportNow = Read-Host "  Open Chrome Password Manager now to export passwords? (Y/N)"
     if ($exportNow -notmatch '^[Yy]') {
-        Add-ManualTask -Task "Export Chrome Passwords" -Reason "Chrome passwords remain encrypted in the raw profile backup" -Instructions @"
+        $reason = if ($HasProfileArchive) { "Chrome passwords remain encrypted in the raw profile backup" } else { "Chrome passwords require Chrome's native export" }
+        $detail = if ($HasProfileArchive) { "Native Chrome export declined; raw encrypted profile backup is included" } else { "Native Chrome export declined; no Chrome profile archive was selected" }
+        Add-ManualTask -Task "Export Chrome Passwords" -Reason $reason -Instructions @"
 On the old laptop, while signed in as the original Windows user:
 1. Open Chrome > Passwords and autofill > Google Password Manager > Settings.
 2. Under Export passwords, select Download file and complete the Windows authentication prompt.
 3. Save the CSV only to: $passwordExportPath
 4. On the new laptop, import it in Google Password Manager > Settings > Import passwords, then delete the CSV.
 "@
-        Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Manual" -Details "Native Chrome export declined; raw encrypted profile backup is included"
+        Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Manual" -Details $detail
         return
     }
 
@@ -233,55 +236,56 @@ function Copy-BrowserData {
     $localAppData = $Script:OriginalAppDataLocal
     
     # ========== CHROME ==========
-    # Chrome data is split across every profile under User Data.  Keep a raw
-    # archive with common disposable cache directories excluded, then export each profile's
-    # bookmarks into Chrome's portable HTML format for reliable import.
+    # Chrome can either export bookmarks and the native password CSV only, or
+    # also retain a raw profile archive for recovery/reference.
     $chromeUserDataPath = Join-Path $localAppData "Google\Chrome\User Data"
-    if (-not $Script:Config.Backup.Chrome) {
+    if ($Script:Config.Backup.Chrome -eq "Off") {
         Add-DisabledBackupResult -Item "Chrome" -Category "Browser"
     }
     elseif (Test-Path -LiteralPath $chromeUserDataPath) {
-        # Keep the result: a partial copy while Chrome is open must never be
-        # presented as a fully successful profile archive.
-        $chromeClosed = Request-BrowserClose -ProcessName "chrome" -DisplayName "Google Chrome"
         [void](Export-ChromeBookmarks -ChromeUserDataPath $chromeUserDataPath -BrowserPath $browserPath)
 
-        $chromeRawDestination = Join-Path $browserPath "Chrome\User Data"
-        $chromeRawLog = Join-Path $DestinationBase "Logs\robocopy_chrome_user_data.log"
-        $chromeCopyArgs = @($Script:Config.RobocopyArgs) + @(
-            # These folders hold disposable cache data or Windows-encrypted
-            # network cookies. They add substantial size, are often locked
-            # while Chrome runs, and cannot be meaningfully moved to another
-            # Windows profile.
-            "/XD", "Cache", '"Code Cache"', "GPUCache", "GPUPersistentCache", "ShaderCache", "GrShaderCache", "DawnCache", "Crashpad", "Network", '"Safe Browsing Network"'
-        )
-        $result = Copy-WithProgress -Source $chromeUserDataPath `
-                                    -Destination $chromeRawDestination `
-                                    -FolderName "Chrome profile archive (all profiles)" `
-                                    -LogPath $chromeRawLog `
-                                    -RobocopyArgs $chromeCopyArgs
-        if ($result.Status -eq "Success" -and $chromeClosed) {
-            Write-Log "Chrome profile archive copied: $($result.FilesCopied) files" -Level Success
-            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Success" -Details "$($result.FilesCopied) files; common caches excluded; credentials remain Windows-protected"
-        }
-        elseif ($result.Aborted) {
-            Write-Log "Chrome profile archive copy stopped by operator" -Level Warning
-            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Skipped" -Details "Stopped by operator; partial files may remain and can be resumed by rerunning the export"
-        }
-        else {
-            $detail = if (-not $chromeClosed) {
-                "Chrome was open; active profile databases may be incomplete. Close Chrome and rerun before wiping the old laptop."
+        if ($Script:Config.Backup.Chrome -eq "FullProfile") {
+            # Keep the result: a partial copy while Chrome is open must never be
+            # presented as a fully successful profile archive.
+            $chromeClosed = Request-BrowserClose -ProcessName "chrome" -DisplayName "Google Chrome"
+            $chromeRawDestination = Join-Path $browserPath "Chrome\User Data"
+            $chromeRawLog = Join-Path $DestinationBase "Logs\robocopy_chrome_user_data.log"
+            $chromeCopyArgs = @($Script:Config.RobocopyArgs) + @(
+                # These folders hold disposable cache data or Windows-encrypted
+                # network cookies. They add substantial size, are often locked
+                # while Chrome runs, and cannot be meaningfully moved to another
+                # Windows profile.
+                "/XD", "Cache", '"Code Cache"', "GPUCache", "GPUPersistentCache", "ShaderCache", "GrShaderCache", "DawnCache", "Crashpad", "Network", '"Safe Browsing Network"'
+            )
+            $result = Copy-WithProgress -Source $chromeUserDataPath `
+                                        -Destination $chromeRawDestination `
+                                        -FolderName "Chrome profile archive (all profiles)" `
+                                        -LogPath $chromeRawLog `
+                                        -RobocopyArgs $chromeCopyArgs
+            if ($result.Status -eq "Success" -and $chromeClosed) {
+                Write-Log "Chrome profile archive copied: $($result.FilesCopied) files" -Level Success
+                Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Success" -Details "$($result.FilesCopied) files; common caches excluded; credentials remain Windows-protected"
+            }
+            elseif ($result.Aborted) {
+                Write-Log "Chrome profile archive copy stopped by operator" -Level Warning
+                Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Skipped" -Details "Stopped by operator; partial files may remain and can be resumed by rerunning the export"
             }
             else {
-                "Check robocopy_chrome_user_data.log"
+                $detail = if (-not $chromeClosed) {
+                    "Chrome was open; active profile databases may be incomplete. Close Chrome and rerun before wiping the old laptop."
+                }
+                else {
+                    "Check robocopy_chrome_user_data.log"
+                }
+                Write-Log "Chrome profile archive copy completed with warnings" -Level Warning
+                Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Warning" -Details $detail
             }
-            Write-Log "Chrome profile archive copy completed with warnings" -Level Warning
-            Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Warning" -Details $detail
         }
 
-        if (-not $result.Aborted) {
+        if ($Script:Config.Backup.Chrome -ne "FullProfile" -or -not $result.Aborted) {
             $canLaunchChromeForOriginalUser = (-not $Script:IsAdmin) -or ($Script:OriginalUserProfile -eq $env:USERPROFILE)
-            Invoke-ChromePasswordExportPrompt -BrowserPath $browserPath -CanLaunchChromeForOriginalUser $canLaunchChromeForOriginalUser
+            Invoke-ChromePasswordExportPrompt -BrowserPath $browserPath -CanLaunchChromeForOriginalUser $canLaunchChromeForOriginalUser -HasProfileArchive ($Script:Config.Backup.Chrome -eq "FullProfile")
         }
     }
     else {

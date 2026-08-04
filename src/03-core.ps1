@@ -20,44 +20,26 @@ else {
     $Script:OriginalAppDataLocal = $TargetAppDataLocal
 }
 
-if (-not $Script:IsAdmin) {
-    Write-Banner -Title "Administrator Privileges Recommended"
-    Write-Host "  Some features (power scheme and a full PrintBRM package) require admin rights." -ForegroundColor Gray
-    Write-Host "  PrintBRM is still attempted if you skip; its result is recorded in the package.`n" -ForegroundColor DarkGray
-    
-    $choice = if ($NonInteractive) {
-        Write-Host "  Non-interactive mode: continuing without elevation." -ForegroundColor DarkGray
-        "S"
-    }
-    else {
-        Read-Host "  Run as Administrator? (Y/N, or S to skip)"
-    }
-    
-    if ($choice -eq "Y" -or $choice -eq "y") {
-        Write-Host "Requesting administrator privileges..." -ForegroundColor Yellow
-        $scriptPath = $MyInvocation.MyCommand.Path
-        
-        # Pass the current user's profile info to the elevated script
-        $elevatedArgs = "-ExecutionPolicy Bypass -File `"$scriptPath`" -TargetUserProfile `"$env:USERPROFILE`" -TargetUserName `"$env:USERNAME`" -TargetAppDataRoaming `"$env:APPDATA`" -TargetAppDataLocal `"$env:LOCALAPPDATA`""
-        if ($TransferMode) { $elevatedArgs += " -TransferMode `"$TransferMode`"" }
-        if ($DestinationPath) { $elevatedArgs += " -DestinationPath `"$DestinationPath`"" }
-        if ($OnlineMaxTransferGB -gt 0) { $elevatedArgs += " -OnlineMaxTransferGB $OnlineMaxTransferGB" }
-        
-        try {
-            $process = Start-Process PowerShell -Verb RunAs -ArgumentList $elevatedArgs -PassThru -ErrorAction Stop
-            # If we get here, elevation was accepted - exit this non-admin instance
-            exit
-        }
-        catch {
-            Write-Host "`nCould not elevate to administrator. Continuing without admin rights..." -ForegroundColor Yellow
-            Write-Host "Admin-required tasks will be added to the manual checklist.`n" -ForegroundColor Gray
-            Start-Sleep -Seconds 2
-        }
-    }
-    else {
-        Write-Host "`nContinuing without administrator privileges..." -ForegroundColor Yellow
-        Write-Host "Some tasks will be added to the manual checklist.`n" -ForegroundColor Gray
+function Restart-AsAdministrator {
+    if ($Script:IsAdmin) {
+        Write-Host "  Already running as Administrator." -ForegroundColor Green
         Start-Sleep -Seconds 1
+        return
+    }
+
+    Write-Host "  Requesting administrator privileges..." -ForegroundColor Yellow
+    $scriptPath = $PSCommandPath
+    $elevatedArgs = "-ExecutionPolicy Bypass -File `"$scriptPath`" -TargetUserProfile `"$env:USERPROFILE`" -TargetUserName `"$env:USERNAME`" -TargetAppDataRoaming `"$env:APPDATA`" -TargetAppDataLocal `"$env:LOCALAPPDATA`""
+    if ($DestinationPath) { $elevatedArgs += " -DestinationPath `"$DestinationPath`"" }
+    if ($OnlineMaxTransferGB -gt 0) { $elevatedArgs += " -OnlineMaxTransferGB $OnlineMaxTransferGB" }
+
+    try {
+        Start-Process PowerShell -Verb RunAs -ArgumentList $elevatedArgs -ErrorAction Stop
+        exit
+    }
+    catch {
+        Write-Host "  Could not elevate. Continuing without administrator rights." -ForegroundColor Yellow
+        Start-Sleep -Seconds 2
     }
 }
 
@@ -111,13 +93,12 @@ $Script:Config = @{
     # Resolved at runtime from the -TransferMode param or an interactive prompt.
     TransferMode = "Local"
 
-    # Online-mode trimming rules (only applied when TransferMode = "Online")
+    # Online-mode defaults (only applied when TransferMode = "Online")
     Online = @{
-        # Downloads is usually one of the two largest folders. Cap it: if it
-        # exceeds this size, omit it entirely (per IT guidance) and log a manual task.
-        DownloadsCapGB   = 5
         MaxTransferGB    = 5
-        OverrideDownloadsCap = $false
+        # Downloads is a standalone backup toggle and is disabled by default
+        # for Online transfers.
+        Downloads = $false
         # Lotus Notes local data is the other usual heavy hitter; omit by default.
         SkipLotusNotes   = $true
         # Any other user folder above this size prompts the tech (skip / copy anyway).
@@ -140,12 +121,14 @@ $Script:Config = @{
     # time and remain embedded in the single deployment script.
     Backup = @{
         UserData          = $true
+        Downloads         = $true
         AppData           = $true
         LotusNotes        = $true
         SystemSettings    = $true
         InstalledPrograms = $true
         Printers          = $true
-        Chrome            = $true
+        # Off, BookmarksAndPasswords, or FullProfile.
+        Chrome            = "Off"
         Firefox           = $true
         Edge              = $true
         OneDrive          = $true
@@ -175,13 +158,23 @@ foreach ($sectionName in @("Backup", "Import")) {
     }
 }
 
+# Chrome has three choices rather than a simple on/off switch. Keep its
+# allowlist explicit so only supported modes can be compiled into deployments.
+if ($Script:DevelopmentConfig -is [hashtable] -and
+    $Script:DevelopmentConfig.ContainsKey("Backup") -and
+    $Script:DevelopmentConfig.Backup -is [hashtable] -and
+    $Script:DevelopmentConfig.Backup.ContainsKey("Chrome") -and
+    $Script:DevelopmentConfig.Backup.Chrome -in @("Off", "BookmarksAndPasswords", "FullProfile")) {
+    $Script:Config.Backup.Chrome = $Script:DevelopmentConfig.Backup.Chrome
+}
+
 # Online transfer behavior has a nested import-default section. Keep its
 # allowlist separate so config-file additions cannot alter unrelated settings.
 if ($Script:DevelopmentConfig -is [hashtable] -and
     $Script:DevelopmentConfig.ContainsKey("Online") -and
     $Script:DevelopmentConfig.Online -is [hashtable]) {
     $developmentOnline = $Script:DevelopmentConfig.Online
-    foreach ($switchName in @("CreateZipArchive", "StageNetworkTransfersLocally", "OverrideDownloadsCap")) {
+    foreach ($switchName in @("CreateZipArchive", "StageNetworkTransfersLocally", "Downloads")) {
         if ($developmentOnline.ContainsKey($switchName) -and
             $developmentOnline[$switchName] -is [bool]) {
             $Script:Config.Online[$switchName] = $developmentOnline[$switchName]
@@ -206,9 +199,10 @@ if ($OnlineMaxTransferGB -gt 0) {
     $Script:Config.Online.MaxTransferGB = $OnlineMaxTransferGB
 }
 
-function Apply-OnlineImportDefaults {
+function Apply-OnlineTransferDefaults {
     if ($Script:Config.TransferMode -ne "Online") { return }
 
+    $Script:Config.Backup.Downloads = $Script:Config.Online.Downloads
     foreach ($switchName in $Script:Config.Online.Import.Keys) {
         $Script:Config.Import[$switchName] = $Script:Config.Online.Import[$switchName]
     }
@@ -230,20 +224,20 @@ function Show-TransferSettingsMenu {
     # src\00-development-config.psd1.  Values start with the compiled
     # defaults, but any changes made here apply only to the current transfer.
     $settings = @(
-        @{ Section = "Backup"; Key = "UserData";          Label = "User data";          Detail = "Documents, Desktop, Downloads, and other user folders" }
+        @{ Section = "Backup"; Key = "UserData";          Label = "User data";          Detail = "Documents, Desktop, and other user folders" }
+        @{ Section = "Backup"; Key = "Downloads";         Label = "Downloads";          Detail = "Downloads folder" }
         @{ Section = "Backup"; Key = "AppData";           Label = "AppData";            Detail = "Bluebeam, signatures, and Quick Access" }
         @{ Section = "Backup"; Key = "LotusNotes";        Label = "Lotus Notes";        Detail = "Local Lotus Notes data from AppData\\Local" }
         @{ Section = "Backup"; Key = "SystemSettings";    Label = "System settings";    Detail = "Power, drives, personalization, and related settings" }
         @{ Section = "Backup"; Key = "InstalledPrograms"; Label = "Installed programs"; Detail = "Installed-program inventory" }
         @{ Section = "Backup"; Key = "Printers";          Label = "Printers";           Detail = "PrintBRM package and printer connections" }
-        @{ Section = "Backup"; Key = "Chrome";            Label = "Google Chrome";      Detail = "Bookmarks, profile archive, and password-export prompt" }
+        @{ Section = "Backup"; Key = "Chrome"; Type = "ChromeMode"; Label = "Google Chrome"; Detail = "Choose Off, bookmarks + passwords, or full profile" }
         @{ Section = "Backup"; Key = "Firefox";           Label = "Firefox";            Detail = "Firefox profile, bookmarks, logins, extensions, and settings" }
         @{ Section = "Backup"; Key = "Edge";              Label = "Microsoft Edge";     Detail = "Edge bookmarks and profile-specific favorites" }
         @{ Section = "Backup"; Key = "OneDrive";          Label = "OneDrive";           Detail = "Offline file availability check" }
         @{ Section = "Import"; Key = "LotusNotes";        Label = "Import Lotus Notes"; Detail = "Restore exported Lotus local data on the new laptop" }
         @{ Section = "Import"; Key = "DeletePrintBrmAfterImport"; Label = "Delete PrintBRM after import"; Detail = "Remove the printer package after a successful restore" }
         @{ Section = "Online"; Key = "MaxTransferGB"; Type = "Number"; Label = "Online payload limit"; Detail = "Warn before export when selected payload exceeds this many GB" }
-        @{ Section = "Online"; Key = "OverrideDownloadsCap"; Label = "Override Downloads cap"; Detail = "Allow Downloads above the $($Script:Config.Online.DownloadsCapGB) GB Online cap" }
         @{ Section = "Online"; Key = "CreateZipArchive";  Label = "Create ZIP archive"; Detail = "Create a ZIP beside the package (Online transfers only)" }
         @{ Section = "Online"; Key = "StageNetworkTransfersLocally"; Label = "Stage network transfers locally"; Detail = "Build locally, then upload one ZIP to a network destination" }
     )
@@ -256,18 +250,25 @@ function Show-TransferSettingsMenu {
 
         for ($index = 0; $index -lt $settings.Count; $index++) {
             $setting = $settings[$index]
-            if ($index -eq 10) {
+            if ($index -eq 11) {
                 Write-Section "Generated import settings"
             }
-            if ($index -eq 12) {
+            if ($index -eq 13) {
                 Write-Section "Online transfer settings"
             }
 
             $number = ($index + 1).ToString().PadLeft(2)
             $isNumber = $setting.Type -eq "Number"
-            $isEnabled = if ($isNumber) { $false } else { [bool]$Script:Config[$setting.Section][$setting.Key] }
-            $state = if ($isNumber) { "$($Script:Config.Online.MaxTransferGB)GB" } elseif ($isEnabled) { "ON " } else { "OFF" }
-            $color = if ($isNumber) { "Yellow" } elseif ($isEnabled) { "Green" } else { "DarkGray" }
+            $isChromeMode = $setting.Type -eq "ChromeMode"
+            $isEnabled = if ($isNumber -or $isChromeMode) { $false } else { [bool]$Script:Config[$setting.Section][$setting.Key] }
+            $state = if ($isNumber) { "$($Script:Config.Online.MaxTransferGB)GB" } elseif ($isChromeMode) {
+                switch ($Script:Config.Backup.Chrome) {
+                    "BookmarksAndPasswords" { "BOOKMARKS + PASSWORDS" }
+                    "FullProfile" { "FULL PROFILE" }
+                    default { "OFF" }
+                }
+            } elseif ($isEnabled) { "ON " } else { "OFF" }
+            $color = if ($isNumber) { "Yellow" } elseif ($isChromeMode) { if ($Script:Config.Backup.Chrome -eq "Off") { "DarkGray" } else { "Green" } } elseif ($isEnabled) { "Green" } else { "DarkGray" }
             $sizeText = if ($setting.Section -eq "Backup") { "$(Format-FileSize ([long]$estimate.ItemBytes[$setting.Key]))" } else { "" }
 
             Write-Host "  [$number] " -ForegroundColor Cyan -NoNewline
@@ -278,8 +279,8 @@ function Show-TransferSettingsMenu {
         }
 
         Write-Host ""
-        Write-Host "  Select a number to toggle it; select Online payload limit to enter a GB value." -ForegroundColor Gray
-        Write-Host "  Chrome, Firefox, and Edge are independent backup toggles." -ForegroundColor DarkGray
+        Write-Host "  Select a number to toggle it; select Chrome to cycle its backup mode." -ForegroundColor Gray
+        Write-Host "  Chrome can export bookmarks and passwords without copying its full profile." -ForegroundColor DarkGray
         Write-Host "  ZIP archive is ignored for Local transfers." -ForegroundColor DarkGray
         Write-Host "  Import settings are written into the transfer package's generated import script." -ForegroundColor DarkGray
         $selection = (Read-Host "  [S] Start transfer  [Q] Cancel").Trim()
@@ -297,12 +298,40 @@ function Show-TransferSettingsMenu {
                 if ([double]::TryParse($entered, [ref]$value) -and $value -gt 0) { $Script:Config.Online.MaxTransferGB = $value }
                 else { Write-Host "  Enter a positive number of GB." -ForegroundColor Yellow; Start-Sleep -Seconds 1 }
             }
+            elseif ($setting.Type -eq "ChromeMode") {
+                $Script:Config.Backup.Chrome = switch ($Script:Config.Backup.Chrome) {
+                    "Off" { "BookmarksAndPasswords" }
+                    "BookmarksAndPasswords" { "FullProfile" }
+                    default { "Off" }
+                }
+            }
             else { $Script:Config[$setting.Section][$setting.Key] = -not [bool]$Script:Config[$setting.Section][$setting.Key] }
         }
         else {
             Write-Host "  Enter a setting number, S, or Q." -ForegroundColor Yellow
             Start-Sleep -Seconds 1
         }
+    }
+}
+
+function Show-BackupOverview {
+    while ($true) {
+        Clear-StoScreen
+        Write-Section "OVERVIEW OF BACKUP INCLUDING ESTIMATED SIZE"
+        $estimate = Get-TransferPayloadEstimate
+        Write-KeyValue "Transfer mode" $Script:Config.TransferMode
+        Write-KeyValue "Estimated size" (Format-FileSize $estimate.TotalBytes)
+        Write-Host ""
+        $choice = (Read-Host "  [S] Start transfer [C] Change Settings [Q] Cancel").Trim()
+
+        if ($choice -match "^[Ss]$") { return $true }
+        if ($choice -match "^[Qq]$") { return $false }
+        if ($choice -match "^[Cc]$") {
+            if (-not (Show-TransferSettingsMenu)) { return $false }
+            continue
+        }
+        Write-Host "  Enter S, C, or Q." -ForegroundColor Yellow
+        Start-Sleep -Seconds 1
     }
 }
 
