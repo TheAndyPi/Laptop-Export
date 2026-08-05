@@ -337,6 +337,25 @@ function Backup-Printers {
     $exportFile    = Join-Path $printerFolder "Printers.printerExport"
     $brmLog        = Join-Path $DestinationBase "Logs\printbrm_backup.log"
 
+    # A standard-user run can record per-user network connections, but Windows
+    # needs elevation for a complete PrintBRM export of local/direct-IP queues
+    # and their drivers. Flag this up front so it is unmissable in the final
+    # console summary and HTML report, even if PrintBRM produces a partial file.
+    if (-not $Script:IsAdmin) {
+        $Script:PrinterExportWithoutAdmin = $true
+        $printerAdminInstructions = @'
+Administrator rights are required for a complete printer export. Re-run this tool elevated, or deploy the following elevated PowerShell through PDQ.
+
+Export:
+$u=(Get-CimInstance Win32_ComputerSystem).UserName.Split('\')[-1];$f="C:\Users\$u\PrinterBackup\Printers.printerExport";mkdir (Split-Path $f) -Force|Out-Null;& "$env:windir\System32\spool\tools\printbrm.exe" -b -f $f -o force
+
+Import:
+& "$env:windir\System32\spool\tools\printbrm.exe" -r -f "C:\Temp\Printers.printerExport" -o force
+'@
+        Add-Result -Category "Printers" -Item "Printer Export Privileges" -Status "Warning" -Details "PRINTERS EXPORTED WITHOUT ADMIN - NOT ALL PRINTERS ARE PRESENT"
+        Add-ManualTask -Task "PRINTERS EXPORTED WITHOUT ADMIN - NOT ALL PRINTERS ARE PRESENT" -Reason "Administrator rights are needed for a complete PrintBRM export. Per-user network connections may be captured, but local/direct-IP printers and drivers may be missing." -Instructions $printerAdminInstructions
+    }
+
     # A 32-bit PowerShell host is redirected from System32 to SysWOW64.  Use
     # Sysnative first in that case so we always call the native PrintBRM tool.
     $printBrmCandidates = @()

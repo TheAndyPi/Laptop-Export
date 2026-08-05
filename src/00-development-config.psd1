@@ -26,6 +26,12 @@
         DeletePrintBrmAfterImport = $true
     }
 
+    # ZIP creation is available for either transfer mode. Local transfers
+    # default to a folder-only package; Online defaults below turn it on.
+    Transfer = @{
+        CreateZipArchive = $false
+    }
+
     # These values override the regular Import defaults when the technician
     # selects an Online transfer. They can still be changed for one transfer
     # in the runtime settings menu.
@@ -43,7 +49,7 @@
         StageNetworkTransfersLocally = $true
 
         Import = @{
-            LotusNotes                  = $true
+            LotusNotes                  = $false
             DeletePrintBrmAfterImport   = $true
         }
     }

@@ -42,7 +42,7 @@ function Copy-UserFolders {
                         Write-Host ""
                         Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
                         Write-Host "$folder is $folderGB GB (over the $($Script:Config.Online.LargeFolderPromptGB) GB online threshold)." -ForegroundColor White
-                        $ans = Read-Host "    Copy it anyway? (Y = copy / N = skip)"
+                        $ans = Read-UserInput "    Copy it anyway? (Y = copy / N = skip)"
                         if ($ans -notmatch "^[Yy]") {
                             Write-Log "$folder ($folderGB GB) skipped by operator (online mode)" -Level Warning
                             Write-Status $folder "SKIP" "$folderGB GB, skipped by operator"

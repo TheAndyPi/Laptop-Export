@@ -23,7 +23,26 @@ function Test-PathIsSameOrChild {
 function Test-DestinationIsWithinSourceProfile {
     param([string]$Path)
 
-    return Test-PathIsSameOrChild -Path $Path -ParentPath $Script:OriginalUserProfile
+    if (-not (Test-PathIsSameOrChild -Path $Path -ParentPath $Script:OriginalUserProfile)) {
+        return $false
+    }
+
+    # AppData itself is a safe export location because the collector only
+    # copies selected AppData subfolders. Keep the three live AppData trees
+    # protected, however, since placing the package inside one of them could
+    # make a future broad AppData copy recurse into its own output.
+    $appDataRoot = Join-Path $Script:OriginalUserProfile "AppData"
+    if (Test-PathIsSameOrChild -Path $Path -ParentPath $appDataRoot) {
+        foreach ($protectedRoot in @("Local", "Roaming", "LocalLow")) {
+            if (Test-PathIsSameOrChild -Path $Path -ParentPath (Join-Path $appDataRoot $protectedRoot)) {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    return $true
 }
 
 function Show-NativeWindowsFolderPicker {
@@ -187,7 +206,7 @@ function Select-TargetDrive {
     Write-Host "`n  [0] Cancel`n" -ForegroundColor Gray
 
     do {
-        $selection = Read-Host "Select target drive (1-$($drives.Count))"
+        $selection = Read-UserInput "Select target drive (1-$($drives.Count))"
         if ($selection -eq "0") { return $null }
 
         $index = 0
@@ -195,7 +214,7 @@ function Select-TargetDrive {
             $index--
             if ($index -ge 0 -and $index -lt $drives.Count) {
                 $selectedDrive = $drives[$index]
-                $confirm = Read-Host "Proceed with $($selectedDrive.Display)? (Y/N)"
+                $confirm = Read-UserInput "Proceed with $($selectedDrive.Display)? (Y/N)"
                 if ($confirm -match "^[Yy]") { return $selectedDrive.Letter }
             }
         }
@@ -220,6 +239,10 @@ function Select-TargetDestination {
 
     Write-Section "Choose export destination"
     Write-Host "Select a network share, cloud-synced folder, or local folder for the zipped export." -ForegroundColor Gray
+    Write-Host "  Recommended: use an approved network share that the new laptop can reach." -ForegroundColor Cyan
+    Write-Host "  The export is staged and zipped locally, then uploaded as one ZIP when a network share is selected." -ForegroundColor DarkGray
+    Write-Host "  If no share is available, use a temporary folder on C: with ample free space (for example C:\LaptopTransfers)." -ForegroundColor Gray
+    Write-Host "  AppData itself is allowed; avoid Desktop, Downloads, OneDrive, and folders outside AppData\Local, AppData\Roaming, and AppData\LocalLow inside the profile." -ForegroundColor Yellow
 
     $selectedPath = $DestinationPath
     if (-not $selectedPath) {
@@ -234,16 +257,17 @@ function Select-TargetDestination {
         catch {
             # Keep a console fallback for constrained PowerShell hosts.
             Write-Host "Could not open the Windows folder picker: $_" -ForegroundColor Yellow
-            $selectedPath = Read-Host "Enter destination folder path (blank to cancel)"
+            $selectedPath = Read-UserInput "Enter destination folder path (blank to cancel)"
             if (-not $selectedPath) { return $null }
         }
     }
 
-    # Reject before creating anything. Otherwise a destination inside a source
-    # folder causes Robocopy to see its own transfer package.
+    # Reject before creating anything. AppData itself is allowed, but the
+    # active Local/Roaming/LocalLow trees and all other profile locations are
+    # protected from receiving the transfer package.
     if (Test-DestinationIsWithinSourceProfile -Path $selectedPath) {
-        Write-Host "The destination is inside the profile being exported." -ForegroundColor Red
-        Write-Host "Choose a folder outside the source profile to prevent a recursive export. No files were copied." -ForegroundColor Yellow
+        Write-Host "The destination is inside a source folder being exported." -ForegroundColor Red
+        Write-Host "Choose AppData itself or a folder outside AppData\Local, AppData\Roaming, and AppData\LocalLow. No files were copied." -ForegroundColor Yellow
         return $null
     }
 
@@ -259,8 +283,8 @@ function Select-TargetDestination {
     }
 
     if (Test-DestinationIsWithinSourceProfile -Path $selectedPath) {
-        Write-Host "The destination cannot be inside the profile being exported." -ForegroundColor Red
-        Write-Host "Choose a different folder to prevent a recursive export. No files were copied." -ForegroundColor Yellow
+        Write-Host "The destination is inside a source folder being exported." -ForegroundColor Red
+        Write-Host "Choose AppData itself or a folder outside AppData\Local, AppData\Roaming, and AppData\LocalLow. No files were copied." -ForegroundColor Yellow
         return $null
     }
 
@@ -489,11 +513,6 @@ function Publish-TransferArchive {
 function New-TransferArchive {
     param([string]$TransferBase)
 
-    if ($Script:Config.TransferMode -ne "Online") {
-        Write-Log "Skipping ZIP archive for Local transfer" -Level Info
-        return $null
-    }
-
     $parentFolder = Split-Path -Path $TransferBase -Parent
     $archiveName = "$(Split-Path -Path $TransferBase -Leaf).zip"
     $archivePath = Join-Path $parentFolder $archiveName
@@ -586,14 +605,14 @@ function Resolve-TransferMode {
     Write-Host "- full copy (USB / on-site)" -ForegroundColor DarkGray
     Write-Host "  [2] Online " -ForegroundColor Cyan -NoNewline
     Write-Host "- trimmed for slow/remote links (Downloads disabled by default, skips Lotus)" -ForegroundColor DarkGray
-    Write-Host "  [0] Administrator" -ForegroundColor Cyan -NoNewline
+    Write-Host "  [3] Administrator" -ForegroundColor Cyan -NoNewline
     Write-Host "- restart with administrator privileges" -ForegroundColor DarkGray
     Write-Host ""
     do {
-        $m = Read-Host "  Select transfer mode (0-2)"
+        $m = Read-UserInput "  Select transfer mode (1-3)"
         if ($m -eq "1") { $Script:Config.TransferMode = "Local"; break }
         if ($m -eq "2") { $Script:Config.TransferMode = "Online"; break }
-        if ($m -eq "0") { Restart-AsAdministrator; continue }
+        if ($m -eq "3") { Restart-AsAdministrator; continue }
         Write-Host "  Invalid selection." -ForegroundColor Red
     } while ($true)
 }

@@ -24,7 +24,7 @@
     The username to export. Used when running elevated to preserve original user context.
 
 .NOTES
-    Version: 0.6
+    Version: 0.8
     Author: STO IT
     Run as: The user being transferred (IT admin logged in as user)
 #>
@@ -135,6 +135,12 @@ $Script:DevelopmentConfig = @{
         DeletePrintBrmAfterImport = $true
     }
 
+    # ZIP creation is available for either transfer mode. Local transfers
+    # default to a folder-only package; Online defaults below turn it on.
+    Transfer = @{
+        CreateZipArchive = $false
+    }
+
     # These values override the regular Import defaults when the technician
     # selects an Online transfer. They can still be changed for one transfer
     # in the runtime settings menu.
@@ -152,7 +158,7 @@ $Script:DevelopmentConfig = @{
         StageNetworkTransfersLocally = $true
 
         Import = @{
-            LotusNotes                  = $true
+            LotusNotes                  = $false
             DeletePrintBrmAfterImport   = $true
         }
     }
@@ -302,6 +308,12 @@ function Clear-StoScreen {
     try { Clear-Host -ErrorAction Stop } catch { }
 }
 
+function Read-UserInput {
+    param([string]$Prompt)
+    Write-Host $Prompt
+    return Read-Host "  >"
+}
+
 # ============================================================================
 # ADMIN ELEVATION
 # ============================================================================
@@ -352,7 +364,7 @@ function Restart-AsAdministrator {
 # ============================================================================
 
 $Script:Config = @{
-    Version = "0.7"
+    Version = "0.8"
     TransferFolderName = "LaptopTransfer_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 
     # Printer driver binaries in the PrintBRM package. Network printers also
@@ -398,6 +410,11 @@ $Script:Config = @{
     TransferMode = "Local"
 
     # Online-mode defaults (only applied when TransferMode = "Online")
+    Transfer = @{
+        # ZIP creation is available for Local and Online transfers. Local
+        # transfers default to a folder-only package.
+        CreateZipArchive = $false
+    }
     Online = @{
         MaxTransferGB    = 5
         # Downloads is a standalone backup toggle and is disabled by default
@@ -410,7 +427,7 @@ $Script:Config = @{
         # Skip the OneDrive force-hydration step (it would re-download everything
         # over the same constrained link).
         SkipOneDriveHydration = $true
-        # Create a portable ZIP beside the transfer folder after an online export.
+        # Online transfers create a portable ZIP by default.
         CreateZipArchive = $true
         # Avoid direct file-by-file exports to a network destination.
         StageNetworkTransfersLocally = $true
@@ -445,7 +462,7 @@ $Script:Config = @{
 
 # Apply only known Boolean development switches so invalid additions cannot
 # unexpectedly change the behavior of a technician deployment.
-foreach ($sectionName in @("Backup", "Import")) {
+foreach ($sectionName in @("Backup", "Import", "Transfer")) {
     if (-not ($Script:DevelopmentConfig -is [hashtable]) -or
         -not $Script:DevelopmentConfig.ContainsKey($sectionName) -or
         -not ($Script:DevelopmentConfig[$sectionName] -is [hashtable])) {
@@ -507,6 +524,7 @@ function Apply-OnlineTransferDefaults {
     if ($Script:Config.TransferMode -ne "Online") { return }
 
     $Script:Config.Backup.Downloads = $Script:Config.Online.Downloads
+    $Script:Config.Transfer.CreateZipArchive = $Script:Config.Online.CreateZipArchive
     foreach ($switchName in $Script:Config.Online.Import.Keys) {
         $Script:Config.Import[$switchName] = $Script:Config.Online.Import[$switchName]
     }
@@ -521,6 +539,127 @@ function Add-DisabledBackupResult {
     Write-Log "$Item backup disabled by configuration" -Level Info
     Write-Status $Item "SKIP" "disabled by config"
     Add-Result -Category $Category -Item $Item -Status "Skipped" -Details "Disabled by configuration"
+}
+
+# Payload sizing can take a while on large profiles.  Keep it in a separate
+# process so the technician can continue through the menus while it runs.
+$Script:PayloadEstimateJob = $null
+$Script:PayloadEstimate = $null
+
+function Start-TransferPayloadEstimate {
+    if ($Script:PayloadEstimateJob) {
+        try {
+            if ($Script:PayloadEstimateJob.State -eq "Running") { Stop-Job -Job $Script:PayloadEstimateJob -ErrorAction SilentlyContinue }
+            Remove-Job -Job $Script:PayloadEstimateJob -Force -ErrorAction SilentlyContinue
+        }
+        catch { }
+    }
+
+    $Script:PayloadEstimate = $null
+    $snapshot = @{
+        UserProfile = $Script:OriginalUserProfile
+        AppDataRoaming = $Script:OriginalAppDataRoaming
+        AppDataLocal = $Script:OriginalAppDataLocal
+        UserFolders = @($Script:Config.UserFolders)
+        BluebeamPaths = @($Script:Config.BluebeamPaths)
+        AppDataRoamingPaths = @($Script:Config.AppDataRoaming.Values)
+        Backup = @{}
+        TransferMode = $Script:Config.TransferMode
+        SkipLotusNotes = [bool]$Script:Config.Online.SkipLotusNotes
+    }
+    foreach ($key in $Script:Config.Backup.Keys) { $snapshot.Backup[$key] = $Script:Config.Backup[$key] }
+
+    $Script:PayloadEstimateJob = Start-Job -ArgumentList $snapshot -ScriptBlock {
+        param($Config)
+        function Get-Size([string]$Path) {
+            if (-not (Test-Path -LiteralPath $Path)) { return [long]0 }
+            $sum = (Get-ChildItem -LiteralPath $Path -Recurse -File -Force -ErrorAction SilentlyContinue |
+                Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) } |
+                Measure-Object -Property Length -Sum).Sum
+            if ($null -eq $sum) { return [long]0 }
+            return [long]$sum
+        }
+
+        $sizes = @{}
+        foreach ($key in @("UserData","Downloads","AppData","LotusNotes","SystemSettings","InstalledPrograms","Printers","Chrome","Firefox","Edge","OneDrive")) { $sizes[$key] = [long]0 }
+        if ($Config.Backup.UserData) {
+            foreach ($folder in $Config.UserFolders) {
+                if ($folder -ne "Downloads") { $sizes.UserData += Get-Size (Join-Path $Config.UserProfile $folder) }
+            }
+        }
+        if ($Config.Backup.Downloads) { $sizes.Downloads = Get-Size (Join-Path $Config.UserProfile "Downloads") }
+        if ($Config.Backup.AppData) {
+            foreach ($path in $Config.BluebeamPaths) {
+                $candidate = Join-Path $Config.AppDataRoaming $path
+                if (Test-Path -LiteralPath $candidate) { $sizes.AppData += Get-Size $candidate; break }
+            }
+            foreach ($path in $Config.AppDataRoamingPaths) { $sizes.AppData += Get-Size (Join-Path $Config.AppDataRoaming $path) }
+        }
+        if ($Config.Backup.LotusNotes -and $Config.Backup.AppData -and -not ($Config.TransferMode -eq "Online" -and $Config.SkipLotusNotes)) { $sizes.LotusNotes = Get-Size (Join-Path $Config.AppDataLocal "Lotus") }
+        if ($Config.Backup.Chrome -eq "FullProfile") { $sizes.Chrome = Get-Size (Join-Path $Config.AppDataLocal "Google\Chrome\User Data") }
+        elseif ($Config.Backup.Chrome -eq "BookmarksAndPasswords") {
+            $root = Join-Path $Config.AppDataLocal "Google\Chrome\User Data"
+            $sizes.Chrome = [long]((Get-ChildItem -LiteralPath $root -Recurse -File -Filter "Bookmarks" -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum)
+        }
+        if ($Config.Backup.Firefox) { $sizes.Firefox = (Get-Size (Join-Path $Config.AppDataRoaming "Mozilla\Firefox")) + (Get-Size (Join-Path $Config.AppDataLocal "Mozilla\Firefox")) }
+        if ($Config.Backup.Edge) {
+            $root = Join-Path $Config.AppDataLocal "Microsoft\Edge\User Data"
+            $sizes.Edge = [long]((Get-ChildItem -LiteralPath $root -Recurse -File -Filter "Bookmarks" -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum)
+        }
+        [PSCustomObject]@{ ItemBytes = $sizes; TotalBytes = [long](($sizes.Values | Measure-Object -Sum).Sum) }
+    }
+}
+
+function Update-TransferPayloadEstimate {
+    if (-not $Script:PayloadEstimateJob -or $Script:PayloadEstimate) { return $false }
+    if ($Script:PayloadEstimateJob.State -notin @("Completed", "Failed", "Stopped")) { return $false }
+    try {
+        $result = Receive-Job -Job $Script:PayloadEstimateJob -ErrorAction Stop
+        if ($result) {
+            $Script:PayloadEstimate = @{ ItemBytes = @{}; TotalBytes = [long]$result.TotalBytes }
+            foreach ($key in $result.ItemBytes.Keys) { $Script:PayloadEstimate.ItemBytes[$key] = [long]$result.ItemBytes[$key] }
+        }
+    }
+    catch { Write-Log "Background size estimate failed; it will be recalculated before export: $_" -Level Warning }
+    finally {
+        Remove-Job -Job $Script:PayloadEstimateJob -Force -ErrorAction SilentlyContinue
+        $Script:PayloadEstimateJob = $null
+    }
+    return ($null -ne $Script:PayloadEstimate)
+}
+
+function Wait-TransferPayloadEstimate {
+    while (-not $Script:PayloadEstimate) {
+        if (Update-TransferPayloadEstimate) { break }
+        if (-not $Script:PayloadEstimateJob) {
+            Write-Log "Using foreground size calculation after the background estimate did not complete." -Level Warning
+            return Get-TransferPayloadEstimate
+        }
+        Start-Sleep -Milliseconds 150
+    }
+    return $Script:PayloadEstimate
+}
+
+function Read-MenuChoiceWhileEstimating {
+    param([string]$Prompt)
+    Write-Host $Prompt
+    Write-Host "  > " -NoNewline
+    try {
+        $input = [System.Text.StringBuilder]::new()
+        while ($true) {
+            if (Update-TransferPayloadEstimate) { return @{ Choice = $input.ToString(); EstimateUpdated = $true } }
+            if ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                if ($key.Key -eq [ConsoleKey]::Enter) { Write-Host ""; return @{ Choice = $input.ToString(); EstimateUpdated = $false } }
+                if ($key.Key -eq [ConsoleKey]::Backspace -and $input.Length -gt 0) { [void]$input.Remove($input.Length - 1, 1); Write-Host "`b `b" -NoNewline; continue }
+                if (-not [char]::IsControl($key.KeyChar)) { [void]$input.Append($key.KeyChar); Write-Host $key.KeyChar -NoNewline }
+            }
+            Start-Sleep -Milliseconds 75
+        }
+    }
+    catch {
+        return @{ Choice = (Read-Host "").Trim(); EstimateUpdated = $false }
+    }
 }
 
 function Show-TransferSettingsMenu {
@@ -542,7 +681,7 @@ function Show-TransferSettingsMenu {
         @{ Section = "Import"; Key = "LotusNotes";        Label = "Import Lotus Notes"; Detail = "Restore exported Lotus local data on the new laptop" }
         @{ Section = "Import"; Key = "DeletePrintBrmAfterImport"; Label = "Delete PrintBRM after import"; Detail = "Remove the printer package after a successful restore" }
         @{ Section = "Online"; Key = "MaxTransferGB"; Type = "Number"; Label = "Online payload limit"; Detail = "Warn before export when selected payload exceeds this many GB" }
-        @{ Section = "Online"; Key = "CreateZipArchive";  Label = "Create ZIP archive"; Detail = "Create a ZIP beside the package (Online transfers only)" }
+        @{ Section = "Transfer"; Key = "CreateZipArchive";  Label = "Create ZIP archive"; Detail = "Create a ZIP beside the package (off by default for Local)" }
         @{ Section = "Online"; Key = "StageNetworkTransfersLocally"; Label = "Stage network transfers locally"; Detail = "Build locally, then upload one ZIP to a network destination" }
     )
 
@@ -550,7 +689,8 @@ function Show-TransferSettingsMenu {
         Clear-StoScreen
         Write-Banner -Title "Transfer Settings" -Subtitle "$($Script:Config.TransferMode) transfer - changes apply to this transfer only"
         Write-Section "Backup settings"
-        $estimate = Get-TransferPayloadEstimate
+        Update-TransferPayloadEstimate | Out-Null
+        $estimate = $Script:PayloadEstimate
 
         for ($index = 0; $index -lt $settings.Count; $index++) {
             $setting = $settings[$index]
@@ -573,7 +713,7 @@ function Show-TransferSettingsMenu {
                 }
             } elseif ($isEnabled) { "ON " } else { "OFF" }
             $color = if ($isNumber) { "Yellow" } elseif ($isChromeMode) { if ($Script:Config.Backup.Chrome -eq "Off") { "DarkGray" } else { "Green" } } elseif ($isEnabled) { "Green" } else { "DarkGray" }
-            $sizeText = if ($setting.Section -eq "Backup") { "$(Format-FileSize ([long]$estimate.ItemBytes[$setting.Key]))" } else { "" }
+            $sizeText = if ($setting.Section -eq "Backup" -and $estimate) { "$(Format-FileSize ([long]$estimate.ItemBytes[$setting.Key]))" } elseif ($setting.Section -eq "Backup") { "calculating" } else { "" }
 
             Write-Host "  [$number] " -ForegroundColor Cyan -NoNewline
             Write-Host "$state " -ForegroundColor $color -NoNewline
@@ -585,9 +725,11 @@ function Show-TransferSettingsMenu {
         Write-Host ""
         Write-Host "  Select a number to toggle it; select Chrome to cycle its backup mode." -ForegroundColor Gray
         Write-Host "  Chrome can export bookmarks and passwords without copying its full profile." -ForegroundColor DarkGray
-        Write-Host "  ZIP archive is ignored for Local transfers." -ForegroundColor DarkGray
+        Write-Host "  ZIP archive can be created for either mode; it is off by default for Local transfers." -ForegroundColor DarkGray
         Write-Host "  Import settings are written into the transfer package's generated import script." -ForegroundColor DarkGray
-        $selection = (Read-Host "  [S] Start transfer  [Q] Cancel").Trim()
+        $menuInput = Read-MenuChoiceWhileEstimating -Prompt "  [S] Start transfer  [Q] Cancel"
+        if ($menuInput.EstimateUpdated) { continue }
+        $selection = $menuInput.Choice.Trim()
 
         if ($selection -match "^[Ss]$") { return $true }
         if ($selection -match "^[Qq]$") { return $false }
@@ -598,7 +740,7 @@ function Show-TransferSettingsMenu {
             $setting = $settings[$selectedIndex - 1]
             if ($setting.Type -eq "Number") {
                 $value = 0.0
-                $entered = Read-Host "  Enter Online payload limit in GB (current: $($Script:Config.Online.MaxTransferGB))"
+                $entered = Read-UserInput "  Enter Online payload limit in GB (current: $($Script:Config.Online.MaxTransferGB))"
                 if ([double]::TryParse($entered, [ref]$value) -and $value -gt 0) { $Script:Config.Online.MaxTransferGB = $value }
                 else { Write-Host "  Enter a positive number of GB." -ForegroundColor Yellow; Start-Sleep -Seconds 1 }
             }
@@ -610,6 +752,7 @@ function Show-TransferSettingsMenu {
                 }
             }
             else { $Script:Config[$setting.Section][$setting.Key] = -not [bool]$Script:Config[$setting.Section][$setting.Key] }
+            Start-TransferPayloadEstimate
         }
         else {
             Write-Host "  Enter a setting number, S, or Q." -ForegroundColor Yellow
@@ -622,19 +765,22 @@ function Show-BackupOverview {
     while ($true) {
         Clear-StoScreen
         Write-Section "OVERVIEW OF BACKUP INCLUDING ESTIMATED SIZE"
-        $estimate = Get-TransferPayloadEstimate
+        Update-TransferPayloadEstimate | Out-Null
+        $estimate = $Script:PayloadEstimate
         Write-KeyValue "Transfer mode" $Script:Config.TransferMode
-        Write-KeyValue "Estimated size" (Format-FileSize $estimate.TotalBytes)
+        Write-KeyValue "Estimated size" $(if ($estimate) { Format-FileSize $estimate.TotalBytes } else { "Calculating in background..." })
         Write-Host ""
-        $choice = (Read-Host "  [S] Start transfer [C] Change Settings [Q] Cancel").Trim()
+        $menuInput = Read-MenuChoiceWhileEstimating -Prompt "  [1] Start transfer  [2] Change settings  [3] Cancel"
+        if ($menuInput.EstimateUpdated) { continue }
+        $choice = $menuInput.Choice.Trim()
 
-        if ($choice -match "^[Ss]$") { return $true }
-        if ($choice -match "^[Qq]$") { return $false }
-        if ($choice -match "^[Cc]$") {
+        if ($choice -eq "1") { return $true }
+        if ($choice -eq "3") { return $false }
+        if ($choice -eq "2") {
             if (-not (Show-TransferSettingsMenu)) { return $false }
             continue
         }
-        Write-Host "  Enter S, C, or Q." -ForegroundColor Yellow
+        Write-Host "  Enter 1, 2, or 3." -ForegroundColor Yellow
         Start-Sleep -Seconds 1
     }
 }
@@ -931,7 +1077,26 @@ function Test-PathIsSameOrChild {
 function Test-DestinationIsWithinSourceProfile {
     param([string]$Path)
 
-    return Test-PathIsSameOrChild -Path $Path -ParentPath $Script:OriginalUserProfile
+    if (-not (Test-PathIsSameOrChild -Path $Path -ParentPath $Script:OriginalUserProfile)) {
+        return $false
+    }
+
+    # AppData itself is a safe export location because the collector only
+    # copies selected AppData subfolders. Keep the three live AppData trees
+    # protected, however, since placing the package inside one of them could
+    # make a future broad AppData copy recurse into its own output.
+    $appDataRoot = Join-Path $Script:OriginalUserProfile "AppData"
+    if (Test-PathIsSameOrChild -Path $Path -ParentPath $appDataRoot) {
+        foreach ($protectedRoot in @("Local", "Roaming", "LocalLow")) {
+            if (Test-PathIsSameOrChild -Path $Path -ParentPath (Join-Path $appDataRoot $protectedRoot)) {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    return $true
 }
 
 function Show-NativeWindowsFolderPicker {
@@ -1095,7 +1260,7 @@ function Select-TargetDrive {
     Write-Host "`n  [0] Cancel`n" -ForegroundColor Gray
 
     do {
-        $selection = Read-Host "Select target drive (1-$($drives.Count))"
+        $selection = Read-UserInput "Select target drive (1-$($drives.Count))"
         if ($selection -eq "0") { return $null }
 
         $index = 0
@@ -1103,7 +1268,7 @@ function Select-TargetDrive {
             $index--
             if ($index -ge 0 -and $index -lt $drives.Count) {
                 $selectedDrive = $drives[$index]
-                $confirm = Read-Host "Proceed with $($selectedDrive.Display)? (Y/N)"
+                $confirm = Read-UserInput "Proceed with $($selectedDrive.Display)? (Y/N)"
                 if ($confirm -match "^[Yy]") { return $selectedDrive.Letter }
             }
         }
@@ -1128,6 +1293,10 @@ function Select-TargetDestination {
 
     Write-Section "Choose export destination"
     Write-Host "Select a network share, cloud-synced folder, or local folder for the zipped export." -ForegroundColor Gray
+    Write-Host "  Recommended: use an approved network share that the new laptop can reach." -ForegroundColor Cyan
+    Write-Host "  The export is staged and zipped locally, then uploaded as one ZIP when a network share is selected." -ForegroundColor DarkGray
+    Write-Host "  If no share is available, use a temporary folder on C: with ample free space (for example C:\LaptopTransfers)." -ForegroundColor Gray
+    Write-Host "  AppData itself is allowed; avoid Desktop, Downloads, OneDrive, and folders outside AppData\Local, AppData\Roaming, and AppData\LocalLow inside the profile." -ForegroundColor Yellow
 
     $selectedPath = $DestinationPath
     if (-not $selectedPath) {
@@ -1142,16 +1311,17 @@ function Select-TargetDestination {
         catch {
             # Keep a console fallback for constrained PowerShell hosts.
             Write-Host "Could not open the Windows folder picker: $_" -ForegroundColor Yellow
-            $selectedPath = Read-Host "Enter destination folder path (blank to cancel)"
+            $selectedPath = Read-UserInput "Enter destination folder path (blank to cancel)"
             if (-not $selectedPath) { return $null }
         }
     }
 
-    # Reject before creating anything. Otherwise a destination inside a source
-    # folder causes Robocopy to see its own transfer package.
+    # Reject before creating anything. AppData itself is allowed, but the
+    # active Local/Roaming/LocalLow trees and all other profile locations are
+    # protected from receiving the transfer package.
     if (Test-DestinationIsWithinSourceProfile -Path $selectedPath) {
-        Write-Host "The destination is inside the profile being exported." -ForegroundColor Red
-        Write-Host "Choose a folder outside the source profile to prevent a recursive export. No files were copied." -ForegroundColor Yellow
+        Write-Host "The destination is inside a source folder being exported." -ForegroundColor Red
+        Write-Host "Choose AppData itself or a folder outside AppData\Local, AppData\Roaming, and AppData\LocalLow. No files were copied." -ForegroundColor Yellow
         return $null
     }
 
@@ -1167,8 +1337,8 @@ function Select-TargetDestination {
     }
 
     if (Test-DestinationIsWithinSourceProfile -Path $selectedPath) {
-        Write-Host "The destination cannot be inside the profile being exported." -ForegroundColor Red
-        Write-Host "Choose a different folder to prevent a recursive export. No files were copied." -ForegroundColor Yellow
+        Write-Host "The destination is inside a source folder being exported." -ForegroundColor Red
+        Write-Host "Choose AppData itself or a folder outside AppData\Local, AppData\Roaming, and AppData\LocalLow. No files were copied." -ForegroundColor Yellow
         return $null
     }
 
@@ -1397,11 +1567,6 @@ function Publish-TransferArchive {
 function New-TransferArchive {
     param([string]$TransferBase)
 
-    if ($Script:Config.TransferMode -ne "Online") {
-        Write-Log "Skipping ZIP archive for Local transfer" -Level Info
-        return $null
-    }
-
     $parentFolder = Split-Path -Path $TransferBase -Parent
     $archiveName = "$(Split-Path -Path $TransferBase -Leaf).zip"
     $archivePath = Join-Path $parentFolder $archiveName
@@ -1494,14 +1659,14 @@ function Resolve-TransferMode {
     Write-Host "- full copy (USB / on-site)" -ForegroundColor DarkGray
     Write-Host "  [2] Online " -ForegroundColor Cyan -NoNewline
     Write-Host "- trimmed for slow/remote links (Downloads disabled by default, skips Lotus)" -ForegroundColor DarkGray
-    Write-Host "  [0] Administrator" -ForegroundColor Cyan -NoNewline
+    Write-Host "  [3] Administrator" -ForegroundColor Cyan -NoNewline
     Write-Host "- restart with administrator privileges" -ForegroundColor DarkGray
     Write-Host ""
     do {
-        $m = Read-Host "  Select transfer mode (0-2)"
+        $m = Read-UserInput "  Select transfer mode (1-3)"
         if ($m -eq "1") { $Script:Config.TransferMode = "Local"; break }
         if ($m -eq "2") { $Script:Config.TransferMode = "Online"; break }
-        if ($m -eq "0") { Restart-AsAdministrator; continue }
+        if ($m -eq "3") { Restart-AsAdministrator; continue }
         Write-Host "  Invalid selection." -ForegroundColor Red
     } while ($true)
 }
@@ -1550,7 +1715,7 @@ function Copy-UserFolders {
                         Write-Host ""
                         Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
                         Write-Host "$folder is $folderGB GB (over the $($Script:Config.Online.LargeFolderPromptGB) GB online threshold)." -ForegroundColor White
-                        $ans = Read-Host "    Copy it anyway? (Y = copy / N = skip)"
+                        $ans = Read-UserInput "    Copy it anyway? (Y = copy / N = skip)"
                         if ($ans -notmatch "^[Yy]") {
                             Write-Log "$folder ($folderGB GB) skipped by operator (online mode)" -Level Warning
                             Write-Status $folder "SKIP" "$folderGB GB, skipped by operator"
@@ -2298,6 +2463,25 @@ function Backup-Printers {
     $exportFile    = Join-Path $printerFolder "Printers.printerExport"
     $brmLog        = Join-Path $DestinationBase "Logs\printbrm_backup.log"
 
+    # A standard-user run can record per-user network connections, but Windows
+    # needs elevation for a complete PrintBRM export of local/direct-IP queues
+    # and their drivers. Flag this up front so it is unmissable in the final
+    # console summary and HTML report, even if PrintBRM produces a partial file.
+    if (-not $Script:IsAdmin) {
+        $Script:PrinterExportWithoutAdmin = $true
+        $printerAdminInstructions = @'
+Administrator rights are required for a complete printer export. Re-run this tool elevated, or deploy the following elevated PowerShell through PDQ.
+
+Export:
+$u=(Get-CimInstance Win32_ComputerSystem).UserName.Split('\')[-1];$f="C:\Users\$u\PrinterBackup\Printers.printerExport";mkdir (Split-Path $f) -Force|Out-Null;& "$env:windir\System32\spool\tools\printbrm.exe" -b -f $f -o force
+
+Import:
+& "$env:windir\System32\spool\tools\printbrm.exe" -r -f "C:\Temp\Printers.printerExport" -o force
+'@
+        Add-Result -Category "Printers" -Item "Printer Export Privileges" -Status "Warning" -Details "PRINTERS EXPORTED WITHOUT ADMIN - NOT ALL PRINTERS ARE PRESENT"
+        Add-ManualTask -Task "PRINTERS EXPORTED WITHOUT ADMIN - NOT ALL PRINTERS ARE PRESENT" -Reason "Administrator rights are needed for a complete PrintBRM export. Per-user network connections may be captured, but local/direct-IP printers and drivers may be missing." -Instructions $printerAdminInstructions
+    }
+
     # A 32-bit PowerShell host is redirected from System32 to SysWOW64.  Use
     # Sysnative first in that case so we always call the native PrintBRM tool.
     $printBrmCandidates = @()
@@ -2523,7 +2707,7 @@ function Request-BrowserClose {
 
     Write-Host ""
     Write-Host "  $DisplayName is open. Close it to capture its profile databases consistently." -ForegroundColor Yellow
-    $response = Read-Host "  Close $DisplayName, then press Enter to continue (S to copy while it is open)"
+    $response = Read-UserInput "  Close $DisplayName, then press Enter to continue (S to copy while it is open)"
     $processes = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
     if ($processes.Count -eq 0) { return $true }
 
@@ -2592,7 +2776,7 @@ function Invoke-ChromePasswordExportPrompt {
     Write-Host "  Chrome's own export is the supported transfer method: it will request Windows authentication." -ForegroundColor Yellow
     Write-Host "  Save the resulting CSV only in: $passwordExportPath" -ForegroundColor Cyan
 
-    $exportNow = Read-Host "  Open Chrome Password Manager now to export passwords? (Y/N)"
+    $exportNow = Read-UserInput "  Open Chrome Password Manager now to export passwords? (Y/N)"
     if ($exportNow -notmatch '^[Yy]') {
         $reason = if ($HasProfileArchive) { "Chrome passwords remain encrypted in the raw profile backup" } else { "Chrome passwords require Chrome's native export" }
         $detail = if ($HasProfileArchive) { "Native Chrome export declined; raw encrypted profile backup is included" } else { "Native Chrome export declined; no Chrome profile archive was selected" }
@@ -2618,7 +2802,7 @@ On the old laptop, while signed in as the original Windows user:
     try {
         Start-Process "chrome.exe" "chrome://password-manager/settings" -ErrorAction Stop
         Write-Host "  Complete Chrome's export, choose the folder shown above, then return here." -ForegroundColor Gray
-        [void](Read-Host "  Press Enter after saving the CSV (S to skip)")
+        [void](Read-UserInput "  Press Enter after saving the CSV (S to skip)")
     }
     catch {
         Write-Log "Could not open Chrome Password Manager: $_" -Level Warning
@@ -2701,7 +2885,14 @@ function Copy-BrowserData {
 
         if ($Script:Config.Backup.Chrome -ne "FullProfile" -or -not $result.Aborted) {
             $canLaunchChromeForOriginalUser = (-not $Script:IsAdmin) -or ($Script:OriginalUserProfile -eq $env:USERPROFILE)
-            Invoke-ChromePasswordExportPrompt -BrowserPath $browserPath -CanLaunchChromeForOriginalUser $canLaunchChromeForOriginalUser -HasProfileArchive ($Script:Config.Backup.Chrome -eq "FullProfile")
+            # Native password export is the only export step that requires the
+            # original user's participation. Defer it until all automatic
+            # collection is complete, immediately before package finalization.
+            $Script:DeferredChromePasswordExport = @{
+                BrowserPath = $browserPath
+                CanLaunchChromeForOriginalUser = $canLaunchChromeForOriginalUser
+                HasProfileArchive = ($Script:Config.Backup.Chrome -eq "FullProfile")
+            }
         }
     }
     else {
@@ -2972,7 +3163,7 @@ function New-ImportScript {
     - Desktop wallpaper
     - Chrome/Edge bookmarks (HTML files for manual import)
     - Chrome password-export CSV files (manual native Chrome import)
-    - Chrome profile archive retained for recovery/reference (not auto-restored)
+    - Full Chrome profile archives (extensions, settings, and profile layout)
     - Firefox profile data (bookmarks, logins, extensions, settings, and history)
 
 .PARAMETER TestMode
@@ -3075,6 +3266,12 @@ function Write-KeyValue {
     Write-Host $Value -ForegroundColor White
 }
 
+function Read-UserInput {
+    param([string]$Prompt)
+    Write-Host $Prompt
+    return Read-Host "  >"
+}
+
 function Write-SummaryCard {
     param([int]$Success, [int]$Warning, [int]$Errors, [int]$Skipped, [string]$Duration, [int]$Width = $Script:Theme.Width)
     $bx = $Script:Theme.Box; $inner = $Width - 2
@@ -3115,6 +3312,7 @@ $Script:Results = @{
     Actions = @()
     Warnings = @()
     Errors = @()
+    ManualTasks = @()
     OriginalUser = "{USERNAME}"
     OriginalComputer = "{COMPUTERNAME}"
 }
@@ -3123,6 +3321,7 @@ $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $userProfile = $env:USERPROFILE
 $logFile = Join-Path $scriptPath "ImportLog.txt"
 $importLotusNotes = [bool]::Parse('{IMPORT_LOTUS_NOTES}')
+$isOnlineTransfer = [bool]::Parse('{IS_ONLINE_TRANSFER}')
 # Firefox is restored whenever its independently-selected backup payload is
 # present. There is no separate import toggle to keep in sync.
 $importFirefox = $true
@@ -3150,6 +3349,45 @@ function Add-Result {
         Item = $Item
         Status = $Status
         Details = $Details
+    }
+}
+
+function Invoke-ChromePasswordImport {
+    $chromePasswordExportPath = Join-Path $scriptPath "BrowserData\Chrome\PasswordExport"
+    $chromePasswordCsvs = @(Get-ChildItem -LiteralPath $chromePasswordExportPath -Filter "*.csv" -File -Force -ErrorAction SilentlyContinue)
+    if ($chromePasswordCsvs.Count -eq 0) { return }
+
+    Write-Host ""
+    Write-Section "Chrome password import"
+    Write-Host "  Chrome password export detected - this CSV is plaintext. Keep the transfer package secure." -ForegroundColor Yellow
+    foreach ($chromePasswordCsv in $chromePasswordCsvs) { Write-Host "    File: $($chromePasswordCsv.FullName)" -ForegroundColor Gray }
+    Write-Host "    In Chrome: Passwords and autofill > Google Password Manager > Settings > Import passwords." -ForegroundColor Gray
+    if ($TestMode) {
+        Write-Log "Chrome passwords - Would make $($chromePasswordCsvs.Count) CSV file(s) available for native import" -Level "Info"
+        Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "TestMode" -Details "$($chromePasswordCsvs.Count) plaintext CSV file(s); manual native Chrome import required"
+        return
+    }
+
+    $openChrome = Read-UserInput "  Open Chrome Password Manager now? (Y/N)"
+    if ($openChrome -match '^[Yy]') {
+        try { Start-Process "chrome.exe" "chrome://password-manager/settings" -ErrorAction Stop }
+        catch { Write-Log "Could not open Chrome Password Manager automatically: $_" -Level Warning }
+    }
+    $deleteCsv = Read-UserInput "  After importing and verifying passwords, type DELETE to permanently remove the plaintext CSV (or press Enter to keep it)"
+    if ($deleteCsv -ceq "DELETE") {
+        try {
+            foreach ($chromePasswordCsv in $chromePasswordCsvs) { Remove-Item -LiteralPath $chromePasswordCsv.FullName -Force -ErrorAction Stop }
+            Write-Log "Chrome password CSV removed after user-confirmed import" -Level Success
+            Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Success" -Details "Imported through Chrome and deleted from transfer package"
+        }
+        catch {
+            Write-Log "Could not remove Chrome password CSV: $_" -Level Warning
+            Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Warning" -Details "CSV may still be present; remove it securely after import"
+        }
+    }
+    else {
+        Write-Log "Chrome password CSV retained; delete it after native Chrome import" -Level Warning
+        Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Manual" -Details "Import in Chrome, verify, then securely delete plaintext CSV"
     }
 }
 
@@ -3340,7 +3578,7 @@ if ($env:COMPUTERNAME -eq "{COMPUTERNAME}") {
     Write-Host "  WARNING: Running on the SAME computer as export!" -ForegroundColor Yellow
     Write-Host "  This may overwrite existing files." -ForegroundColor Yellow
     Write-Host ""
-    $confirm = Read-Host "  Continue anyway? (Y/N)"
+    $confirm = Read-UserInput "  Continue anyway? (Y/N)"
     if ($confirm -notmatch "^[Yy]") {
         Write-Host "`n  Import cancelled." -ForegroundColor Gray
         exit
@@ -3363,7 +3601,7 @@ if (-not $isAdmin) {
         Write-Host "    - Power scheme import" -ForegroundColor Gray
         Write-Host "    - Lid close action settings" -ForegroundColor Gray
         Write-Host ""
-        $elevate = Read-Host "  Run as Administrator? (Y/N, or S to skip)"
+        $elevate = Read-UserInput "  Run as Administrator? (Y/N, or S to skip)"
 
         if ($elevate -match "^[Yy]") {
             Write-Host "`n  Requesting elevation..." -ForegroundColor Cyan
@@ -3390,6 +3628,13 @@ Write-Host ""
 Write-Host "  Starting import..." -ForegroundColor Cyan
 Write-Host "  ----------------------------------------" -ForegroundColor Gray
 Write-Host ""
+
+# Online packages surface the password CSV first, before any lengthy file
+# restoration begins. Local packages retain the end-of-import prompt so the
+# technician can complete the rest of the transfer without interruption.
+if ($isOnlineTransfer) {
+    Invoke-ChromePasswordImport
+}
 
 # ============================================================================
 # RESTORE USER FOLDERS
@@ -4154,7 +4399,7 @@ function Restore-ChromiumProfileBookmarks {
     $running = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
     if ($running.Count -gt 0) {
         Write-Host "  $BrowserName must be closed before bookmarks can be restored." -ForegroundColor Yellow
-        [void](Read-Host "  Close $BrowserName, then press Enter to continue (S to skip)")
+        [void](Read-UserInput "  Close $BrowserName, then press Enter to continue (S to skip)")
         $running = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
     }
     if ($running.Count -gt 0) {
@@ -4222,6 +4467,86 @@ function Add-ManualTask {
     }
 }
 
+function Restore-ChromeProfileArchive {
+    param(
+        [string]$PackageUserDataPath,
+        [string]$TargetUserDataPath
+    )
+
+    # Local State preserves Chrome's profile list and display names; restoring
+    # only individual bookmark files cannot recreate a full Chrome profile.
+    if (-not (Test-Path -LiteralPath $PackageUserDataPath)) { return }
+    $sourceProfiles = @(Get-ChildItem -LiteralPath $PackageUserDataPath -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq "Default" -or $_.Name -like "Profile *" })
+    $localState = Join-Path $PackageUserDataPath "Local State"
+    if ($sourceProfiles.Count -eq 0 -or -not (Test-Path -LiteralPath $localState)) {
+        Write-Log "Chrome profile archive is incomplete; existing Chrome data was left untouched" -Level "Warning"
+        Add-Result -Category "Browser" -Item "Chrome Profile" -Status "Warning" -Details "Archive is missing Local State or a Default/Profile folder"
+        return
+    }
+
+    $sourceFileCount = (Get-ChildItem -LiteralPath $PackageUserDataPath -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object).Count
+    if ($TestMode) {
+        Write-Log "Chrome profile - Would restore $sourceFileCount files across $($sourceProfiles.Count) profile(s)" -Level "Info"
+        Add-Result -Category "Browser" -Item "Chrome Profile" -Status "TestMode" -Details "$sourceFileCount files; $($sourceProfiles.Count) profile(s)"
+        return
+    }
+
+    $running = @(Get-Process -Name "chrome" -ErrorAction SilentlyContinue)
+    $closeChrome = ""
+    if ($running.Count -gt 0) {
+        Write-Host "  Google Chrome must be closed before its profile can be restored." -ForegroundColor Yellow
+        $closeChrome = Read-UserInput "  Close Chrome, then press Enter to continue (S to skip)"
+        $running = @(Get-Process -Name "chrome" -ErrorAction SilentlyContinue)
+    }
+    if ($running.Count -gt 0 -or $closeChrome -match "^[Ss]") {
+        Write-Log "Chrome profile restore skipped because Chrome is still running or was skipped" -Level "Warning"
+        Add-Result -Category "Browser" -Item "Chrome Profile" -Status "Skipped" -Details "Close Chrome and re-run the import script"
+        return
+    }
+
+    $targetParent = Split-Path -Parent $TargetUserDataPath
+    $backup = Join-Path $env:LOCALAPPDATA "LaptopTransferBrowserBackups\Chrome\$(Get-Date -Format 'yyyyMMdd_HHmmss')\User Data"
+    $existingProfileBackedUp = $false
+    try {
+        if (-not (Test-Path -LiteralPath $targetParent)) { New-Item -ItemType Directory -Path $targetParent -Force | Out-Null }
+        if (Test-Path -LiteralPath $TargetUserDataPath) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
+            Move-Item -LiteralPath $TargetUserDataPath -Destination $backup -ErrorAction Stop
+            $existingProfileBackedUp = $true
+            Write-Log "Existing Chrome profile backed up to $backup" -Level "Info"
+        }
+
+        $logPath = Join-Path $logsPath "import_chrome_profile.log"
+        $result = Copy-WithProgress -Source $PackageUserDataPath `
+                                   -Destination $TargetUserDataPath `
+                                   -FolderName "Chrome profile (all profiles)" `
+                                   -LogPath $logPath
+        if ($result.Status -eq "Success") {
+            Write-Log "Chrome profile restored: $($result.FilesCopied) files across $($sourceProfiles.Count) profile(s)" -Level "Success"
+            Add-Result -Category "Browser" -Item "Chrome Profile" -Status "Success" -Details "$($result.FilesCopied) files; $($sourceProfiles.Count) profile(s); prior data backed up when present"
+            Write-Host "    Chrome extensions, settings, and profile layout were restored. Passwords and cookies may require Chrome sign-in because Windows protects them." -ForegroundColor Gray
+        }
+        else {
+            throw "Profile copy did not complete successfully (robocopy exit $($result.ExitCode)); see $logPath"
+        }
+    }
+    catch {
+        $restoreDetail = ""
+        if ($existingProfileBackedUp -and -not (Test-Path -LiteralPath $TargetUserDataPath) -and (Test-Path -LiteralPath $backup)) {
+            try {
+                Move-Item -LiteralPath $backup -Destination $TargetUserDataPath -ErrorAction Stop
+                $restoreDetail = " Existing Chrome data was restored from backup."
+            }
+            catch {
+                $restoreDetail = " Existing Chrome data remains at $backup."
+            }
+        }
+        Write-Log "Chrome profile restore failed: $($_.Exception.Message)$restoreDetail" -Level "Warning"
+        Add-Result -Category "Browser" -Item "Chrome Profile" -Status "Warning" -Details "$($_.Exception.Message)$restoreDetail"
+    }
+}
+
 # Chrome bookmarks HTML (one file per old Chrome profile)
 $chromeBookmarksPath = Join-Path $browserDataPath "Chrome\Bookmarks"
 $chromeBookmarkFiles = @(Get-ChildItem -LiteralPath $chromeBookmarksPath -Filter "*.html" -File -Force -ErrorAction SilentlyContinue)
@@ -4240,65 +4565,15 @@ if ($chromeBookmarkFiles.Count -gt 0) {
     Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Ready" -Details "$($chromeBookmarkFiles.Count) HTML file(s) for manual import"
 }
 
-# Chrome profile archive. Credentials and cookies remain encrypted to the old
-# Windows installation, so they are deliberately not restored.  Bookmarks are
-# portable, however, and are restored below without replacing the rest of the
-# Chrome profile.
+# A FullProfile archive restores Chrome's profile map, extensions, settings,
+# history, and bookmarks. Windows encryption still protects old passwords and
+# cookies, which must be restored through Chrome sign-in or its native CSV.
 $chromeProfileArchive = Join-Path $browserDataPath "Chrome\User Data"
 if (Test-Path -LiteralPath $chromeProfileArchive) {
     $chromeArchiveFiles = (Get-ChildItem -LiteralPath $chromeProfileArchive -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object).Count
-    Write-Log "Chrome profile archive retained ($chromeArchiveFiles files; only portable bookmarks are restored)" -Level "Info"
+    Write-Log "Chrome profile archive detected ($chromeArchiveFiles files)" -Level "Info"
     Write-Host "    Chrome profile archive: $chromeProfileArchive" -ForegroundColor Gray
-    Write-Host "    Bookmarks are restored automatically when Chrome is closed; credentials remain protected." -ForegroundColor Gray
-    Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Info" -Details "$chromeArchiveFiles files retained; credentials and cookies are not restored"
-    Restore-ChromiumProfileBookmarks -BrowserName "Chrome" -ProcessName "chrome" -PackageUserDataPath $chromeProfileArchive -TargetUserDataPath (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data")
-}
-
-# Chrome's native Password Manager export produces a plaintext CSV after the
-# user completes the Windows authentication prompt on the old computer. Do
-# not attempt to decrypt the raw Chrome profile here; the browser/Windows
-# protections are intentional. Instead, guide the user through Chrome's own
-# CSV import and offer to remove the sensitive export after confirmation.
-$chromePasswordExportPath = Join-Path $browserDataPath "Chrome\PasswordExport"
-$chromePasswordCsvs = @(Get-ChildItem -LiteralPath $chromePasswordExportPath -Filter "*.csv" -File -Force -ErrorAction SilentlyContinue)
-if ($chromePasswordCsvs.Count -gt 0) {
-    Write-Host ""
-    Write-Host "  Chrome password export detected - this CSV is plaintext. Keep the transfer package secure." -ForegroundColor Yellow
-    foreach ($chromePasswordCsv in $chromePasswordCsvs) {
-        Write-Host "    File: $($chromePasswordCsv.FullName)" -ForegroundColor Gray
-    }
-    Write-Host "    In Chrome: Passwords and autofill > Google Password Manager > Settings > Import passwords." -ForegroundColor Gray
-
-    if ($TestMode) {
-        Write-Log "Chrome passwords - Would make $($chromePasswordCsvs.Count) CSV file(s) available for native import" -Level "Info"
-        Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "TestMode" -Details "$($chromePasswordCsvs.Count) plaintext CSV file(s); manual native Chrome import required"
-    }
-    else {
-        $openChrome = Read-Host "  Open Chrome Password Manager now? (Y/N)"
-        if ($openChrome -match '^[Yy]') {
-            try { Start-Process "chrome.exe" "chrome://password-manager/settings" -ErrorAction Stop }
-            catch { Write-Log "Could not open Chrome Password Manager automatically: $_" -Level Warning }
-        }
-
-        $deleteCsv = Read-Host "  After importing and verifying passwords, type DELETE to permanently remove the plaintext CSV (or press Enter to keep it)"
-        if ($deleteCsv -ceq "DELETE") {
-            try {
-                foreach ($chromePasswordCsv in $chromePasswordCsvs) {
-                    Remove-Item -LiteralPath $chromePasswordCsv.FullName -Force -ErrorAction Stop
-                }
-                Write-Log "Chrome password CSV removed after user-confirmed import" -Level Success
-                Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Success" -Details "Imported through Chrome and deleted from transfer package"
-            }
-            catch {
-                Write-Log "Could not remove Chrome password CSV: $_" -Level Warning
-                Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Warning" -Details "CSV may still be present; remove it securely after import"
-            }
-        }
-        else {
-            Write-Log "Chrome password CSV retained; delete it after native Chrome import" -Level Warning
-            Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Manual" -Details "Import in Chrome, verify, then securely delete plaintext CSV"
-        }
-    }
+    Restore-ChromeProfileArchive -PackageUserDataPath $chromeProfileArchive -TargetUserDataPath (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data")
 }
 
 # Edge bookmarks HTML (one file per old Edge profile)
@@ -4377,7 +4652,7 @@ else {
         $firefoxProcesses = @(Get-Process -Name "firefox" -ErrorAction SilentlyContinue)
         if ($firefoxProcesses.Count -gt 0) {
             Write-Host "  Firefox must be closed before its profile can be restored." -ForegroundColor Yellow
-            $closeFirefox = Read-Host "  Close Firefox, then press Enter to continue (S to skip)"
+            $closeFirefox = Read-UserInput "  Close Firefox, then press Enter to continue (S to skip)"
             $firefoxProcesses = @(Get-Process -Name "firefox" -ErrorAction SilentlyContinue)
         }
 
@@ -4455,6 +4730,12 @@ Write-Host ""
 # SUMMARY
 # ============================================================================
 
+# Local packages defer password import until the rest of the transfer has
+# completed. Online packages ran it at startup above.
+if (-not $isOnlineTransfer) {
+    Invoke-ChromePasswordImport
+}
+
 Write-Section "Import summary"
 Write-Host ""
 
@@ -4528,7 +4809,7 @@ if (Test-Path $reportPath) {
     Start-Process -FilePath $reportPath
 }
 
-Read-Host "  Press Enter to exit"
+Read-UserInput "  Press Enter to exit" | Out-Null
 '@
 
     # Replace placeholders
@@ -4537,6 +4818,7 @@ Read-Host "  Press Enter to exit"
     $importScript = $importScript -replace '\{COMPUTERNAME\}', $env:COMPUTERNAME
     $importScript = $importScript -replace '\{IMPORT_LOTUS_NOTES\}', $Script:Config.Import.LotusNotes.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{DELETE_PRINTBRM_AFTER_IMPORT\}', $Script:Config.Import.DeletePrintBrmAfterImport.ToString().ToLowerInvariant()
+    $importScript = $importScript -replace '\{IS_ONLINE_TRANSFER\}', ($Script:Config.TransferMode -eq "Online").ToString().ToLowerInvariant()
     
     $importScriptPath = Join-Path $DestinationBase "Import-LaptopData.ps1"
     $importScript | Out-File $importScriptPath -Encoding UTF8
@@ -5006,7 +5288,8 @@ echo ============================================
 echo.
 if /I "%~1"=="--elevated" goto :Elevated
 
-set /p RUN_AS_ADMIN="Run with administrator rights? (Y/N) [N]: "
+echo Run with administrator rights? (Y/N) [N]:
+set /p RUN_AS_ADMIN="  ^> "
 echo.
 
 if /I "%RUN_AS_ADMIN%"=="Y" (
@@ -5070,10 +5353,11 @@ function Start-LaptopExport {
         # package and all generated artifacts are still exercised by validation
         # runs. Normal technician exports retain both stages.
         $Script:Config.Backup.Printers = $false
-        $Script:Config.Online.CreateZipArchive = $false
+        $Script:Config.Transfer.CreateZipArchive = $false
         Write-Log "Non-interactive mode: browser collection, PrintBRM, and ZIP creation disabled" -Level Info
     }
-    elseif (-not (Show-BackupOverview)) {
+    Start-TransferPayloadEstimate
+    if (-not $NonInteractive -and -not (Show-BackupOverview)) {
         Write-Host "`n  Transfer cancelled." -ForegroundColor Yellow
         return
     }
@@ -5088,11 +5372,11 @@ function Start-LaptopExport {
     }
     if (-not $destinationFolder) {
         Write-Host "`n  Export cancelled: no usable destination was selected. No files were copied." -ForegroundColor Yellow
-        if (-not $NonInteractive) { Read-Host "  Press Enter to exit" }
+        if (-not $NonInteractive) { Read-UserInput "  Press Enter to exit" | Out-Null }
         return
     }
 
-    $createsZipArchive = $Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.CreateZipArchive
+    $createsZipArchive = [bool]$Script:Config.Transfer.CreateZipArchive
     $isNetworkDestination = $Script:Config.TransferMode -eq "Online" -and (Test-NetworkDestination -Path $destinationFolder)
     $useLocalStaging = $isNetworkDestination -and $createsZipArchive -and $Script:Config.Online.StageNetworkTransfersLocally
     $stagingAppData = if ($Script:OriginalAppDataLocal) { $Script:OriginalAppDataLocal } else { $env:LOCALAPPDATA }
@@ -5117,8 +5401,9 @@ function Start-LaptopExport {
     # Estimate what we're about to copy so we can (a) warn on insufficient space
     # and (b) show the operator the size up front. In online mode this reflects
     # the trimmed set (Downloads over cap and Lotus are excluded from the estimate).
-    Write-Section "Estimating transfer size"
-    $payloadEstimate = Get-TransferPayloadEstimate
+    Write-Section "Transfer size"
+    if (-not $Script:PayloadEstimate) { Write-Host "  Waiting for the background size calculation to finish..." -ForegroundColor DarkGray }
+    $payloadEstimate = Wait-TransferPayloadEstimate
     $estBytes = $payloadEstimate.TotalBytes
     Write-KeyValue "Estimated size" (Format-FileSize $estBytes)
     if ($Script:Config.TransferMode -eq "Online") {
@@ -5127,7 +5412,7 @@ function Start-LaptopExport {
             $message = "Selected Online payload ($(Format-FileSize $estBytes)) exceeds the $($Script:Config.Online.MaxTransferGB) GB limit."
             Write-Host ""; Write-Host "  $($Script:Theme.Glyphs.WARN) $message" -ForegroundColor Yellow
             if ($NonInteractive) { throw "Non-interactive export stopped because: $message" }
-            $continueLargePayload = Read-Host "    Export anyway? (Y/N)"
+            $continueLargePayload = Read-UserInput "    Export anyway? (Y/N)"
             if ($continueLargePayload -notmatch "^[Yy]") { Write-Host "  Cancelled. No files were copied." -ForegroundColor Yellow; return }
         }
     }
@@ -5173,7 +5458,7 @@ function Start-LaptopExport {
         Write-Host ""
         Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
         Write-Host ($spaceWarnings -join " ") -ForegroundColor White
-        $go = Read-Host "    Continue anyway? (Y/N)"
+        $go = Read-UserInput "    Continue anyway? (Y/N)"
         if ($go -notmatch "^[Yy]") { Write-Host "  Cancelled." -ForegroundColor Yellow; return }
     }
 
@@ -5193,7 +5478,18 @@ function Start-LaptopExport {
     # Execute export tasks
     Write-Banner -Title "Starting Export Process ($($Script:Config.TransferMode))"
     
-    # 1. Copy user folders
+    # 1. Copy browser data first. This gives the technician Chrome's native
+    # password-export prompt before any lengthy file collection begins.
+    Copy-BrowserData -DestinationBase $transferBase
+    if ($Script:DeferredChromePasswordExport) {
+        Write-Section "Chrome password export"
+        Invoke-ChromePasswordExportPrompt -BrowserPath $Script:DeferredChromePasswordExport.BrowserPath `
+                                          -CanLaunchChromeForOriginalUser $Script:DeferredChromePasswordExport.CanLaunchChromeForOriginalUser `
+                                          -HasProfileArchive $Script:DeferredChromePasswordExport.HasProfileArchive
+        $Script:DeferredChromePasswordExport = $null
+    }
+
+    # 2. Copy user folders
     if ($Script:Config.Backup.UserData -or $Script:Config.Backup.Downloads) {
         Copy-UserFolders -DestinationBase $transferBase
     }
@@ -5202,40 +5498,37 @@ function Start-LaptopExport {
         Add-DisabledBackupResult -Item "Downloads" -Category "User Folders"
     }
     
-    # 2. Copy AppData
+    # 3. Copy AppData
     if ($Script:Config.Backup.AppData) {
         Copy-AppData -DestinationBase $transferBase
     }
     else { Add-DisabledBackupResult -Item "AppData" }
     
-    # 3. Capture system settings
+    # 4. Capture system settings
     $settings = @{}
     if ($Script:Config.Backup.SystemSettings) {
         $settings = Get-SystemSettings -DestinationBase $transferBase
     }
     else { Add-DisabledBackupResult -Item "System settings" -Category "Settings" }
     
-    # 4. Document installed programs
+    # 5. Document installed programs
     if ($Script:Config.Backup.InstalledPrograms) {
         $programs = Get-InstalledPrograms -DestinationBase $transferBase
     }
     else { Add-DisabledBackupResult -Item "Installed programs" }
     
-    # 5. Back up printers
+    # 6. Back up printers
     if ($Script:Config.Backup.Printers) {
         Backup-Printers -DestinationBase $transferBase
     }
     else { Add-DisabledBackupResult -Item "Printers" }
 
-    # 6. Copy the independently selected browser data.
-    Copy-BrowserData -DestinationBase $transferBase
-    
     # 7. Check OneDrive
     if ($Script:Config.Backup.OneDrive) {
         Set-OneDriveLocalSync
     }
     else { Add-DisabledBackupResult -Item "OneDrive" }
-    
+
     # 8. Generate import script
     New-ImportScript -DestinationBase $transferBase -Settings $settings
 
@@ -5245,16 +5538,16 @@ function Start-LaptopExport {
     # 10. Generate quick import batch file
     New-QuickImportBatch -DestinationBase $transferBase
 
-    if ($Script:Config.TransferMode -eq "Online" -and -not $Script:Config.Online.CreateZipArchive) {
+    if (-not $Script:Config.Transfer.CreateZipArchive) {
         Write-Log "ZIP archive creation disabled by configuration" -Level Info
         Add-Result -Category "Package" -Item "ZIP Archive" -Status "Skipped" -Details "Disabled by configuration"
     }
 
-    # Local transfers stay as folders for a removable drive. Online transfers
-    # also produce a portable ZIP beside the package.
+    # ZIP creation is available for either transfer mode and is controlled by
+    # the transfer setting above.
     $archivePath = $null
     $publishedArchivePath = $null
-    if ($Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.CreateZipArchive) {
+    if ($Script:Config.Transfer.CreateZipArchive) {
         $archivePath = New-TransferArchive -TransferBase $transferBase
         if ($archivePath -and $useLocalStaging) {
             $uploadLog = Join-Path $transferBase "Logs\robocopy_network_zip_upload.log"
@@ -5282,10 +5575,14 @@ function Start-LaptopExport {
         Write-Host "  ! INCOMPLETE EXPORT: ADMIN-ONLY ITEMS WERE NOT CAPTURED !" -ForegroundColor Red
         Write-Host "  ! Re-run elevated before wiping the old laptop.          !" -ForegroundColor Red
         Write-Host "  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
-        foreach ($task in $adminRequiredTasks) {
-            Write-Host "  $($Script:Theme.Glyphs.WARN) $($task.Task)" -ForegroundColor Yellow
+    foreach ($task in $adminRequiredTasks) {
+        Write-Host "  $($Script:Theme.Glyphs.WARN) $($task.Task)" -ForegroundColor Yellow
+        Write-Host "    $($task.Reason)" -ForegroundColor DarkGray
+        if ($task.Instructions) {
+            Write-Host "    $($task.Instructions)" -ForegroundColor Gray
         }
     }
+}
 
     $packageLabel = if ($useLocalStaging) { "Local staging package" } else { "Package" }
     Write-KeyValue $packageLabel $transferBase
@@ -5329,7 +5626,7 @@ function Start-LaptopExport {
     }
     
     Write-Host ""
-    if (-not $NonInteractive) { Read-Host "  Press Enter to exit" }
+    if (-not $NonInteractive) { Read-UserInput "  Press Enter to exit" | Out-Null }
 }
 
 # Run the export

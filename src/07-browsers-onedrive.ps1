@@ -107,7 +107,7 @@ function Request-BrowserClose {
 
     Write-Host ""
     Write-Host "  $DisplayName is open. Close it to capture its profile databases consistently." -ForegroundColor Yellow
-    $response = Read-Host "  Close $DisplayName, then press Enter to continue (S to copy while it is open)"
+    $response = Read-UserInput "  Close $DisplayName, then press Enter to continue (S to copy while it is open)"
     $processes = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
     if ($processes.Count -eq 0) { return $true }
 
@@ -176,7 +176,7 @@ function Invoke-ChromePasswordExportPrompt {
     Write-Host "  Chrome's own export is the supported transfer method: it will request Windows authentication." -ForegroundColor Yellow
     Write-Host "  Save the resulting CSV only in: $passwordExportPath" -ForegroundColor Cyan
 
-    $exportNow = Read-Host "  Open Chrome Password Manager now to export passwords? (Y/N)"
+    $exportNow = Read-UserInput "  Open Chrome Password Manager now to export passwords? (Y/N)"
     if ($exportNow -notmatch '^[Yy]') {
         $reason = if ($HasProfileArchive) { "Chrome passwords remain encrypted in the raw profile backup" } else { "Chrome passwords require Chrome's native export" }
         $detail = if ($HasProfileArchive) { "Native Chrome export declined; raw encrypted profile backup is included" } else { "Native Chrome export declined; no Chrome profile archive was selected" }
@@ -202,7 +202,7 @@ On the old laptop, while signed in as the original Windows user:
     try {
         Start-Process "chrome.exe" "chrome://password-manager/settings" -ErrorAction Stop
         Write-Host "  Complete Chrome's export, choose the folder shown above, then return here." -ForegroundColor Gray
-        [void](Read-Host "  Press Enter after saving the CSV (S to skip)")
+        [void](Read-UserInput "  Press Enter after saving the CSV (S to skip)")
     }
     catch {
         Write-Log "Could not open Chrome Password Manager: $_" -Level Warning
@@ -285,7 +285,14 @@ function Copy-BrowserData {
 
         if ($Script:Config.Backup.Chrome -ne "FullProfile" -or -not $result.Aborted) {
             $canLaunchChromeForOriginalUser = (-not $Script:IsAdmin) -or ($Script:OriginalUserProfile -eq $env:USERPROFILE)
-            Invoke-ChromePasswordExportPrompt -BrowserPath $browserPath -CanLaunchChromeForOriginalUser $canLaunchChromeForOriginalUser -HasProfileArchive ($Script:Config.Backup.Chrome -eq "FullProfile")
+            # Native password export is the only export step that requires the
+            # original user's participation. Defer it until all automatic
+            # collection is complete, immediately before package finalization.
+            $Script:DeferredChromePasswordExport = @{
+                BrowserPath = $browserPath
+                CanLaunchChromeForOriginalUser = $canLaunchChromeForOriginalUser
+                HasProfileArchive = ($Script:Config.Backup.Chrome -eq "FullProfile")
+            }
         }
     }
     else {

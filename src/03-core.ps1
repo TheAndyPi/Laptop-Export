@@ -48,7 +48,7 @@ function Restart-AsAdministrator {
 # ============================================================================
 
 $Script:Config = @{
-    Version = "0.7"
+    Version = "0.8"
     TransferFolderName = "LaptopTransfer_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 
     # Printer driver binaries in the PrintBRM package. Network printers also
@@ -94,6 +94,11 @@ $Script:Config = @{
     TransferMode = "Local"
 
     # Online-mode defaults (only applied when TransferMode = "Online")
+    Transfer = @{
+        # ZIP creation is available for Local and Online transfers. Local
+        # transfers default to a folder-only package.
+        CreateZipArchive = $false
+    }
     Online = @{
         MaxTransferGB    = 5
         # Downloads is a standalone backup toggle and is disabled by default
@@ -106,7 +111,7 @@ $Script:Config = @{
         # Skip the OneDrive force-hydration step (it would re-download everything
         # over the same constrained link).
         SkipOneDriveHydration = $true
-        # Create a portable ZIP beside the transfer folder after an online export.
+        # Online transfers create a portable ZIP by default.
         CreateZipArchive = $true
         # Avoid direct file-by-file exports to a network destination.
         StageNetworkTransfersLocally = $true
@@ -141,7 +146,7 @@ $Script:Config = @{
 
 # Apply only known Boolean development switches so invalid additions cannot
 # unexpectedly change the behavior of a technician deployment.
-foreach ($sectionName in @("Backup", "Import")) {
+foreach ($sectionName in @("Backup", "Import", "Transfer")) {
     if (-not ($Script:DevelopmentConfig -is [hashtable]) -or
         -not $Script:DevelopmentConfig.ContainsKey($sectionName) -or
         -not ($Script:DevelopmentConfig[$sectionName] -is [hashtable])) {
@@ -203,6 +208,7 @@ function Apply-OnlineTransferDefaults {
     if ($Script:Config.TransferMode -ne "Online") { return }
 
     $Script:Config.Backup.Downloads = $Script:Config.Online.Downloads
+    $Script:Config.Transfer.CreateZipArchive = $Script:Config.Online.CreateZipArchive
     foreach ($switchName in $Script:Config.Online.Import.Keys) {
         $Script:Config.Import[$switchName] = $Script:Config.Online.Import[$switchName]
     }
@@ -217,6 +223,127 @@ function Add-DisabledBackupResult {
     Write-Log "$Item backup disabled by configuration" -Level Info
     Write-Status $Item "SKIP" "disabled by config"
     Add-Result -Category $Category -Item $Item -Status "Skipped" -Details "Disabled by configuration"
+}
+
+# Payload sizing can take a while on large profiles.  Keep it in a separate
+# process so the technician can continue through the menus while it runs.
+$Script:PayloadEstimateJob = $null
+$Script:PayloadEstimate = $null
+
+function Start-TransferPayloadEstimate {
+    if ($Script:PayloadEstimateJob) {
+        try {
+            if ($Script:PayloadEstimateJob.State -eq "Running") { Stop-Job -Job $Script:PayloadEstimateJob -ErrorAction SilentlyContinue }
+            Remove-Job -Job $Script:PayloadEstimateJob -Force -ErrorAction SilentlyContinue
+        }
+        catch { }
+    }
+
+    $Script:PayloadEstimate = $null
+    $snapshot = @{
+        UserProfile = $Script:OriginalUserProfile
+        AppDataRoaming = $Script:OriginalAppDataRoaming
+        AppDataLocal = $Script:OriginalAppDataLocal
+        UserFolders = @($Script:Config.UserFolders)
+        BluebeamPaths = @($Script:Config.BluebeamPaths)
+        AppDataRoamingPaths = @($Script:Config.AppDataRoaming.Values)
+        Backup = @{}
+        TransferMode = $Script:Config.TransferMode
+        SkipLotusNotes = [bool]$Script:Config.Online.SkipLotusNotes
+    }
+    foreach ($key in $Script:Config.Backup.Keys) { $snapshot.Backup[$key] = $Script:Config.Backup[$key] }
+
+    $Script:PayloadEstimateJob = Start-Job -ArgumentList $snapshot -ScriptBlock {
+        param($Config)
+        function Get-Size([string]$Path) {
+            if (-not (Test-Path -LiteralPath $Path)) { return [long]0 }
+            $sum = (Get-ChildItem -LiteralPath $Path -Recurse -File -Force -ErrorAction SilentlyContinue |
+                Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) } |
+                Measure-Object -Property Length -Sum).Sum
+            if ($null -eq $sum) { return [long]0 }
+            return [long]$sum
+        }
+
+        $sizes = @{}
+        foreach ($key in @("UserData","Downloads","AppData","LotusNotes","SystemSettings","InstalledPrograms","Printers","Chrome","Firefox","Edge","OneDrive")) { $sizes[$key] = [long]0 }
+        if ($Config.Backup.UserData) {
+            foreach ($folder in $Config.UserFolders) {
+                if ($folder -ne "Downloads") { $sizes.UserData += Get-Size (Join-Path $Config.UserProfile $folder) }
+            }
+        }
+        if ($Config.Backup.Downloads) { $sizes.Downloads = Get-Size (Join-Path $Config.UserProfile "Downloads") }
+        if ($Config.Backup.AppData) {
+            foreach ($path in $Config.BluebeamPaths) {
+                $candidate = Join-Path $Config.AppDataRoaming $path
+                if (Test-Path -LiteralPath $candidate) { $sizes.AppData += Get-Size $candidate; break }
+            }
+            foreach ($path in $Config.AppDataRoamingPaths) { $sizes.AppData += Get-Size (Join-Path $Config.AppDataRoaming $path) }
+        }
+        if ($Config.Backup.LotusNotes -and $Config.Backup.AppData -and -not ($Config.TransferMode -eq "Online" -and $Config.SkipLotusNotes)) { $sizes.LotusNotes = Get-Size (Join-Path $Config.AppDataLocal "Lotus") }
+        if ($Config.Backup.Chrome -eq "FullProfile") { $sizes.Chrome = Get-Size (Join-Path $Config.AppDataLocal "Google\Chrome\User Data") }
+        elseif ($Config.Backup.Chrome -eq "BookmarksAndPasswords") {
+            $root = Join-Path $Config.AppDataLocal "Google\Chrome\User Data"
+            $sizes.Chrome = [long]((Get-ChildItem -LiteralPath $root -Recurse -File -Filter "Bookmarks" -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum)
+        }
+        if ($Config.Backup.Firefox) { $sizes.Firefox = (Get-Size (Join-Path $Config.AppDataRoaming "Mozilla\Firefox")) + (Get-Size (Join-Path $Config.AppDataLocal "Mozilla\Firefox")) }
+        if ($Config.Backup.Edge) {
+            $root = Join-Path $Config.AppDataLocal "Microsoft\Edge\User Data"
+            $sizes.Edge = [long]((Get-ChildItem -LiteralPath $root -Recurse -File -Filter "Bookmarks" -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum)
+        }
+        [PSCustomObject]@{ ItemBytes = $sizes; TotalBytes = [long](($sizes.Values | Measure-Object -Sum).Sum) }
+    }
+}
+
+function Update-TransferPayloadEstimate {
+    if (-not $Script:PayloadEstimateJob -or $Script:PayloadEstimate) { return $false }
+    if ($Script:PayloadEstimateJob.State -notin @("Completed", "Failed", "Stopped")) { return $false }
+    try {
+        $result = Receive-Job -Job $Script:PayloadEstimateJob -ErrorAction Stop
+        if ($result) {
+            $Script:PayloadEstimate = @{ ItemBytes = @{}; TotalBytes = [long]$result.TotalBytes }
+            foreach ($key in $result.ItemBytes.Keys) { $Script:PayloadEstimate.ItemBytes[$key] = [long]$result.ItemBytes[$key] }
+        }
+    }
+    catch { Write-Log "Background size estimate failed; it will be recalculated before export: $_" -Level Warning }
+    finally {
+        Remove-Job -Job $Script:PayloadEstimateJob -Force -ErrorAction SilentlyContinue
+        $Script:PayloadEstimateJob = $null
+    }
+    return ($null -ne $Script:PayloadEstimate)
+}
+
+function Wait-TransferPayloadEstimate {
+    while (-not $Script:PayloadEstimate) {
+        if (Update-TransferPayloadEstimate) { break }
+        if (-not $Script:PayloadEstimateJob) {
+            Write-Log "Using foreground size calculation after the background estimate did not complete." -Level Warning
+            return Get-TransferPayloadEstimate
+        }
+        Start-Sleep -Milliseconds 150
+    }
+    return $Script:PayloadEstimate
+}
+
+function Read-MenuChoiceWhileEstimating {
+    param([string]$Prompt)
+    Write-Host $Prompt
+    Write-Host "  > " -NoNewline
+    try {
+        $input = [System.Text.StringBuilder]::new()
+        while ($true) {
+            if (Update-TransferPayloadEstimate) { return @{ Choice = $input.ToString(); EstimateUpdated = $true } }
+            if ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                if ($key.Key -eq [ConsoleKey]::Enter) { Write-Host ""; return @{ Choice = $input.ToString(); EstimateUpdated = $false } }
+                if ($key.Key -eq [ConsoleKey]::Backspace -and $input.Length -gt 0) { [void]$input.Remove($input.Length - 1, 1); Write-Host "`b `b" -NoNewline; continue }
+                if (-not [char]::IsControl($key.KeyChar)) { [void]$input.Append($key.KeyChar); Write-Host $key.KeyChar -NoNewline }
+            }
+            Start-Sleep -Milliseconds 75
+        }
+    }
+    catch {
+        return @{ Choice = (Read-Host "").Trim(); EstimateUpdated = $false }
+    }
 }
 
 function Show-TransferSettingsMenu {
@@ -238,7 +365,7 @@ function Show-TransferSettingsMenu {
         @{ Section = "Import"; Key = "LotusNotes";        Label = "Import Lotus Notes"; Detail = "Restore exported Lotus local data on the new laptop" }
         @{ Section = "Import"; Key = "DeletePrintBrmAfterImport"; Label = "Delete PrintBRM after import"; Detail = "Remove the printer package after a successful restore" }
         @{ Section = "Online"; Key = "MaxTransferGB"; Type = "Number"; Label = "Online payload limit"; Detail = "Warn before export when selected payload exceeds this many GB" }
-        @{ Section = "Online"; Key = "CreateZipArchive";  Label = "Create ZIP archive"; Detail = "Create a ZIP beside the package (Online transfers only)" }
+        @{ Section = "Transfer"; Key = "CreateZipArchive";  Label = "Create ZIP archive"; Detail = "Create a ZIP beside the package (off by default for Local)" }
         @{ Section = "Online"; Key = "StageNetworkTransfersLocally"; Label = "Stage network transfers locally"; Detail = "Build locally, then upload one ZIP to a network destination" }
     )
 
@@ -246,7 +373,8 @@ function Show-TransferSettingsMenu {
         Clear-StoScreen
         Write-Banner -Title "Transfer Settings" -Subtitle "$($Script:Config.TransferMode) transfer - changes apply to this transfer only"
         Write-Section "Backup settings"
-        $estimate = Get-TransferPayloadEstimate
+        Update-TransferPayloadEstimate | Out-Null
+        $estimate = $Script:PayloadEstimate
 
         for ($index = 0; $index -lt $settings.Count; $index++) {
             $setting = $settings[$index]
@@ -269,7 +397,7 @@ function Show-TransferSettingsMenu {
                 }
             } elseif ($isEnabled) { "ON " } else { "OFF" }
             $color = if ($isNumber) { "Yellow" } elseif ($isChromeMode) { if ($Script:Config.Backup.Chrome -eq "Off") { "DarkGray" } else { "Green" } } elseif ($isEnabled) { "Green" } else { "DarkGray" }
-            $sizeText = if ($setting.Section -eq "Backup") { "$(Format-FileSize ([long]$estimate.ItemBytes[$setting.Key]))" } else { "" }
+            $sizeText = if ($setting.Section -eq "Backup" -and $estimate) { "$(Format-FileSize ([long]$estimate.ItemBytes[$setting.Key]))" } elseif ($setting.Section -eq "Backup") { "calculating" } else { "" }
 
             Write-Host "  [$number] " -ForegroundColor Cyan -NoNewline
             Write-Host "$state " -ForegroundColor $color -NoNewline
@@ -281,9 +409,11 @@ function Show-TransferSettingsMenu {
         Write-Host ""
         Write-Host "  Select a number to toggle it; select Chrome to cycle its backup mode." -ForegroundColor Gray
         Write-Host "  Chrome can export bookmarks and passwords without copying its full profile." -ForegroundColor DarkGray
-        Write-Host "  ZIP archive is ignored for Local transfers." -ForegroundColor DarkGray
+        Write-Host "  ZIP archive can be created for either mode; it is off by default for Local transfers." -ForegroundColor DarkGray
         Write-Host "  Import settings are written into the transfer package's generated import script." -ForegroundColor DarkGray
-        $selection = (Read-Host "  [S] Start transfer  [Q] Cancel").Trim()
+        $menuInput = Read-MenuChoiceWhileEstimating -Prompt "  [S] Start transfer  [Q] Cancel"
+        if ($menuInput.EstimateUpdated) { continue }
+        $selection = $menuInput.Choice.Trim()
 
         if ($selection -match "^[Ss]$") { return $true }
         if ($selection -match "^[Qq]$") { return $false }
@@ -294,7 +424,7 @@ function Show-TransferSettingsMenu {
             $setting = $settings[$selectedIndex - 1]
             if ($setting.Type -eq "Number") {
                 $value = 0.0
-                $entered = Read-Host "  Enter Online payload limit in GB (current: $($Script:Config.Online.MaxTransferGB))"
+                $entered = Read-UserInput "  Enter Online payload limit in GB (current: $($Script:Config.Online.MaxTransferGB))"
                 if ([double]::TryParse($entered, [ref]$value) -and $value -gt 0) { $Script:Config.Online.MaxTransferGB = $value }
                 else { Write-Host "  Enter a positive number of GB." -ForegroundColor Yellow; Start-Sleep -Seconds 1 }
             }
@@ -306,6 +436,7 @@ function Show-TransferSettingsMenu {
                 }
             }
             else { $Script:Config[$setting.Section][$setting.Key] = -not [bool]$Script:Config[$setting.Section][$setting.Key] }
+            Start-TransferPayloadEstimate
         }
         else {
             Write-Host "  Enter a setting number, S, or Q." -ForegroundColor Yellow
@@ -318,19 +449,22 @@ function Show-BackupOverview {
     while ($true) {
         Clear-StoScreen
         Write-Section "OVERVIEW OF BACKUP INCLUDING ESTIMATED SIZE"
-        $estimate = Get-TransferPayloadEstimate
+        Update-TransferPayloadEstimate | Out-Null
+        $estimate = $Script:PayloadEstimate
         Write-KeyValue "Transfer mode" $Script:Config.TransferMode
-        Write-KeyValue "Estimated size" (Format-FileSize $estimate.TotalBytes)
+        Write-KeyValue "Estimated size" $(if ($estimate) { Format-FileSize $estimate.TotalBytes } else { "Calculating in background..." })
         Write-Host ""
-        $choice = (Read-Host "  [S] Start transfer [C] Change Settings [Q] Cancel").Trim()
+        $menuInput = Read-MenuChoiceWhileEstimating -Prompt "  [1] Start transfer  [2] Change settings  [3] Cancel"
+        if ($menuInput.EstimateUpdated) { continue }
+        $choice = $menuInput.Choice.Trim()
 
-        if ($choice -match "^[Ss]$") { return $true }
-        if ($choice -match "^[Qq]$") { return $false }
-        if ($choice -match "^[Cc]$") {
+        if ($choice -eq "1") { return $true }
+        if ($choice -eq "3") { return $false }
+        if ($choice -eq "2") {
             if (-not (Show-TransferSettingsMenu)) { return $false }
             continue
         }
-        Write-Host "  Enter S, C, or Q." -ForegroundColor Yellow
+        Write-Host "  Enter 1, 2, or 3." -ForegroundColor Yellow
         Start-Sleep -Seconds 1
     }
 }

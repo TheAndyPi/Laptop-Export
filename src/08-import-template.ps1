@@ -33,7 +33,7 @@ function New-ImportScript {
     - Desktop wallpaper
     - Chrome/Edge bookmarks (HTML files for manual import)
     - Chrome password-export CSV files (manual native Chrome import)
-    - Chrome profile archive retained for recovery/reference (not auto-restored)
+    - Full Chrome profile archives (extensions, settings, and profile layout)
     - Firefox profile data (bookmarks, logins, extensions, settings, and history)
 
 .PARAMETER TestMode
@@ -136,6 +136,12 @@ function Write-KeyValue {
     Write-Host $Value -ForegroundColor White
 }
 
+function Read-UserInput {
+    param([string]$Prompt)
+    Write-Host $Prompt
+    return Read-Host "  >"
+}
+
 function Write-SummaryCard {
     param([int]$Success, [int]$Warning, [int]$Errors, [int]$Skipped, [string]$Duration, [int]$Width = $Script:Theme.Width)
     $bx = $Script:Theme.Box; $inner = $Width - 2
@@ -176,6 +182,7 @@ $Script:Results = @{
     Actions = @()
     Warnings = @()
     Errors = @()
+    ManualTasks = @()
     OriginalUser = "{USERNAME}"
     OriginalComputer = "{COMPUTERNAME}"
 }
@@ -184,6 +191,7 @@ $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $userProfile = $env:USERPROFILE
 $logFile = Join-Path $scriptPath "ImportLog.txt"
 $importLotusNotes = [bool]::Parse('{IMPORT_LOTUS_NOTES}')
+$isOnlineTransfer = [bool]::Parse('{IS_ONLINE_TRANSFER}')
 # Firefox is restored whenever its independently-selected backup payload is
 # present. There is no separate import toggle to keep in sync.
 $importFirefox = $true
@@ -211,6 +219,45 @@ function Add-Result {
         Item = $Item
         Status = $Status
         Details = $Details
+    }
+}
+
+function Invoke-ChromePasswordImport {
+    $chromePasswordExportPath = Join-Path $scriptPath "BrowserData\Chrome\PasswordExport"
+    $chromePasswordCsvs = @(Get-ChildItem -LiteralPath $chromePasswordExportPath -Filter "*.csv" -File -Force -ErrorAction SilentlyContinue)
+    if ($chromePasswordCsvs.Count -eq 0) { return }
+
+    Write-Host ""
+    Write-Section "Chrome password import"
+    Write-Host "  Chrome password export detected - this CSV is plaintext. Keep the transfer package secure." -ForegroundColor Yellow
+    foreach ($chromePasswordCsv in $chromePasswordCsvs) { Write-Host "    File: $($chromePasswordCsv.FullName)" -ForegroundColor Gray }
+    Write-Host "    In Chrome: Passwords and autofill > Google Password Manager > Settings > Import passwords." -ForegroundColor Gray
+    if ($TestMode) {
+        Write-Log "Chrome passwords - Would make $($chromePasswordCsvs.Count) CSV file(s) available for native import" -Level "Info"
+        Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "TestMode" -Details "$($chromePasswordCsvs.Count) plaintext CSV file(s); manual native Chrome import required"
+        return
+    }
+
+    $openChrome = Read-UserInput "  Open Chrome Password Manager now? (Y/N)"
+    if ($openChrome -match '^[Yy]') {
+        try { Start-Process "chrome.exe" "chrome://password-manager/settings" -ErrorAction Stop }
+        catch { Write-Log "Could not open Chrome Password Manager automatically: $_" -Level Warning }
+    }
+    $deleteCsv = Read-UserInput "  After importing and verifying passwords, type DELETE to permanently remove the plaintext CSV (or press Enter to keep it)"
+    if ($deleteCsv -ceq "DELETE") {
+        try {
+            foreach ($chromePasswordCsv in $chromePasswordCsvs) { Remove-Item -LiteralPath $chromePasswordCsv.FullName -Force -ErrorAction Stop }
+            Write-Log "Chrome password CSV removed after user-confirmed import" -Level Success
+            Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Success" -Details "Imported through Chrome and deleted from transfer package"
+        }
+        catch {
+            Write-Log "Could not remove Chrome password CSV: $_" -Level Warning
+            Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Warning" -Details "CSV may still be present; remove it securely after import"
+        }
+    }
+    else {
+        Write-Log "Chrome password CSV retained; delete it after native Chrome import" -Level Warning
+        Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Manual" -Details "Import in Chrome, verify, then securely delete plaintext CSV"
     }
 }
 
@@ -401,7 +448,7 @@ if ($env:COMPUTERNAME -eq "{COMPUTERNAME}") {
     Write-Host "  WARNING: Running on the SAME computer as export!" -ForegroundColor Yellow
     Write-Host "  This may overwrite existing files." -ForegroundColor Yellow
     Write-Host ""
-    $confirm = Read-Host "  Continue anyway? (Y/N)"
+    $confirm = Read-UserInput "  Continue anyway? (Y/N)"
     if ($confirm -notmatch "^[Yy]") {
         Write-Host "`n  Import cancelled." -ForegroundColor Gray
         exit
@@ -424,7 +471,7 @@ if (-not $isAdmin) {
         Write-Host "    - Power scheme import" -ForegroundColor Gray
         Write-Host "    - Lid close action settings" -ForegroundColor Gray
         Write-Host ""
-        $elevate = Read-Host "  Run as Administrator? (Y/N, or S to skip)"
+        $elevate = Read-UserInput "  Run as Administrator? (Y/N, or S to skip)"
 
         if ($elevate -match "^[Yy]") {
             Write-Host "`n  Requesting elevation..." -ForegroundColor Cyan
@@ -451,6 +498,13 @@ Write-Host ""
 Write-Host "  Starting import..." -ForegroundColor Cyan
 Write-Host "  ----------------------------------------" -ForegroundColor Gray
 Write-Host ""
+
+# Online packages surface the password CSV first, before any lengthy file
+# restoration begins. Local packages retain the end-of-import prompt so the
+# technician can complete the rest of the transfer without interruption.
+if ($isOnlineTransfer) {
+    Invoke-ChromePasswordImport
+}
 
 # ============================================================================
 # RESTORE USER FOLDERS
@@ -1215,7 +1269,7 @@ function Restore-ChromiumProfileBookmarks {
     $running = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
     if ($running.Count -gt 0) {
         Write-Host "  $BrowserName must be closed before bookmarks can be restored." -ForegroundColor Yellow
-        [void](Read-Host "  Close $BrowserName, then press Enter to continue (S to skip)")
+        [void](Read-UserInput "  Close $BrowserName, then press Enter to continue (S to skip)")
         $running = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
     }
     if ($running.Count -gt 0) {
@@ -1283,6 +1337,86 @@ function Add-ManualTask {
     }
 }
 
+function Restore-ChromeProfileArchive {
+    param(
+        [string]$PackageUserDataPath,
+        [string]$TargetUserDataPath
+    )
+
+    # Local State preserves Chrome's profile list and display names; restoring
+    # only individual bookmark files cannot recreate a full Chrome profile.
+    if (-not (Test-Path -LiteralPath $PackageUserDataPath)) { return }
+    $sourceProfiles = @(Get-ChildItem -LiteralPath $PackageUserDataPath -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq "Default" -or $_.Name -like "Profile *" })
+    $localState = Join-Path $PackageUserDataPath "Local State"
+    if ($sourceProfiles.Count -eq 0 -or -not (Test-Path -LiteralPath $localState)) {
+        Write-Log "Chrome profile archive is incomplete; existing Chrome data was left untouched" -Level "Warning"
+        Add-Result -Category "Browser" -Item "Chrome Profile" -Status "Warning" -Details "Archive is missing Local State or a Default/Profile folder"
+        return
+    }
+
+    $sourceFileCount = (Get-ChildItem -LiteralPath $PackageUserDataPath -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object).Count
+    if ($TestMode) {
+        Write-Log "Chrome profile - Would restore $sourceFileCount files across $($sourceProfiles.Count) profile(s)" -Level "Info"
+        Add-Result -Category "Browser" -Item "Chrome Profile" -Status "TestMode" -Details "$sourceFileCount files; $($sourceProfiles.Count) profile(s)"
+        return
+    }
+
+    $running = @(Get-Process -Name "chrome" -ErrorAction SilentlyContinue)
+    $closeChrome = ""
+    if ($running.Count -gt 0) {
+        Write-Host "  Google Chrome must be closed before its profile can be restored." -ForegroundColor Yellow
+        $closeChrome = Read-UserInput "  Close Chrome, then press Enter to continue (S to skip)"
+        $running = @(Get-Process -Name "chrome" -ErrorAction SilentlyContinue)
+    }
+    if ($running.Count -gt 0 -or $closeChrome -match "^[Ss]") {
+        Write-Log "Chrome profile restore skipped because Chrome is still running or was skipped" -Level "Warning"
+        Add-Result -Category "Browser" -Item "Chrome Profile" -Status "Skipped" -Details "Close Chrome and re-run the import script"
+        return
+    }
+
+    $targetParent = Split-Path -Parent $TargetUserDataPath
+    $backup = Join-Path $env:LOCALAPPDATA "LaptopTransferBrowserBackups\Chrome\$(Get-Date -Format 'yyyyMMdd_HHmmss')\User Data"
+    $existingProfileBackedUp = $false
+    try {
+        if (-not (Test-Path -LiteralPath $targetParent)) { New-Item -ItemType Directory -Path $targetParent -Force | Out-Null }
+        if (Test-Path -LiteralPath $TargetUserDataPath) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
+            Move-Item -LiteralPath $TargetUserDataPath -Destination $backup -ErrorAction Stop
+            $existingProfileBackedUp = $true
+            Write-Log "Existing Chrome profile backed up to $backup" -Level "Info"
+        }
+
+        $logPath = Join-Path $logsPath "import_chrome_profile.log"
+        $result = Copy-WithProgress -Source $PackageUserDataPath `
+                                   -Destination $TargetUserDataPath `
+                                   -FolderName "Chrome profile (all profiles)" `
+                                   -LogPath $logPath
+        if ($result.Status -eq "Success") {
+            Write-Log "Chrome profile restored: $($result.FilesCopied) files across $($sourceProfiles.Count) profile(s)" -Level "Success"
+            Add-Result -Category "Browser" -Item "Chrome Profile" -Status "Success" -Details "$($result.FilesCopied) files; $($sourceProfiles.Count) profile(s); prior data backed up when present"
+            Write-Host "    Chrome extensions, settings, and profile layout were restored. Passwords and cookies may require Chrome sign-in because Windows protects them." -ForegroundColor Gray
+        }
+        else {
+            throw "Profile copy did not complete successfully (robocopy exit $($result.ExitCode)); see $logPath"
+        }
+    }
+    catch {
+        $restoreDetail = ""
+        if ($existingProfileBackedUp -and -not (Test-Path -LiteralPath $TargetUserDataPath) -and (Test-Path -LiteralPath $backup)) {
+            try {
+                Move-Item -LiteralPath $backup -Destination $TargetUserDataPath -ErrorAction Stop
+                $restoreDetail = " Existing Chrome data was restored from backup."
+            }
+            catch {
+                $restoreDetail = " Existing Chrome data remains at $backup."
+            }
+        }
+        Write-Log "Chrome profile restore failed: $($_.Exception.Message)$restoreDetail" -Level "Warning"
+        Add-Result -Category "Browser" -Item "Chrome Profile" -Status "Warning" -Details "$($_.Exception.Message)$restoreDetail"
+    }
+}
+
 # Chrome bookmarks HTML (one file per old Chrome profile)
 $chromeBookmarksPath = Join-Path $browserDataPath "Chrome\Bookmarks"
 $chromeBookmarkFiles = @(Get-ChildItem -LiteralPath $chromeBookmarksPath -Filter "*.html" -File -Force -ErrorAction SilentlyContinue)
@@ -1301,65 +1435,15 @@ if ($chromeBookmarkFiles.Count -gt 0) {
     Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Ready" -Details "$($chromeBookmarkFiles.Count) HTML file(s) for manual import"
 }
 
-# Chrome profile archive. Credentials and cookies remain encrypted to the old
-# Windows installation, so they are deliberately not restored.  Bookmarks are
-# portable, however, and are restored below without replacing the rest of the
-# Chrome profile.
+# A FullProfile archive restores Chrome's profile map, extensions, settings,
+# history, and bookmarks. Windows encryption still protects old passwords and
+# cookies, which must be restored through Chrome sign-in or its native CSV.
 $chromeProfileArchive = Join-Path $browserDataPath "Chrome\User Data"
 if (Test-Path -LiteralPath $chromeProfileArchive) {
     $chromeArchiveFiles = (Get-ChildItem -LiteralPath $chromeProfileArchive -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object).Count
-    Write-Log "Chrome profile archive retained ($chromeArchiveFiles files; only portable bookmarks are restored)" -Level "Info"
+    Write-Log "Chrome profile archive detected ($chromeArchiveFiles files)" -Level "Info"
     Write-Host "    Chrome profile archive: $chromeProfileArchive" -ForegroundColor Gray
-    Write-Host "    Bookmarks are restored automatically when Chrome is closed; credentials remain protected." -ForegroundColor Gray
-    Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Info" -Details "$chromeArchiveFiles files retained; credentials and cookies are not restored"
-    Restore-ChromiumProfileBookmarks -BrowserName "Chrome" -ProcessName "chrome" -PackageUserDataPath $chromeProfileArchive -TargetUserDataPath (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data")
-}
-
-# Chrome's native Password Manager export produces a plaintext CSV after the
-# user completes the Windows authentication prompt on the old computer. Do
-# not attempt to decrypt the raw Chrome profile here; the browser/Windows
-# protections are intentional. Instead, guide the user through Chrome's own
-# CSV import and offer to remove the sensitive export after confirmation.
-$chromePasswordExportPath = Join-Path $browserDataPath "Chrome\PasswordExport"
-$chromePasswordCsvs = @(Get-ChildItem -LiteralPath $chromePasswordExportPath -Filter "*.csv" -File -Force -ErrorAction SilentlyContinue)
-if ($chromePasswordCsvs.Count -gt 0) {
-    Write-Host ""
-    Write-Host "  Chrome password export detected - this CSV is plaintext. Keep the transfer package secure." -ForegroundColor Yellow
-    foreach ($chromePasswordCsv in $chromePasswordCsvs) {
-        Write-Host "    File: $($chromePasswordCsv.FullName)" -ForegroundColor Gray
-    }
-    Write-Host "    In Chrome: Passwords and autofill > Google Password Manager > Settings > Import passwords." -ForegroundColor Gray
-
-    if ($TestMode) {
-        Write-Log "Chrome passwords - Would make $($chromePasswordCsvs.Count) CSV file(s) available for native import" -Level "Info"
-        Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "TestMode" -Details "$($chromePasswordCsvs.Count) plaintext CSV file(s); manual native Chrome import required"
-    }
-    else {
-        $openChrome = Read-Host "  Open Chrome Password Manager now? (Y/N)"
-        if ($openChrome -match '^[Yy]') {
-            try { Start-Process "chrome.exe" "chrome://password-manager/settings" -ErrorAction Stop }
-            catch { Write-Log "Could not open Chrome Password Manager automatically: $_" -Level Warning }
-        }
-
-        $deleteCsv = Read-Host "  After importing and verifying passwords, type DELETE to permanently remove the plaintext CSV (or press Enter to keep it)"
-        if ($deleteCsv -ceq "DELETE") {
-            try {
-                foreach ($chromePasswordCsv in $chromePasswordCsvs) {
-                    Remove-Item -LiteralPath $chromePasswordCsv.FullName -Force -ErrorAction Stop
-                }
-                Write-Log "Chrome password CSV removed after user-confirmed import" -Level Success
-                Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Success" -Details "Imported through Chrome and deleted from transfer package"
-            }
-            catch {
-                Write-Log "Could not remove Chrome password CSV: $_" -Level Warning
-                Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Warning" -Details "CSV may still be present; remove it securely after import"
-            }
-        }
-        else {
-            Write-Log "Chrome password CSV retained; delete it after native Chrome import" -Level Warning
-            Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Manual" -Details "Import in Chrome, verify, then securely delete plaintext CSV"
-        }
-    }
+    Restore-ChromeProfileArchive -PackageUserDataPath $chromeProfileArchive -TargetUserDataPath (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data")
 }
 
 # Edge bookmarks HTML (one file per old Edge profile)
@@ -1438,7 +1522,7 @@ else {
         $firefoxProcesses = @(Get-Process -Name "firefox" -ErrorAction SilentlyContinue)
         if ($firefoxProcesses.Count -gt 0) {
             Write-Host "  Firefox must be closed before its profile can be restored." -ForegroundColor Yellow
-            $closeFirefox = Read-Host "  Close Firefox, then press Enter to continue (S to skip)"
+            $closeFirefox = Read-UserInput "  Close Firefox, then press Enter to continue (S to skip)"
             $firefoxProcesses = @(Get-Process -Name "firefox" -ErrorAction SilentlyContinue)
         }
 
@@ -1516,6 +1600,12 @@ Write-Host ""
 # SUMMARY
 # ============================================================================
 
+# Local packages defer password import until the rest of the transfer has
+# completed. Online packages ran it at startup above.
+if (-not $isOnlineTransfer) {
+    Invoke-ChromePasswordImport
+}
+
 Write-Section "Import summary"
 Write-Host ""
 
@@ -1589,7 +1679,7 @@ if (Test-Path $reportPath) {
     Start-Process -FilePath $reportPath
 }
 
-Read-Host "  Press Enter to exit"
+Read-UserInput "  Press Enter to exit" | Out-Null
 '@
 
     # Replace placeholders
@@ -1598,6 +1688,7 @@ Read-Host "  Press Enter to exit"
     $importScript = $importScript -replace '\{COMPUTERNAME\}', $env:COMPUTERNAME
     $importScript = $importScript -replace '\{IMPORT_LOTUS_NOTES\}', $Script:Config.Import.LotusNotes.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{DELETE_PRINTBRM_AFTER_IMPORT\}', $Script:Config.Import.DeletePrintBrmAfterImport.ToString().ToLowerInvariant()
+    $importScript = $importScript -replace '\{IS_ONLINE_TRANSFER\}', ($Script:Config.TransferMode -eq "Online").ToString().ToLowerInvariant()
     
     $importScriptPath = Join-Path $DestinationBase "Import-LaptopData.ps1"
     $importScript | Out-File $importScriptPath -Encoding UTF8
