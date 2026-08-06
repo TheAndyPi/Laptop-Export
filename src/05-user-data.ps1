@@ -14,8 +14,12 @@ function Copy-UserFolders {
         New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
     }
     
-    if ($Script:Config.Backup.UserData) {
     foreach ($folder in $Script:Config.UserFolders) {
+        if ($folder -ne 'Downloads' -and -not $Script:Config.Backup.UserData) { continue }
+        if ($folder -eq 'Downloads' -and -not $Script:Config.Backup.Downloads) {
+            Add-DisabledBackupResult -Item 'Downloads' -Category 'User Folders'
+            continue
+        }
         $sourcePath = Resolve-ExportUserFolderPath $folder
         $destPath = Join-Path $destUserData $folder
         
@@ -30,18 +34,18 @@ function Copy-UserFolders {
                     $folderBytes = Get-FolderSizeBytes $sourcePath
                     $folderGB = [math]::Round($folderBytes / 1GB, 2)
 
-                    # Downloads has a hard cap: omit entirely if over the limit.
-                    if ($folder -eq "Downloads" -and $folderGB -gt $Script:Config.Online.DownloadsCapGB -and
-                        -not $Script:Config.Online.OverrideDownloadsCap) {
-                        Write-Log "Downloads is $folderGB GB (> $($Script:Config.Online.DownloadsCapGB) GB online cap) - omitting" -Level Warning
-                        Write-Status "Downloads" "SKIP" "$folderGB GB exceeds $($Script:Config.Online.DownloadsCapGB)GB online cap"
-                        Add-Result -Category "User Folders" -Item "Downloads" -Status "Skipped" -Details "Omitted (online mode): $folderGB GB > $($Script:Config.Online.DownloadsCapGB) GB cap"
-                        Add-ManualTask -Task "Copy Downloads folder manually (if needed)" -Reason "Omitted in online transfer: $folderGB GB exceeds the $($Script:Config.Online.DownloadsCapGB) GB cap" -Instructions "If the user needs their Downloads, copy C:\Users\$($Script:OriginalUserName)\Downloads separately (external drive or a targeted OneDrive upload)."
-                        continue
+                    if ($folder -eq 'Downloads' -and $folderGB -gt $Script:Config.Online.DownloadsCapGB -and -not $Script:Config.Online.OverrideDownloadsCap) {
+                        $answer = Read-UserInput "  Downloads is $folderGB GB (Online cap: $($Script:Config.Online.DownloadsCapGB) GB). Copy it? (Y/N)"
+                        if ($answer -notmatch '^[Yy]') {
+                            Add-Result -Category 'User Folders' -Item 'Downloads' -Status 'Skipped' -Details "Online cap: $folderGB GB; operator chose skip"
+                            Add-ManualTask -Task 'Copy Downloads folder manually (if needed)' -Reason 'Skipped above the Online Downloads cap' -Instructions "Copy C:\Users\$($Script:OriginalUserName)\Downloads separately if needed."
+                            continue
+                        }
+                        Write-Log "Downloads above Online cap approved by operator: $folderGB GB" -Level Warning
                     }
-                    elseif ($folder -eq "Downloads" -and $folderGB -gt $Script:Config.Online.DownloadsCapGB) {
-                        Write-Log "Downloads cap overridden: copying $folderGB GB in Online mode" -Level Warning
-                        Write-Status "Downloads" "WARN" "$folderGB GB exceeds cap; override enabled"
+                    elseif ($folder -eq 'Downloads' -and $folderGB -gt $Script:Config.Online.DownloadsCapGB) {
+                        Write-Log "Downloads cap override enabled: copying $folderGB GB" -Level Warning
+                        Write-Status 'Downloads' 'WARN' "$folderGB GB exceeds Online cap; override enabled"
                     }
 
                     # Any other large folder: ask the tech (skip / copy anyway).
@@ -49,7 +53,7 @@ function Copy-UserFolders {
                         Write-Host ""
                         Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
                         Write-Host "$folder is $folderGB GB (over the $($Script:Config.Online.LargeFolderPromptGB) GB online threshold)." -ForegroundColor White
-                        $ans = Read-Host "    Copy it anyway? (Y = copy / N = skip)"
+                        $ans = Read-UserInput "    Copy it anyway? (Y = copy / N = skip)"
                         if ($ans -notmatch "^[Yy]") {
                             Write-Log "$folder ($folderGB GB) skipped by operator (online mode)" -Level Warning
                             Write-Status $folder "SKIP" "$folderGB GB, skipped by operator"
@@ -100,7 +104,6 @@ function Copy-UserFolders {
             Add-Result -Category "User Folders" -Item $folder -Status "Skipped" -Details "Folder not found"
         }
     }
-    }
     
     # Check for additional folders in user profile (excluding known system folders and cloud sync folders)
     Write-Log "Checking for additional user folders..." -Level Info
@@ -142,7 +145,7 @@ function Copy-UserFolders {
                 $folderBytes = Get-FolderSizeBytes -Path $folder.FullName
                 $folderGB = [math]::Round($folderBytes / 1GB, 2)
                 if ($folderGB -gt $Script:Config.Online.AdditionalFolderCapGB) {
-                    $answer = Read-Host "  Additional folder '$($folder.Name)' is $folderGB GB (cap: $($Script:Config.Online.AdditionalFolderCapGB) GB). Copy it? (Y/N)"
+                    $answer = Read-UserInput "  Additional folder '$($folder.Name)' is $folderGB GB (cap: $($Script:Config.Online.AdditionalFolderCapGB) GB). Copy it? (Y/N)"
                     if ($answer -notmatch '^[Yy]') {
                         Add-Result -Category "Additional Folders" -Item $folder.Name -Status "Skipped" -Details "Online size cap: $folderGB GB; operator chose skip"
                         Add-ManualTask -Task "Copy additional folder $($folder.Name) manually" -Reason "Skipped above the Online additional-folder cap" -Instructions "Copy C:\Users\$($Script:OriginalUserName)\$($folder.Name) separately if needed."
@@ -276,7 +279,7 @@ function Copy-UserFolders {
             $ocsBytes = Get-FolderSizeBytes -Path $ocsPath
             $ocsGB = [math]::Round($ocsBytes / 1GB, 2)
             if ($ocsGB -gt $Script:Config.Online.AdditionalFolderCapGB) {
-                $answer = Read-Host "  OCS Documents is $ocsGB GB (cap: $($Script:Config.Online.AdditionalFolderCapGB) GB). Copy it? (Y/N)"
+                $answer = Read-UserInput "  OCS Documents is $ocsGB GB (cap: $($Script:Config.Online.AdditionalFolderCapGB) GB). Copy it? (Y/N)"
                 if ($answer -notmatch '^[Yy]') {
                     Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Skipped" -Details "Online size cap: $ocsGB GB; operator chose skip"
                     Add-ManualTask -Task "Copy OCS Documents manually" -Reason "Skipped above the Online additional-folder cap" -Instructions "Copy C:\OCS Documents separately if needed."

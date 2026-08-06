@@ -205,6 +205,32 @@ $reviewAppDataCandidates = [bool]::Parse('{IMPORT_APPDATA_REVIEW}')
 $importFirefox = $true
 $deletePrintBrmAfterImport = [bool]::Parse('{DELETE_PRINTBRM_AFTER_IMPORT}')
 $enableAdminHelper = [bool]::Parse('{ENABLE_ADMIN_HELPER}')
+$isOnlineTransfer = [bool]::Parse('{IS_ONLINE_TRANSFER}')
+$browserDataPath = Join-Path $scriptPath 'BrowserData'
+
+function Read-UserInput {
+    param([string]$Prompt)
+    Write-Host $Prompt
+    return Read-Host '  > '
+}
+
+function Invoke-OnlineChromePasswordImport {
+    $passwordExportPath = Join-Path $browserDataPath 'Chrome\PasswordExport'
+    $csvs = @(Get-ChildItem -LiteralPath $passwordExportPath -Filter '*.csv' -File -Force -ErrorAction SilentlyContinue)
+    if (-not $csvs.Count) { return }
+    Write-Host '  Chrome password export detected - this CSV is plaintext. Keep the transfer package secure.' -ForegroundColor Yellow
+    foreach ($csv in $csvs) { Write-Host "    File: $($csv.FullName)" -ForegroundColor Gray }
+    if ($TestMode) { Add-Result -Category 'Browser' -Item 'Chrome Passwords' -Status 'TestMode' -Details "$($csvs.Count) CSV file(s); native import required"; return }
+    if ((Read-UserInput '  Open Chrome Password Manager now? (Y/N)') -match '^[Yy]') {
+        try { Start-Process 'chrome.exe' 'chrome://password-manager/settings' -ErrorAction Stop } catch { Write-Log "Could not open Chrome Password Manager automatically: $_" -Level Warning }
+    }
+    if ((Read-UserInput '  After importing and verifying passwords, type DELETE to permanently remove the plaintext CSV (or press Enter to keep it)') -ceq 'DELETE') {
+        try { foreach ($csv in $csvs) { Remove-Item -LiteralPath $csv.FullName -Force -ErrorAction Stop }; Add-Result -Category 'Browser' -Item 'Chrome Passwords' -Status 'Success' -Details 'Imported through Chrome and deleted from transfer package' }
+        catch { Add-Result -Category 'Browser' -Item 'Chrome Passwords' -Status 'Warning' -Details 'CSV may still be present; remove it securely after import' }
+    }
+    else { Add-Result -Category 'Browser' -Item 'Chrome Passwords' -Status 'Manual' -Details 'Import in Chrome, verify, then securely delete plaintext CSV' }
+    $Script:ChromePasswordImportHandled = $true
+}
 
 function Write-Log {
     param([string]$Message, [string]$Level = "Info")
@@ -426,7 +452,7 @@ if (-not $TestMode -and $env:COMPUTERNAME -eq "{COMPUTERNAME}") {
     Write-Host "  WARNING: Running on the SAME computer as export!" -ForegroundColor Yellow
     Write-Host "  This may overwrite existing files." -ForegroundColor Yellow
     Write-Host ""
-    $confirm = Read-Host "  Continue anyway? (Y/N)"
+    $confirm = Read-UserInput "  Continue anyway? (Y/N)"
     if ($confirm -notmatch "^[Yy]") {
         Write-Host "`n  Import cancelled." -ForegroundColor Gray
         exit
@@ -446,6 +472,8 @@ if ($isActuallyAdmin -and -not $TestMode) {
 }
 $isAdmin = $false # This script intentionally never performs elevated work.
 Write-Host "  Running in signed-in user context; user data and connections restore here." -ForegroundColor DarkGray
+
+if ($isOnlineTransfer) { Invoke-OnlineChromePasswordImport }
 
 Write-Host ""
 Write-Host "  Starting import..." -ForegroundColor Cyan
@@ -701,7 +729,7 @@ if (Test-Path -LiteralPath $desktopLayoutFile) {
             if ($candidates.Count) {
                 Write-Host '  Exact duplicate OneDrive Desktop shortcuts:' -ForegroundColor Yellow
                 $candidates | ForEach-Object { Write-Host "    $($_.FullName)" -ForegroundColor Gray }
-                $answer = Read-Host '  Send ALL listed duplicate shortcuts to the Recycle Bin? (Y/N)'
+                $answer = Read-UserInput '  Send ALL listed duplicate shortcuts to the Recycle Bin? (Y/N)'
                 if ($answer -match '^[Yy]') {
                     foreach ($candidate in $candidates) {
                         try { Send-ShortcutToRecycleBin -Path $candidate.FullName; Write-Log "OneDrive duplicate shortcut recycled: $($candidate.Name)" -Level 'Success' }
@@ -1808,7 +1836,7 @@ function Restore-ChromiumProfileBookmarks {
     $running = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
     if ($running.Count -gt 0) {
         Write-Host "  $BrowserName must be closed before bookmarks can be restored." -ForegroundColor Yellow
-        [void](Read-Host "  Close $BrowserName, then press Enter to continue (S to skip)")
+        [void](Read-UserInput "  Close $BrowserName, then press Enter to continue (S to skip)")
         $running = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
     }
     if ($running.Count -gt 0) {
@@ -1864,6 +1892,43 @@ function Restore-ChromiumProfileBookmarks {
     }
 }
 
+function Restore-ChromeProfileArchive {
+    param([string]$PackageUserDataPath, [string]$TargetUserDataPath)
+    if (-not (Test-Path -LiteralPath $PackageUserDataPath)) { return }
+    if ($TestMode) {
+        $count = @(Get-ChildItem -LiteralPath $PackageUserDataPath -Recurse -File -Force -ErrorAction SilentlyContinue).Count
+        Add-Result -Category 'Browser' -Item 'Chrome Profile' -Status 'TestMode' -Details "$count files would be restored"
+        return
+    }
+    $running = @(Get-Process -Name chrome -ErrorAction SilentlyContinue)
+    if ($running.Count) {
+        $closeChrome = Read-UserInput '  Google Chrome must be closed. Close it, then press Enter to continue (S to skip)'
+        $running = @(Get-Process -Name chrome -ErrorAction SilentlyContinue)
+        if ($closeChrome -match '^[Ss]') { $running = @('skipped') }
+    }
+    if ($running.Count) {
+        Add-Result -Category 'Browser' -Item 'Chrome Profile' -Status 'Skipped' -Details 'Close Chrome and rerun the import script'
+        return
+    }
+    $backup = Join-Path $env:LOCALAPPDATA "LaptopTransferBrowserBackups\Chrome\$(Get-Date -Format 'yyyyMMdd_HHmmss')\User Data"
+    try {
+        $targetParent = Split-Path -Parent $TargetUserDataPath
+        New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
+        if (Test-Path -LiteralPath $TargetUserDataPath) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
+            Move-Item -LiteralPath $TargetUserDataPath -Destination $backup -ErrorAction Stop
+        }
+        $result = Copy-WithProgress -Source $PackageUserDataPath -Destination $TargetUserDataPath -FolderName 'Chrome profile (all profiles)' -LogPath (Join-Path $logsPath 'import_chrome_profile.log')
+        if ($result.Status -ne 'Success') { throw "Profile copy did not complete successfully (robocopy exit $($result.ExitCode))" }
+        Add-Result -Category 'Browser' -Item 'Chrome Profile' -Status 'Success' -Details "$($result.FilesCopied) files; prior data backed up when present"
+        Write-Host '    Chrome extensions, settings, history, and bookmarks were restored. Passwords and cookies may require Chrome sign-in.' -ForegroundColor Gray
+    }
+    catch {
+        Add-Result -Category 'Browser' -Item 'Chrome Profile' -Status 'Warning' -Details $_.Exception.Message
+        Write-Log "Chrome profile restore failed: $($_.Exception.Message)" -Level Warning
+    }
+}
+
 if (Test-Path $printerExportFile) {
     Write-Log "Local/direct-IP printer package retained for optional administrator helper" -Level "Info"
     Write-Status "Local printers" "INFO" "optional administrator helper"
@@ -1888,18 +1953,14 @@ if ($chromeBookmarkFiles.Count -gt 0) {
     Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Ready" -Details "$($chromeBookmarkFiles.Count) HTML file(s) for manual import"
 }
 
-# Chrome profile archive. Credentials and cookies remain encrypted to the old
-# Windows installation, so they are deliberately not restored.  Bookmarks are
-# portable, however, and are restored below without replacing the rest of the
-# Chrome profile.
+# A FullProfile archive restores the complete Chrome User Data tree. Passwords
+# and cookies remain Windows-protected and may still require Chrome sign-in.
 $chromeProfileArchive = Join-Path $browserDataPath "Chrome\User Data"
 if (Test-Path -LiteralPath $chromeProfileArchive) {
     $chromeArchiveFiles = (Get-ChildItem -LiteralPath $chromeProfileArchive -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object).Count
-    Write-Log "Chrome profile archive retained ($chromeArchiveFiles files; only portable bookmarks are restored)" -Level "Info"
+    Write-Log "Chrome profile archive detected ($chromeArchiveFiles files)" -Level "Info"
     Write-Host "    Chrome profile archive: $chromeProfileArchive" -ForegroundColor Gray
-    Write-Host "    Bookmarks are restored automatically when Chrome is closed; credentials remain protected." -ForegroundColor Gray
-    Add-Result -Category "Browser" -Item "Chrome Profile Archive" -Status "Info" -Details "$chromeArchiveFiles files retained; credentials and cookies are not restored"
-    Restore-ChromiumProfileBookmarks -BrowserName "Chrome" -ProcessName "chrome" -PackageUserDataPath $chromeProfileArchive -TargetUserDataPath (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data")
+    Restore-ChromeProfileArchive -PackageUserDataPath $chromeProfileArchive -TargetUserDataPath (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data")
 }
 
 # Chrome's native Password Manager export produces a plaintext CSV after the
@@ -1907,6 +1968,8 @@ if (Test-Path -LiteralPath $chromeProfileArchive) {
 # not attempt to decrypt the raw Chrome profile here; the browser/Windows
 # protections are intentional. Instead, guide the user through Chrome's own
 # CSV import and offer to remove the sensitive export after confirmation.
+function Invoke-ChromePasswordImport {
+if ($Script:ChromePasswordImportHandled) { return }
 $chromePasswordExportPath = Join-Path $browserDataPath "Chrome\PasswordExport"
 $chromePasswordCsvs = @(Get-ChildItem -LiteralPath $chromePasswordExportPath -Filter "*.csv" -File -Force -ErrorAction SilentlyContinue)
 if ($chromePasswordCsvs.Count -gt 0) {
@@ -1922,13 +1985,13 @@ if ($chromePasswordCsvs.Count -gt 0) {
         Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "TestMode" -Details "$($chromePasswordCsvs.Count) plaintext CSV file(s); manual native Chrome import required"
     }
     else {
-        $openChrome = Read-Host "  Open Chrome Password Manager now? (Y/N)"
+        $openChrome = Read-UserInput "  Open Chrome Password Manager now? (Y/N)"
         if ($openChrome -match '^[Yy]') {
             try { Start-Process "chrome.exe" "chrome://password-manager/settings" -ErrorAction Stop }
             catch { Write-Log "Could not open Chrome Password Manager automatically: $_" -Level Warning }
         }
 
-        $deleteCsv = Read-Host "  After importing and verifying passwords, type DELETE to permanently remove the plaintext CSV (or press Enter to keep it)"
+        $deleteCsv = Read-UserInput "  After importing and verifying passwords, type DELETE to permanently remove the plaintext CSV (or press Enter to keep it)"
         if ($deleteCsv -ceq "DELETE") {
             try {
                 foreach ($chromePasswordCsv in $chromePasswordCsvs) {
@@ -1947,6 +2010,7 @@ if ($chromePasswordCsvs.Count -gt 0) {
             Add-Result -Category "Browser" -Item "Chrome Passwords" -Status "Manual" -Details "Import in Chrome, verify, then securely delete plaintext CSV"
         }
     }
+}
 }
 
 # OneDrive Files On-Demand: after the user has signed in, pin every synced
@@ -2057,7 +2121,7 @@ else {
         $firefoxProcesses = @(Get-Process -Name "firefox" -ErrorAction SilentlyContinue)
         if ($firefoxProcesses.Count -gt 0) {
             Write-Host "  Firefox must be closed before its profile can be restored." -ForegroundColor Yellow
-            $closeFirefox = Read-Host "  Close Firefox, then press Enter to continue (S to skip)"
+            $closeFirefox = Read-UserInput "  Close Firefox, then press Enter to continue (S to skip)"
             $firefoxProcesses = @(Get-Process -Name "firefox" -ErrorAction SilentlyContinue)
         }
 
@@ -2333,6 +2397,8 @@ Write-Host ""
 # SUMMARY
 # ============================================================================
 
+if (-not $isOnlineTransfer) { Invoke-ChromePasswordImport }
+
 Write-Section "Import summary"
 Write-Host ""
 
@@ -2498,7 +2564,7 @@ function Start-PostImportHandoff {
     }
 
     if (-not $postImportLaunchConfig -or -not $postImportLaunchConfig.Enabled) { return }
-    $launchApps = Read-Host '  Open the standard handoff applications too? (Y/N) [N]'
+    $launchApps = Read-UserInput '  Open the standard handoff applications too? (Y/N) [N]'
     if ($launchApps -notmatch '^[Yy]') {
         Write-Log 'Technician chose report-only completion view.' -Level 'Info'
         return
@@ -2533,7 +2599,7 @@ if (-not $TestMode) {
 }
 
 if (-not $TestMode) {
-    Read-Host "  Press Enter to exit"
+    Read-UserInput "  Press Enter to exit" | Out-Null
 }
 '@
 
@@ -2546,6 +2612,7 @@ if (-not $TestMode) {
     $importScript = $importScript -replace '\{IMPORT_APPDATA_REVIEW\}', $Script:Config.Import.AppDataReview.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{DELETE_PRINTBRM_AFTER_IMPORT\}', $Script:Config.Import.DeletePrintBrmAfterImport.ToString().ToLowerInvariant()
     $importScript = $importScript -replace '\{ENABLE_ADMIN_HELPER\}', $Script:Config.Import.EnableAdminHelper.ToString().ToLowerInvariant()
+    $importScript = $importScript -replace '\{IS_ONLINE_TRANSFER\}', ($Script:Config.TransferMode -eq 'Online').ToString().ToLowerInvariant()
     # Preserve compatibility with callers that construct a minimal Import
     # hashtable instead of loading the full development configuration.
     $postImportLaunchProfile = $Script:Config.Import.PostImportLaunch

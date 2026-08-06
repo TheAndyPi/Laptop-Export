@@ -8,13 +8,15 @@
         # the standard user-folder, AppData, and browser stages.
         EntireUserProfile = $false
         AdditionalAppData = $false
+        Downloads         = $true
         AppData           = $true
         LotusNotes        = $true
         SystemSettings    = $true
         InstalledPrograms = $true
         AppDataCandidateInventory = $true
         Printers          = $true
-        Chrome            = $true
+        # Off, BookmarksAndPasswords, or FullProfile.
+        Chrome            = 'BookmarksAndPasswords'
         Firefox           = $true
         Edge              = $true
         OneDrive          = $true
@@ -88,7 +90,7 @@
     Online = @{
         # Online transfers warn before starting when selected payload exceeds this size.
         MaxTransferGB = 5
-        # Set true only when the technician deliberately wants Downloads above the cap.
+        # Bypass the per-folder 5 GB Downloads confirmation for this transfer.
         OverrideDownloadsCap = $false
         # Online transfers create a ZIP beside the transfer folder by default.
         CreateZipArchive = $true

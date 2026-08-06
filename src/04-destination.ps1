@@ -23,7 +23,15 @@ function Test-PathIsSameOrChild {
 function Test-DestinationIsWithinSourceProfile {
     param([string]$Path)
 
-    return Test-PathIsSameOrChild -Path $Path -ParentPath $Script:OriginalUserProfile
+    if (-not (Test-PathIsSameOrChild -Path $Path -ParentPath $Script:OriginalUserProfile)) { return $false }
+    $appDataRoot = Join-Path $Script:OriginalUserProfile 'AppData'
+    $exportsRoot = Join-Path $appDataRoot 'Exports'
+    # The caller treats $true as blocked. AppData itself and its dedicated
+    # Exports child are the only source-profile destinations allowed.
+    $normalizedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd([char]92)
+    $normalizedAppData = [System.IO.Path]::GetFullPath($appDataRoot).TrimEnd([char]92)
+    if ($normalizedPath -eq $normalizedAppData -or (Test-PathIsSameOrChild -Path $Path -ParentPath $exportsRoot)) { return $false }
+    return $true
 }
 
 function Show-NativeWindowsFolderPicker {
@@ -186,7 +194,7 @@ function Select-TargetDrive {
     Write-Host "`n  [0] Cancel`n" -ForegroundColor Gray
 
     do {
-        $selection = Read-Host "Select target drive (1-$($drives.Count))"
+        $selection = Read-UserInput "Select target drive (1-$($drives.Count))"
         if ($selection -eq "0") { return $null }
 
         $index = 0
@@ -194,7 +202,7 @@ function Select-TargetDrive {
             $index--
             if ($index -ge 0 -and $index -lt $drives.Count) {
                 $selectedDrive = $drives[$index]
-                $confirm = Read-Host "Proceed with $($selectedDrive.Display)? (Y/N)"
+                $confirm = Read-UserInput "Proceed with $($selectedDrive.Display)? (Y/N)"
                 if ($confirm -match "^[Yy]") { return $selectedDrive.Letter }
             }
         }
@@ -232,7 +240,7 @@ function Select-TargetDestination {
         catch {
             # Keep a console fallback for constrained PowerShell hosts.
             Write-Host "Could not open the Windows folder picker: $_" -ForegroundColor Yellow
-            $selectedPath = Read-Host "Enter destination folder path (blank to cancel)"
+            $selectedPath = Read-UserInput "Enter destination folder path (blank to cancel)"
             if (-not $selectedPath) { return $null }
         }
     }
@@ -324,21 +332,16 @@ function Get-FolderSizeBytes {
 
 function Get-TransferPayloadEstimate {
     $sizes = @{}
-    foreach ($key in @("UserData","EntireUserProfile","AdditionalAppData","AppData","LotusNotes","SystemSettings","InstalledPrograms","Printers","Chrome","Firefox","Edge","OneDrive")) {
+    foreach ($key in @("UserData","Downloads","EntireUserProfile","AdditionalAppData","AppData","LotusNotes","SystemSettings","InstalledPrograms","Printers","Chrome","Firefox","Edge","OneDrive")) {
         $sizes[$key] = [long]0
     }
 
     if ($Script:Config.Backup.UserData) {
         foreach ($folder in $Script:Config.UserFolders) {
-            $bytes = Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder)
-            if ($Script:Config.TransferMode -eq "Online" -and $folder -eq "Downloads" -and
-                -not $Script:Config.Online.OverrideDownloadsCap -and
-                ($bytes / 1GB) -gt $Script:Config.Online.DownloadsCapGB) {
-                continue
-            }
-            $sizes.UserData += $bytes
+            if ($folder -ne 'Downloads') { $sizes.UserData += Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder) }
         }
     }
+    if ($Script:Config.Backup.Downloads) { $sizes.Downloads = Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile 'Downloads') }
 
     if ($Script:Config.Backup.EntireUserProfile) {
         # The full-profile stage excludes standard user folders and AppData,
@@ -369,14 +372,7 @@ function Get-TransferPayloadEstimate {
         -not ($Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.SkipLotusNotes)) {
         $sizes.LotusNotes = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Lotus")
     }
-    if ($Script:Config.Backup.Chrome) {
-        # Online lean mode exports portable bookmarks and an optional native
-        # password CSV only; do not reserve/archive the raw profile unless
-        # the technician enables it in Advanced Online Controls.
-        if ($Script:Config.TransferMode -ne 'Online' -or $Script:Config.Online.IncludeChromeProfileArchive) {
-            $sizes.Chrome = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Google\Chrome\User Data")
-        }
-    }
+    if ($Script:Config.Backup.Chrome -eq 'FullProfile') { $sizes.Chrome = Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Google\Chrome\User Data") }
     if ($Script:Config.Backup.Firefox) {
         $sizes.Firefox = (Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataRoaming "Mozilla\Firefox")) +
                           (Get-FolderSizeBytes (Join-Path $Script:OriginalAppDataLocal "Mozilla\Firefox"))
@@ -662,16 +658,20 @@ function Resolve-TransferMode {
     if ($Script:Config.TransferMode -in @("Local", "Online") -and $TransferMode) {
         return  # already set from param
     }
+    Write-StoLogo
     Write-Section "Transfer mode"
     Write-Host "  [1] Local  " -ForegroundColor Cyan -NoNewline
     Write-Host "- full copy (USB / on-site)" -ForegroundColor DarkGray
     Write-Host "  [2] Online " -ForegroundColor Cyan -NoNewline
-    Write-Host "- trimmed for slow/remote links (caps Downloads at $($Script:Config.Online.DownloadsCapGB)GB, skips Lotus)" -ForegroundColor DarkGray
+    Write-Host "- Online Downloads default on; folders above $($Script:Config.Online.DownloadsCapGB)GB require confirmation" -ForegroundColor DarkGray
+    Write-Host "  [3] Administrator " -ForegroundColor Cyan -NoNewline
+    Write-Host "- restart with administrator privileges" -ForegroundColor DarkGray
     Write-Host ""
     do {
-        $m = Read-Host "  Select transfer mode (1-2)"
+        $m = Read-UserInput "  Select transfer mode (1-3)"
         if ($m -eq "1") { $Script:Config.TransferMode = "Local"; break }
         if ($m -eq "2") { $Script:Config.TransferMode = "Online"; break }
+        if ($m -eq '3') { Restart-AsAdministrator; continue }
         Write-Host "  Invalid selection." -ForegroundColor Red
     } while ($true)
 }

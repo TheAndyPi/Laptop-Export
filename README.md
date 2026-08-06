@@ -12,7 +12,7 @@ The deployed `Export-LaptopData.ps1` remains a single, self-contained script. Fo
 powershell -ExecutionPolicy Bypass -File ".\Build-Deployment.ps1"
 ```
 
-For development, [`src/00-development-config.psd1`](src/00-development-config.psd1) controls each export stage. All switches default to `$true`; rebuild after changing a value. The config is embedded in the generated deployment script, so it is not a separate technician-side dependency. Set `Backup.Chrome` to `$false` to skip Chrome while still exporting Edge and Firefox. Under `Import`, disable only the Lotus Notes or Firefox restore as needed. Under `Online`, set `CreateZipArchive` to `$false` to retain only the transfer folder, set `StageNetworkTransfersLocally` to `$false` to disable local staging, and set `Online.Import` values to the defaults that should apply whenever an Online transfer is selected.
+For development, [`src/00-development-config.psd1`](src/00-development-config.psd1) controls each export stage. The config is embedded in the generated deployment script, so it is not a separate technician-side dependency. Set `Backup.Chrome` to `Off`, `BookmarksAndPasswords`, or `FullProfile`; Local ZIP creation is controlled by `Transfer.CreateZipArchive`, while Online ZIP and staging defaults are under `Online`.
 
 Run the automated regression suite before committing changes:
 
@@ -47,7 +47,7 @@ The script is interactive. It will prompt you to:
    - **Local:** Select an external or secondary drive from the console; the Windows folder picker is not opened.
    - **Online:** A Windows folder picker opens. Choose a network share, cloud-synced folder, or any local folder.
 
-It then runs the export and opens the HTML report when finished. **Online** transfers also create `LaptopTransfer_<timestamp>.zip` beside the package folder; **Local** transfers keep only the folder.
+It then runs the export and opens the HTML report when finished. Online transfers create a ZIP by default; Local transfers can opt into ZIP creation in Transfer Settings.
 
 For lean Online packages, choose `A` in **Transfer Settings** to open **Advanced Online Controls**. There you can opt into the full Chrome profile archive, extra profile folders, `C:\OCS Documents`, detailed AppData candidate sizing, and set the confirmation cap for included extra folders. All advanced options default to off for Online transfers; Local transfers remain comprehensive.
 
@@ -62,8 +62,8 @@ For lean Online packages, choose `A` in **Transfer Settings** to open **Advanced
 
 | Mode | Use case | Behavior |
 |------|----------|----------|
-| **Local** | USB / on-site | Full copy of everything; no ZIP is created. |
-| **Online** | Slow / remote links | Trimmed: caps `Downloads` at 5 GB (omits if larger), skips Lotus Notes data, prompts on any folder over 10 GB, skips OneDrive re-hydration, and creates a ZIP. |
+| **Local** | USB / on-site | Full copy; ZIP creation is optional and off by default. |
+| **Online** | Slow / remote links | Downloads is on by default; over 5 GB, the technician chooses whether to copy it or can enable the cap override in Transfer Settings. Online creates a ZIP by default. |
 
 ## What it captures
 
@@ -92,7 +92,7 @@ LaptopTransfer_<timestamp>\
 ├── QuickImport.bat        # double-click launcher (runs as the signed-in user)
 └── TransferReport.html    # full report of everything captured
 
-LaptopTransfer_<timestamp>.zip  # Online transfers only: portable copy of the package above
+LaptopTransfer_<timestamp>.zip  # present whenever ZIP creation is enabled
 ```
 
 ## On the new machine
@@ -107,7 +107,7 @@ powershell -ExecutionPolicy Bypass -File ".\Import-LaptopData.ps1"
 
 If Firefox data is present, the import script restores it automatically. Close Firefox when prompted; any existing Firefox data on the new laptop is moved to a timestamped `Firefox_Backup_*` folder beside the restored profile.
 
-With Chrome and Edge closed, the import script restores bookmarks automatically for each `Default` profile and any matching `Profile N` profiles. It backs up any target bookmark file first. Profiles that do not yet exist on the new machine remain available as portable HTML files for native browser import. The raw Chrome profile archive is retained for recovery/reference but credentials and cookies are deliberately not copied over: their encryption is tied to the old Windows installation. During export, the tool can open Chrome Password Manager so the original user can complete Chrome's Windows-authenticated password export. Save that resulting plaintext CSV in the requested `BrowserData\Chrome\PasswordExport` folder. The generated import script guides the native Chrome CSV import and offers to delete the CSV only after you confirm the import succeeded.
+With Chrome closed, a FullProfile archive restores the complete Chrome `User Data` folder after moving any existing destination data to a timestamped backup. Passwords and cookies remain Windows-protected and may require Chrome sign-in or a native password CSV import. Online packages offer password import at startup; Local packages offer it at the end.
 
 During any file-copy step, press `S` to stop that copy and continue the export. The transfer report records the step as skipped; partially copied files remain in place so a later export can resume the copy.
 

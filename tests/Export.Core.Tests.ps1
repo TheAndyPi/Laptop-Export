@@ -9,6 +9,14 @@ Describe 'Destination safety' {
     It 'does not reject a sibling profile with the same prefix' {
         Test-PathIsSameOrChild -Path 'C:\Users\Alexandra\Transfer' -ParentPath 'C:\Users\Alex' | Should Be $false
     }
+
+    It 'allows only AppData and AppData\\Exports inside the source profile' {
+        $script:OriginalUserProfile = 'C:\Users\Alex'
+        Test-DestinationIsWithinSourceProfile -Path 'C:\Users\Alex\AppData' | Should Be $false
+        Test-DestinationIsWithinSourceProfile -Path 'C:\Users\Alex\AppData\Exports\Transfer' | Should Be $false
+        Test-DestinationIsWithinSourceProfile -Path 'C:\Users\Alex\AppData\Local\Transfer' | Should Be $true
+        Test-DestinationIsWithinSourceProfile -Path 'C:\Users\Alex\Documents\Transfer' | Should Be $true
+    }
 }
 
 Describe 'Online payload estimation' {
@@ -21,15 +29,21 @@ Describe 'Online payload estimation' {
         $script:Config.TransferMode = 'Online'
         $script:Config.UserFolders = @('Downloads')
         foreach ($key in @($script:Config.Backup.Keys)) { $script:Config.Backup[$key] = $false }
-        $script:Config.Backup.UserData = $true
+        $script:Config.Backup.Downloads = $true
         $script:Config.Online.DownloadsCapGB = 0.001
-        $script:Config.Online.OverrideDownloadsCap = $false
     }
 
-    It 'excludes Downloads above the online cap unless explicitly overridden' {
-        (Get-TransferPayloadEstimate).TotalBytes | Should Be 0
-        $script:Config.Online.OverrideDownloadsCap = $true
+    It 'includes the independent Downloads toggle in the Online size estimate' {
         (Get-TransferPayloadEstimate).TotalBytes | Should BeGreaterThan 0
+        $script:Config.Backup.Downloads = $false
+        (Get-TransferPayloadEstimate).TotalBytes | Should Be 0
+    }
+
+    It 'retains the Downloads-cap override as a runtime setting' {
+        $core = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\03-core.ps1') -Raw
+        $userData = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\05-user-data.ps1') -Raw
+        $core | Should Match 'OverrideDownloadsCap'
+        $userData | Should Match 'OverrideDownloadsCap'
     }
 }
 
@@ -49,10 +63,10 @@ Describe 'Online performance controls' {
         $userData = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\05-user-data.ps1') -Raw
         $main = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\10-main.ps1') -Raw
         $core | Should Match 'Show-OnlineAdvancedSettingsMenu'
-        $browser | Should Match 'IncludeChromeProfileArchive'
+        $browser | Should Match "Backup.Chrome -eq 'FullProfile'"
         $userData | Should Match 'IncludeAdditionalUserFolders'
         $userData | Should Match 'IncludeOcsDocuments'
-        $main | Should Match 'DetailedAppDataCandidateInventory'
+        $main | Should Match 'Show-BackupOverview'
     }
 }
 
@@ -122,7 +136,7 @@ Describe 'Startup presentation and size placeholders' {
         $destination = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\04-destination.ps1') -Raw
         $destination | Should Not Match 'function Select-TargetDrive \{\s*Write-StoLogo'
         $destination | Should Not Match 'function Select-TargetDestination \{\s*Write-StoLogo'
-        $main | Should Match 'Show-TransferSettingsMenu'
+        $main | Should Match 'Show-BackupOverview'
         $core | Should Match 'calculating\.\.\.'
         $core | Should Match 'Start-TransferSizeEstimateJob'
         $core | Should Match 'Calculating folder sizes in the background'
@@ -150,7 +164,7 @@ Describe 'Start Menu migration and transfer timing' {
         $userData | Should Match 'Resolve-ExportUserFolderPath \$folder'
         $template | Should Match '"Start Menu"'
         $template | Should Match "\$folder -eq 'Start Menu'"
-        $main | Should Match 'Show-TransferSettingsMenu'
+        $main | Should Match 'Show-BackupOverview'
         $main | Should Match 'Transfer clock started after settings confirmation'
     }
 }

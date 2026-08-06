@@ -142,3 +142,9 @@ function Clear-StoScreen {
     try { Clear-Host -ErrorAction Stop } catch { }
 }
 
+function Read-UserInput {
+    param([string]$Prompt)
+    Write-Host $Prompt
+    return Read-Host '  > '
+}
+

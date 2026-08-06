@@ -25,7 +25,7 @@ else {
 # ============================================================================
 
 $Script:Config = @{
-    Version = "0.7"
+    Version = "0.9"
     TransferFolderName = "LaptopTransfer_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 
     # Printer driver binaries in the PrintBRM package. Network printers also
@@ -83,12 +83,16 @@ $Script:Config = @{
     # Resolved at runtime from the -TransferMode param or an interactive prompt.
     TransferMode = "Local"
 
+    Transfer = @{
+        # Local packages default to folders; Online defaults below enable ZIP.
+        CreateZipArchive = $false
+    }
+
     # Online-mode trimming rules (only applied when TransferMode = "Online")
     Online = @{
-        # Downloads is usually one of the two largest folders. Cap it: if it
-        # exceeds this size, omit it entirely (per IT guidance) and log a manual task.
         DownloadsCapGB   = 5
         MaxTransferGB    = 5
+        Downloads = $true
         OverrideDownloadsCap = $false
         # Lotus Notes local data is the other usual heavy hitter; omit by default.
         SkipLotusNotes   = $true
@@ -122,6 +126,7 @@ $Script:Config = @{
     # time and remain embedded in the single deployment script.
     Backup = @{
         UserData          = $true
+        Downloads         = $true
         EntireUserProfile = $false
         AdditionalAppData = $false
         AppData           = $true
@@ -130,7 +135,7 @@ $Script:Config = @{
         InstalledPrograms = $true
         AppDataCandidateInventory = $true
         Printers          = $true
-        Chrome            = $true
+        Chrome            = 'BookmarksAndPasswords'
         Firefox           = $true
         Edge              = $true
         OneDrive          = $true
@@ -149,7 +154,7 @@ $Script:Config = @{
 
 # Apply only known Boolean development switches so invalid additions cannot
 # unexpectedly change the behavior of a technician deployment.
-foreach ($sectionName in @("Backup", "Import", "Export")) {
+foreach ($sectionName in @("Backup", "Import", "Export", "Transfer")) {
     if (-not ($Script:DevelopmentConfig -is [hashtable]) -or
         -not $Script:DevelopmentConfig.ContainsKey($sectionName) -or
         -not ($Script:DevelopmentConfig[$sectionName] -is [hashtable])) {
@@ -166,13 +171,18 @@ foreach ($sectionName in @("Backup", "Import", "Export")) {
     }
 }
 
+if ($Script:DevelopmentConfig -is [hashtable] -and $Script:DevelopmentConfig.Backup -is [hashtable] -and
+    $Script:DevelopmentConfig.Backup.Chrome -in @('Off', 'BookmarksAndPasswords', 'FullProfile')) {
+    $Script:Config.Backup.Chrome = $Script:DevelopmentConfig.Backup.Chrome
+}
+
 # Online transfer behavior has a nested import-default section. Keep its
 # allowlist separate so config-file additions cannot alter unrelated settings.
 if ($Script:DevelopmentConfig -is [hashtable] -and
     $Script:DevelopmentConfig.ContainsKey("Online") -and
     $Script:DevelopmentConfig.Online -is [hashtable]) {
     $developmentOnline = $Script:DevelopmentConfig.Online
-    foreach ($switchName in @("CreateZipArchive", "StageNetworkTransfersLocally", "OverrideDownloadsCap", "IncludeChromeProfileArchive", "IncludeAdditionalUserFolders", "IncludeOcsDocuments", "DetailedAppDataCandidateInventory")) {
+    foreach ($switchName in @("Downloads", "OverrideDownloadsCap", "CreateZipArchive", "StageNetworkTransfersLocally", "IncludeChromeProfileArchive", "IncludeAdditionalUserFolders", "IncludeOcsDocuments", "DetailedAppDataCandidateInventory")) {
         if ($developmentOnline.ContainsKey($switchName) -and
             $developmentOnline[$switchName] -is [bool]) {
             $Script:Config.Online[$switchName] = $developmentOnline[$switchName]
@@ -214,7 +224,7 @@ if ($RuntimeSettings) {
                 }
             }
         }
-        foreach ($settingName in @('OverrideDownloadsCap', 'CreateZipArchive', 'StageNetworkTransfersLocally', 'IncludeChromeProfileArchive', 'IncludeAdditionalUserFolders', 'IncludeOcsDocuments', 'DetailedAppDataCandidateInventory')) {
+        foreach ($settingName in @('Downloads', 'OverrideDownloadsCap', 'CreateZipArchive', 'StageNetworkTransfersLocally', 'IncludeChromeProfileArchive', 'IncludeAdditionalUserFolders', 'IncludeOcsDocuments', 'DetailedAppDataCandidateInventory')) {
             if ($null -ne $savedSettings.Online.$settingName -and $savedSettings.Online.$settingName -is [bool]) {
                 $Script:Config.Online[$settingName] = $savedSettings.Online.$settingName
             }
@@ -239,9 +249,11 @@ if ($RuntimeSettings) {
     }
 }
 
-function Apply-OnlineImportDefaults {
+function Apply-OnlineTransferDefaults {
     if ($Script:Config.TransferMode -ne "Online") { return }
 
+    $Script:Config.Backup.Downloads = $Script:Config.Online.Downloads
+    $Script:Config.Transfer.CreateZipArchive = $Script:Config.Online.CreateZipArchive
     foreach ($switchName in $Script:Config.Online.Import.Keys) {
         $Script:Config.Import[$switchName] = $Script:Config.Online.Import[$switchName]
     }
@@ -331,7 +343,7 @@ function Get-TransferSizeDisplayEstimate {
     # interactive menu perform a competing foreground recursive scan.
     $sizes = @{}
     foreach ($key in @($Script:Config.Backup.Keys)) { $sizes[$key] = [long]0 }
-    foreach ($key in @('UserData', 'EntireUserProfile', 'AdditionalAppData', 'AppData', 'LotusNotes', 'Chrome', 'Firefox', 'Edge')) {
+    foreach ($key in @('UserData', 'Downloads', 'EntireUserProfile', 'AdditionalAppData', 'AppData', 'LotusNotes', 'Firefox', 'Edge')) {
         if ($Script:Config.Backup[$key]) { $sizes[$key] = $null }
     }
     if ($Script:Config.Backup.UserData) { $sizes.UserData = Get-CachedFolderSizeSum -Paths @($Script:Config.UserFolders | ForEach-Object { Resolve-ExportUserFolderPath $_ }) }
@@ -340,7 +352,8 @@ function Get-TransferSizeDisplayEstimate {
         $sizes.AppData = Get-CachedFolderSizeSum -Paths $appDataPaths
     }
     if ($Script:Config.Backup.LotusNotes) { $sizes.LotusNotes = Get-CachedFolderSizeBytes -Path (Join-Path $Script:OriginalAppDataLocal 'Lotus') }
-    if ($Script:Config.Backup.Chrome) { $sizes.Chrome = Get-CachedFolderSizeBytes -Path (Join-Path $Script:OriginalAppDataLocal 'Google\Chrome\User Data') }
+    if ($Script:Config.Backup.Chrome -eq 'FullProfile') { $sizes.Chrome = Get-CachedFolderSizeBytes -Path (Join-Path $Script:OriginalAppDataLocal 'Google\Chrome\User Data') }
+    elseif ($Script:Config.Backup.Chrome -eq 'BookmarksAndPasswords') { $sizes.Chrome = [long]0 }
     if ($Script:Config.Backup.Firefox) { $sizes.Firefox = Get-CachedFolderSizeSum -Paths @((Join-Path $Script:OriginalAppDataRoaming 'Mozilla\Firefox'), (Join-Path $Script:OriginalAppDataLocal 'Mozilla\Firefox')) }
     # Edge's export is only its Bookmarks files, so retain its placeholder
     # until the completed estimate performs that lightweight file calculation.
@@ -392,7 +405,7 @@ function Read-MenuInputWithBackgroundRefresh {
         $rawUi = $Host.UI.RawUI
         [void]$rawUi.KeyAvailable
     }
-    catch { return (Read-Host $Prompt).Trim() }
+    catch { return (Read-UserInput $Prompt).Trim() }
     $buffer = ''
     while ($true) {
         if (& $Poll) { Write-Host ''; return '__MENU_AUTO_REFRESH__' }
@@ -406,6 +419,28 @@ function Read-MenuInputWithBackgroundRefresh {
     }
 }
 
+function Show-BackupOverview {
+    while ($true) {
+        [void](Receive-TransferSizeEstimateJob)
+        Clear-StoScreen
+        Write-Section 'OVERVIEW OF BACKUP INCLUDING ESTIMATED SIZE'
+        $estimate = if ($Script:StartupPayloadEstimate) { $Script:StartupPayloadEstimate } else { $Script:TransferSizeDisplayEstimate }
+        Write-KeyValue 'Transfer mode' $Script:Config.TransferMode
+        Write-KeyValue 'Estimated size' $(if ($estimate) { Format-FileSize $estimate.TotalBytes } else { 'Calculating in background...' })
+        $selection = Read-MenuInputWithBackgroundRefresh -Prompt '  [1] Start transfer  [2] Change settings  [3] Cancel' -Poll {
+            $wasRunning = [bool]$Script:TransferSizeEstimateJob
+            [void](Receive-TransferSizeEstimateJob)
+            return ($wasRunning -and -not $Script:TransferSizeEstimateJob)
+        }
+        if ($selection -eq '__MENU_AUTO_REFRESH__') { continue }
+        if ($selection -eq '1') { return $true }
+        if ($selection -eq '3') { return $false }
+        if ($selection -eq '2') { if (-not (Show-TransferSettingsMenu)) { return $false }; continue }
+        Write-Host '  Enter 1, 2, or 3.' -ForegroundColor Yellow
+        Start-Sleep -Seconds 1
+    }
+}
+
 function Start-ElevatedExport {
     # Do not relaunch the whole exporter: that changes the transferring user's
     # profile context. Start-ElevatedSystemExport later elevates only PrintBRM
@@ -414,6 +449,15 @@ function Start-ElevatedExport {
         Write-Host "`n  User data stays in the signed-in user's context; PrintBRM and power will request UAC separately." -ForegroundColor Cyan
     }
     return $true
+}
+
+function Restart-AsAdministrator {
+    if ($Script:IsAdmin) { Write-Host '  Already running as Administrator.' -ForegroundColor Green; return }
+    try {
+        Start-Process PowerShell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -ErrorAction Stop
+        exit
+    }
+    catch { Write-Host '  Could not elevate. Continuing without administrator rights.' -ForegroundColor Yellow }
 }
 
 function Add-DisabledBackupResult {
@@ -431,18 +475,10 @@ function Show-OnlineAdvancedSettingsMenu {
     while ($true) {
         Clear-StoScreen
         Write-Banner -Title "Advanced Online Controls" -Subtitle "These choices affect this transfer only"
-        $chromePath = Join-Path $Script:OriginalAppDataLocal "Google\Chrome\User Data"
-        $chromeArchiveEstimate = Get-FolderSizeBytes -Path $chromePath
-        $archiveState = if ($Script:Config.Online.IncludeChromeProfileArchive) { "ON " } else { "OFF" }
-        $archiveColor = if ($Script:Config.Online.IncludeChromeProfileArchive) { "Green" } else { "DarkGray" }
-
-        Write-Host "  [1] $archiveState " -ForegroundColor Cyan -NoNewline
-        Write-Host "Chrome full profile archive" -ForegroundColor $archiveColor -NoNewline
-        Write-Host "  up to $(Format-FileSize $chromeArchiveEstimate); OFF = bookmarks + password export only" -ForegroundColor DarkGray
         foreach ($setting in @(
-            @{ Number = 2; Key = 'IncludeAdditionalUserFolders'; Label = 'Include additional user folders'; Detail = 'OFF skips unlisted profile folders in Online mode' }
-            @{ Number = 3; Key = 'IncludeOcsDocuments'; Label = 'Include C:\\OCS Documents'; Detail = 'OFF skips this optional project folder in Online mode' }
-            @{ Number = 4; Key = 'DetailedAppDataCandidateInventory'; Label = 'Detailed AppData candidate sizes'; Detail = 'OFF records names only and avoids recursive sizing' }
+            @{ Number = 1; Key = 'IncludeAdditionalUserFolders'; Label = 'Include additional user folders'; Detail = 'OFF skips unlisted profile folders in Online mode' }
+            @{ Number = 2; Key = 'IncludeOcsDocuments'; Label = 'Include C:\\OCS Documents'; Detail = 'OFF skips this optional project folder in Online mode' }
+            @{ Number = 3; Key = 'DetailedAppDataCandidateInventory'; Label = 'Detailed AppData candidate sizes'; Detail = 'OFF records names only and avoids recursive sizing' }
         )) {
             $state = if ($Script:Config.Online[$setting.Key]) { 'ON ' } else { 'OFF' }
             $color = if ($Script:Config.Online[$setting.Key]) { 'Green' } else { 'DarkGray' }
@@ -450,19 +486,19 @@ function Show-OnlineAdvancedSettingsMenu {
             Write-Host $setting.Label -ForegroundColor $color -NoNewline
             Write-Host "  $($setting.Detail)" -ForegroundColor DarkGray
         }
-        Write-Host "  [5] $($Script:Config.Online.AdditionalFolderCapGB) GB " -ForegroundColor Cyan -NoNewline
+        Write-Host "  [4] $($Script:Config.Online.AdditionalFolderCapGB) GB " -ForegroundColor Cyan -NoNewline
         Write-Host "Additional-folder cap" -ForegroundColor Yellow -NoNewline
         Write-Host "  folders above this require confirmation when included" -ForegroundColor DarkGray
-        $selection = (Read-Host "  Select 1-5, [B] Back").Trim()
+        $selection = (Read-UserInput "  Select 1-4, [B] Back").Trim()
         if ($selection -match '^[Bb]$') { return }
-        if ($selection -eq '5') {
-            $value = 0.0; $entered = Read-Host "  Enter additional-folder cap in GB (current: $($Script:Config.Online.AdditionalFolderCapGB))"
+        if ($selection -eq '4') {
+            $value = 0.0; $entered = Read-UserInput "  Enter additional-folder cap in GB (current: $($Script:Config.Online.AdditionalFolderCapGB))"
             if ([double]::TryParse($entered, [ref]$value) -and $value -gt 0) { $Script:Config.Online.AdditionalFolderCapGB = $value }
             continue
         }
         $index = 0
-        if ([int]::TryParse($selection, [ref]$index) -and $index -ge 1 -and $index -le 4) {
-            $key = @('IncludeChromeProfileArchive', 'IncludeAdditionalUserFolders', 'IncludeOcsDocuments', 'DetailedAppDataCandidateInventory')[$index - 1]
+        if ([int]::TryParse($selection, [ref]$index) -and $index -ge 1 -and $index -le 3) {
+            $key = @('IncludeAdditionalUserFolders', 'IncludeOcsDocuments', 'DetailedAppDataCandidateInventory')[$index - 1]
             $Script:Config.Online[$key] = -not [bool]$Script:Config.Online[$key]
             $Script:SettingsPreset = 'Custom'
         }
@@ -474,7 +510,8 @@ function Show-TransferSettingsMenu {
     # src\00-development-config.psd1.  Values start with the compiled
     # defaults, but any changes made here apply only to the current transfer.
     $settings = @(
-        @{ Section = "Backup"; Key = "UserData";          Label = "User data";          Detail = "Documents, Desktop, Downloads, and other user folders" }
+        @{ Section = "Backup"; Key = "UserData";          Label = "User data";          Detail = "Documents, Desktop, and other user folders" }
+        @{ Section = "Backup"; Key = "Downloads";         Label = "Downloads";          Detail = "Downloads folder" }
         @{ Section = "Backup"; Key = "EntireUserProfile"; Label = "Entire user profile"; Detail = "Copy remaining profile folders; excludes data captured by other stages" }
         @{ Section = "Backup"; Key = "AdditionalAppData"; Label = "Additional AppData folders"; Detail = "Choose extra Local/Roaming folders with size estimates" }
         @{ Section = "Backup"; Key = "AppData";           Label = "AppData";            Detail = "Bluebeam, signatures, and Quick Access" }
@@ -483,7 +520,7 @@ function Show-TransferSettingsMenu {
         @{ Section = "Backup"; Key = "InstalledPrograms"; Label = "Installed programs"; Detail = "Installed-program inventory" }
         @{ Section = "Backup"; Key = "AppDataCandidateInventory"; Label = "AppData candidates"; Detail = "Review-only inventory of non-system application folders" }
         @{ Section = "Backup"; Key = "Printers";          Label = "Printers";           Detail = "PrintBRM package and printer connections" }
-        @{ Section = "Backup"; Key = "Chrome";            Label = "Google Chrome";      Detail = "Bookmarks, profile archive, and password-export prompt" }
+        @{ Section = "Backup"; Key = "Chrome"; Type = "ChromeMode"; Label = "Google Chrome"; Detail = "Off, bookmarks + passwords, or full profile" }
         @{ Section = "Backup"; Key = "Firefox";           Label = "Firefox";            Detail = "Firefox profile, bookmarks, logins, extensions, and settings" }
         @{ Section = "Backup"; Key = "Edge";              Label = "Microsoft Edge";     Detail = "Edge bookmarks and profile-specific favorites" }
         @{ Section = "Backup"; Key = "OneDrive";          Label = "OneDrive";           Detail = "Offline file availability check" }
@@ -496,8 +533,8 @@ function Show-TransferSettingsMenu {
         @{ Section = "Import"; Key = "AppComparison"; Label = "Compare installed apps"; Detail = "Compare old and new PC installed-program inventories" }
         @{ Section = "Import"; Key = "AppDataReview"; Label = "Review AppData candidates"; Detail = "Include source AppData candidates in the technician review" }
         @{ Section = "Online"; Key = "MaxTransferGB"; Type = "Number"; Label = "Online payload limit"; Detail = "Warn before export when selected payload exceeds this many GB" }
-        @{ Section = "Online"; Key = "OverrideDownloadsCap"; Label = "Override Downloads cap"; Detail = "Allow Downloads above the $($Script:Config.Online.DownloadsCapGB) GB Online cap" }
-        @{ Section = "Online"; Key = "CreateZipArchive";  Label = "Create ZIP archive"; Detail = "Create a ZIP beside the package (Online transfers only)" }
+        @{ Section = "Online"; Key = "OverrideDownloadsCap"; Label = "Override Downloads cap"; Detail = "Copy Downloads above $($Script:Config.Online.DownloadsCapGB) GB without the confirmation prompt" }
+        @{ Section = "Transfer"; Key = "CreateZipArchive";  Label = "Create ZIP archive"; Detail = "Create a ZIP beside the package" }
         @{ Section = "Online"; Key = "StageNetworkTransfersLocally"; Label = "Stage network transfers locally"; Detail = "Build locally, then upload one ZIP to a network destination" }
     )
     $Script:TransferSettingsMenuItems = $settings
@@ -521,7 +558,7 @@ function Show-TransferSettingsMenu {
             if ($index -eq 17) {
                 Write-Section "Generated import settings"
             }
-            if ($index -eq 22) {
+            if ($index -eq 24) {
                 Write-Section "Online transfer settings"
             }
 
@@ -540,9 +577,10 @@ function Show-TransferSettingsMenu {
 
             $number = ($index + 1).ToString().PadLeft(2)
             $isNumber = $setting.Type -eq "Number"
-            $isEnabled = if ($isNumber) { $false } else { [bool]$Script:Config[$setting.Section][$setting.Key] }
-            $state = if ($isNumber) { "$($Script:Config.Online.MaxTransferGB)GB" } elseif ($isEnabled) { "ON " } else { "OFF" }
-            $color = if ($isNumber) { "Yellow" } elseif ($isEnabled) { "Green" } else { "DarkGray" }
+            $isChromeMode = $setting.Type -eq 'ChromeMode'
+            $isEnabled = if ($isNumber -or $isChromeMode) { $false } else { [bool]$Script:Config[$setting.Section][$setting.Key] }
+            $state = if ($isNumber) { "$($Script:Config.Online.MaxTransferGB)GB" } elseif ($isChromeMode) { switch ($Script:Config.Backup.Chrome) { 'BookmarksAndPasswords' { 'BOOKMARKS + PASSWORDS' } 'FullProfile' { 'FULL PROFILE' } default { 'OFF' } } } elseif ($isEnabled) { "ON " } else { "OFF" }
+            $color = if ($isNumber) { "Yellow" } elseif ($isChromeMode) { if ($Script:Config.Backup.Chrome -eq 'Off') { 'DarkGray' } else { 'Green' } } elseif ($isEnabled) { "Green" } else { "DarkGray" }
             $sizeText = if ($setting.Section -eq "Backup") {
                 if ($null -eq $estimate -or $null -eq $estimate.ItemBytes[$setting.Key]) { 'calculating...' } else { "$(Format-FileSize ([long]$estimate.ItemBytes[$setting.Key]))" }
             } else { "" }
@@ -559,9 +597,9 @@ function Show-TransferSettingsMenu {
         Write-Host ""
         Write-Host "  Select a number to toggle it; [B] Basic; [V] Advanced; [R] Refresh; select Online payload limit to enter a GB value." -ForegroundColor Gray
         if ($Script:Config.TransferMode -eq 'Online') { Write-Host "  [A] Advanced Online Controls" -ForegroundColor Cyan }
-        Write-Host "  Chrome, Firefox, and Edge are independent backup toggles." -ForegroundColor DarkGray
+        Write-Host "  Select Chrome to cycle its three backup modes." -ForegroundColor DarkGray
         Write-Host "  Administrator mode is requested only after you choose Start transfer." -ForegroundColor DarkGray
-        Write-Host "  ZIP archive is ignored for Local transfers." -ForegroundColor DarkGray
+        Write-Host "  ZIP archives are optional for Local transfers and enabled by default for Online transfers." -ForegroundColor DarkGray
         Write-Host "  Import settings are written into the transfer package's generated import script." -ForegroundColor DarkGray
 
         if ($Script:TransferSizeEstimateJob) { Write-Host '  Calculating folder sizes in the background. Press R to refresh; the menu refreshes automatically when finished.' -ForegroundColor Cyan }
@@ -584,9 +622,13 @@ function Show-TransferSettingsMenu {
             $setting = $settings[$selectedIndex - 1]
             if ($setting.Type -eq "Number") {
                 $value = 0.0
-                $entered = Read-Host "  Enter Online payload limit in GB (current: $($Script:Config.Online.MaxTransferGB))"
+                $entered = Read-UserInput "  Enter Online payload limit in GB (current: $($Script:Config.Online.MaxTransferGB))"
                 if ([double]::TryParse($entered, [ref]$value) -and $value -gt 0) { $Script:Config.Online.MaxTransferGB = $value }
                 else { Write-Host "  Enter a positive number of GB." -ForegroundColor Yellow; Start-Sleep -Seconds 1 }
+            }
+            elseif ($setting.Type -eq 'ChromeMode') {
+                $Script:Config.Backup.Chrome = switch ($Script:Config.Backup.Chrome) { 'Off' { 'BookmarksAndPasswords' } 'BookmarksAndPasswords' { 'FullProfile' } default { 'Off' } }
+                $Script:SettingsPreset = 'Custom'
             }
             else {
                 $Script:Config[$setting.Section][$setting.Key] = -not [bool]$Script:Config[$setting.Section][$setting.Key]

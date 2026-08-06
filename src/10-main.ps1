@@ -55,7 +55,7 @@ function Start-LaptopExport {
         Resolve-TransferMode
     }
 
-    Apply-OnlineImportDefaults
+    Apply-OnlineTransferDefaults
     if (-not $ElevatedFromSettings) {
         # Each newly selected transfer begins from the safe, lean preset.
         Set-SettingsPreset -Name Basic
@@ -75,17 +75,18 @@ function Start-LaptopExport {
     elseif ($NonInteractive) {
         # Browsers can require a close/password-export prompt. Leave them out
         # of unattended validation runs rather than hanging partway through.
-        $Script:Config.Backup.Chrome = $false
+        $Script:Config.Backup.Chrome = 'Off'
         $Script:Config.Backup.Firefox = $false
         $Script:Config.Backup.Edge = $false
         # PrintBRM and ZIP compression can outlive automation time limits; the
         # package and all generated artifacts are still exercised by validation
         # runs. Normal technician exports retain both stages.
         $Script:Config.Backup.Printers = $false
-        $Script:Config.Online.CreateZipArchive = $false
+        $Script:Config.Transfer.CreateZipArchive = $false
         Write-Log "Non-interactive mode: browser collection, PrintBRM, and ZIP creation disabled" -Level Info
     }
-    if (-not $NonInteractive -and -not (Show-TransferSettingsMenu)) {
+    if (-not $ElevatedFromSettings -and -not $NonInteractive) { $Script:TransferSizeEstimateJob = Start-TransferSizeEstimateJob }
+    if (-not $NonInteractive -and -not (Show-BackupOverview)) {
         Write-Host "`n  Transfer cancelled." -ForegroundColor Yellow
         return
     }
@@ -110,11 +111,11 @@ function Start-LaptopExport {
     }
     if (-not $destinationFolder) {
         Write-Host "`n  Export cancelled: no usable destination was selected. No files were copied." -ForegroundColor Yellow
-        if (-not $NonInteractive) { Read-Host "  Press Enter to exit" }
+        if (-not $NonInteractive) { Read-UserInput "  Press Enter to exit" | Out-Null }
         return
     }
 
-    $createsZipArchive = $Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.CreateZipArchive
+    $createsZipArchive = [bool]$Script:Config.Transfer.CreateZipArchive
     $isNetworkDestination = $Script:Config.TransferMode -eq "Online" -and (Test-NetworkDestination -Path $destinationFolder)
     $useLocalStaging = $isNetworkDestination -and $createsZipArchive -and $Script:Config.Online.StageNetworkTransfersLocally
     $stagingAppData = if ($Script:OriginalAppDataLocal) { $Script:OriginalAppDataLocal } else { $env:LOCALAPPDATA }
@@ -138,7 +139,7 @@ function Start-LaptopExport {
     # ---- Pre-scan + free-space check ----
     # Estimate what we're about to copy so we can (a) warn on insufficient space
     # and (b) show the operator the size up front. In online mode this reflects
-    # the trimmed set (Downloads over cap and Lotus are excluded from the estimate).
+    # the selected transfer set.
     Write-Section "Estimating transfer size"
     if ($null -ne $Script:StartupPayloadEstimate) {
         $payloadEstimate = $Script:StartupPayloadEstimate
@@ -159,7 +160,7 @@ function Start-LaptopExport {
             $message = "Selected Online payload ($(Format-FileSize $estBytes)) exceeds the $($Script:Config.Online.MaxTransferGB) GB limit."
             Write-Host ""; Write-Host "  $($Script:Theme.Glyphs.WARN) $message" -ForegroundColor Yellow
             if ($NonInteractive) { throw "Non-interactive export stopped because: $message" }
-            $continueLargePayload = Read-Host "    Export anyway? (Y/N)"
+            $continueLargePayload = Read-UserInput "    Export anyway? (Y/N)"
             if ($continueLargePayload -notmatch "^[Yy]") { Write-Host "  Cancelled. No files were copied." -ForegroundColor Yellow; return }
         }
     }
@@ -205,7 +206,7 @@ function Start-LaptopExport {
         Write-Host ""
         Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
         Write-Host ($spaceWarnings -join " ") -ForegroundColor White
-        $go = Read-Host "    Continue anyway? (Y/N)"
+        $go = Read-UserInput "    Continue anyway? (Y/N)"
         if ($go -notmatch "^[Yy]") { Write-Host "  Cancelled." -ForegroundColor Yellow; return }
     }
 
@@ -227,7 +228,7 @@ function Start-LaptopExport {
     
     # 1. Copy standard user folders and, when selected, the remainder of the
     # profile. The latter excludes content captured by other stages.
-    if ($Script:Config.Backup.UserData -or $Script:Config.Backup.EntireUserProfile) {
+    if ($Script:Config.Backup.UserData -or $Script:Config.Backup.Downloads -or $Script:Config.Backup.EntireUserProfile) {
         Copy-UserFolders -DestinationBase $transferBase
     }
     else { Add-DisabledBackupResult -Item "User data" -Category "User Folders"; Add-DisabledBackupResult -Item "Entire user profile" -Category "User Folders" }
@@ -273,6 +274,12 @@ function Start-LaptopExport {
     }
     else { Add-DisabledBackupResult -Item "OneDrive" }
 
+    if ($Script:DeferredChromePasswordExport) {
+        Write-Section 'Chrome password export'
+        Invoke-ChromePasswordExportPrompt -BrowserPath $Script:DeferredChromePasswordExport.BrowserPath -CanLaunchChromeForOriginalUser $Script:DeferredChromePasswordExport.CanLaunchChromeForOriginalUser -HasProfileArchive $Script:DeferredChromePasswordExport.HasProfileArchive
+        $Script:DeferredChromePasswordExport = $null
+    }
+
     # 8. Capture optional user-experience layout and default-app inventories.
     if ($Script:Config.Backup.DesktopLayout) { Backup-DesktopLayout -DestinationBase $transferBase }
     else { Add-DisabledBackupResult -Item "Desktop layout" -Category "Settings" }
@@ -295,16 +302,15 @@ function Start-LaptopExport {
     # 10. Generate quick import batch file
     New-QuickImportBatch -DestinationBase $transferBase
 
-    if ($Script:Config.TransferMode -eq "Online" -and -not $Script:Config.Online.CreateZipArchive) {
+    if (-not $Script:Config.Transfer.CreateZipArchive) {
         Write-Log "ZIP archive creation disabled by configuration" -Level Info
         Add-Result -Category "Package" -Item "ZIP Archive" -Status "Skipped" -Details "Disabled by configuration"
     }
 
-    # Local transfers stay as folders for a removable drive. Online transfers
-    # also produce a portable ZIP beside the package.
+    # ZIP creation is selectable for either transfer mode.
     $archivePath = $null
     $publishedArchivePath = $null
-    if ($Script:Config.TransferMode -eq "Online" -and $Script:Config.Online.CreateZipArchive) {
+    if ($Script:Config.Transfer.CreateZipArchive) {
         $archivePath = New-TransferArchive -TransferBase $transferBase
         if ($archivePath -and $useLocalStaging) {
             $uploadLog = Join-Path $transferBase "Logs\robocopy_network_zip_upload.log"
@@ -351,7 +357,7 @@ function Start-LaptopExport {
     else {
         Write-Status "Printers" "SKIP" "disabled by configuration"
     }
-    if ($Script:Config.Backup.Chrome) { Write-Status "Chrome" "INFO" "selected" } else { Write-Status "Chrome" "SKIP" "disabled by configuration" }
+    if ($Script:Config.Backup.Chrome -ne 'Off') { Write-Status "Chrome" "INFO" $Script:Config.Backup.Chrome } else { Write-Status "Chrome" "SKIP" "disabled by configuration" }
     if ($Script:Config.Backup.Firefox) { Write-Status "Firefox" "INFO" "selected" } else { Write-Status "Firefox" "SKIP" "disabled by configuration" }
     if ($Script:Config.Backup.Edge) { Write-Status "Edge" "INFO" "selected" } else { Write-Status "Edge" "SKIP" "disabled by configuration" }
     Write-Status "Import-LaptopData.ps1"  "OK"   "run on new machine"
@@ -379,7 +385,7 @@ function Start-LaptopExport {
     }
     
     Write-Host ""
-    if (-not $NonInteractive) { Read-Host "  Press Enter to exit" }
+    if (-not $NonInteractive) { Read-UserInput "  Press Enter to exit" | Out-Null }
 }
 
 # Run the export
