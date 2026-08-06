@@ -280,7 +280,11 @@ function Start-LaptopExport {
     else { Add-DisabledBackupResult -Item "Taskbar layout" -Category "Settings" }
     if ($Script:Config.Backup.DefaultApps) { Backup-DefaultApps -DestinationBase $transferBase }
     else { Add-DisabledBackupResult -Item "Default apps" -Category "Settings" }
-    
+
+    # The preceding export stays in the signed-in user's context. This is the
+    # only UAC prompt, limited to PrintBRM and the complete power-plan file.
+    Start-ElevatedSystemExport -DestinationBase $transferBase
+
     # 9. Generate import script
     New-ImportScript -DestinationBase $transferBase -Settings $settings
     New-AdminImportScript -DestinationBase $transferBase

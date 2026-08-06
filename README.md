@@ -1,6 +1,6 @@
 # Laptop Export
 
-**STO Building Group – Laptop Transfer / Export Tool** (`Export-LaptopData.ps1`, v0.7)
+**STO Building Group – Laptop Transfer / Export Tool** (`Export-LaptopData.ps1`, v0.9)
 
 A single-file PowerShell tool that automates the **data-collection phase** of a laptop refresh. An IT technician runs it on the **old** laptop (logged in as, or on behalf of, the user being transferred). It creates a self-contained transfer package, ZIPs it for handoff, and generates a matching **Import** script, a **QuickImport.bat**, and an **HTML report** to run on the new machine.
 
@@ -42,7 +42,7 @@ powershell -ExecutionPolicy Bypass -File ".\Export-LaptopData.ps1"
 The script is interactive. It will prompt you to:
 
 1. **Choose a transfer mode** — `Local` or `Online` (see below).
-2. **Review Transfer Settings** — toggle **Run export as administrator** if a complete power-plan or PrintBRM export is needed. UAC is requested only after you select Start transfer.
+2. **Review Transfer Settings** — toggle **Run export as administrator** if a complete power-plan or PrintBRM export is needed. The main export remains in the signed-in user's context; after normal capture, UAC is requested only for a small power/PrintBRM helper.
 3. **Choose a destination**:
    - **Local:** Select an external or secondary drive from the console; the Windows folder picker is not opened.
    - **Online:** A Windows folder picker opens. Choose a network share, cloud-synced folder, or any local folder.
@@ -56,7 +56,7 @@ For lean Online packages, choose `A` in **Transfer Settings** to open **Advanced
 - **Windows PowerShell 5.1+** (`#Requires -Version 5.1`)
 - An **external/USB drive** (or second fixed drive) with enough free space for **Local** transfers
 - For **Online** transfers, a writable destination folder (network share, cloud-synced folder, or local folder); no external drive is required
-- **Administrator rights** — *recommended*. Toggle **Run export as administrator** in Transfer Settings when a complete power-plan mirror or full PrintBRM package is needed. The script requests UAC approval after settings are confirmed and logs the result.
+- **Administrator rights** — *recommended*. Toggle **Run export as administrator** in Transfer Settings when a complete power-plan mirror or full PrintBRM package is needed. It does not relaunch the whole exporter: only the final power/PrintBRM helper receives UAC.
 
 ## Transfer modes
 
@@ -69,7 +69,7 @@ For lean Online packages, choose `A` in **Transfer Settings** to open **Advanced
 
 - **User folders** — Documents, Desktop, Downloads, Pictures, Videos, Music, Favorites, loose profile files, and OCS Documents. Transfer Settings also offers an opt-in **Entire user profile** copy; it adds remaining profile content without duplicating folders already captured by the standard user-data, AppData, or browser stages.
 - **AppData** — Bluebeam, Outlook email signatures, Quick Access pins, Lotus Notes
-- **System settings** — individual active power-plan values are applied to the existing STOBG plan (all available AC/DC settings, including the advanced Control Panel and Power & battery settings); an elevated run also includes a complete plan export, plus mapped network drives, personalization (colors, dark mode, taskbar), wallpaper, desktop shortcut layout, taskbar pins, and a default-app inventory
+- **System settings** — individual active power-plan values are captured alongside mapped drives, personalization (colors, dark mode, taskbar), wallpaper, desktop shortcut layout, taskbar pins, and a default-app inventory. The complete power plan is captured/restored by the scoped elevated helper.
 - **Installed programs** — captured from the old PC and compared against the signed-in user's new-PC inventory during import; missing apps and version differences are written to `Logs\AppMigrationReview.html`
 - **AppData candidates** — a review-only inventory of non-system Roaming/Local AppData folders, including size and curated-backup coverage; candidates are never copied automatically
 - **Printers** — a `Printers.printerExport` PrintBRM migration file is attempted for every run, plus a driverless network-connection list. Windows may require elevation to create a full PrintBRM package; the package log records the exact result.
@@ -89,7 +89,7 @@ LaptopTransfer_<timestamp>\
 ├── Printers\              # PrintBRM package
 ├── Logs\                  # ExportLog.txt
 ├── Import-LaptopData.ps1  # run on the NEW machine to restore
-├── QuickImport.bat        # double-click launcher (choose admin or standard)
+├── QuickImport.bat        # double-click launcher (runs as the signed-in user)
 └── TransferReport.html    # full report of everything captured
 
 LaptopTransfer_<timestamp>.zip  # Online transfers only: portable copy of the package above
@@ -103,7 +103,7 @@ Copy the transfer folder to the new laptop, or (for Online transfers) extract `L
 powershell -ExecutionPolicy Bypass -File ".\Import-LaptopData.ps1"
 ```
 
-...or double-click **`QuickImport.bat`** and choose whether to run with administrator rights. Standard mode restores user-scoped data and reports any admin-only steps for manual follow-up. Add `-TestMode` to the Import command to preview actions without making changes.
+...or double-click **`QuickImport.bat`**. It restores user-scoped data as the signed-in user, then requests UAC for a separate helper that restores only power settings and the PrintBRM package. If UAC is unavailable and the package contains the elevated-export artifacts, it makes one logged standard-user fallback attempt and retains the package if Windows rejects it. Add `-TestMode` to the Import command to preview actions without making changes.
 
 If Firefox data is present, the import script restores it automatically. Close Firefox when prompted; any existing Firefox data on the new laptop is moved to a timestamped `Firefox_Backup_*` folder beside the restored profile.
 

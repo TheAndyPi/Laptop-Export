@@ -144,9 +144,10 @@ $Script:DevelopmentConfig = @{
         # PrintBRM restore and completion of the generated import script.
         DeletePrintBrmAfterImport = $true
 
-        # When enabled, the normal user-context import offers to run the
-        # separate elevated helper after all user-scoped restoration finishes.
-        EnableAdminHelper = $false
+        # The normal user-context import launches a separate elevated helper
+        # after all user-scoped restoration finishes. Only power and PrintBRM
+        # run in that helper.
+        EnableAdminHelper = $true
         AppComparison = $true
         AppDataReview = $true
         # These technical uninstall entries are excluded from the user-facing
@@ -221,7 +222,7 @@ $Script:DevelopmentConfig = @{
         Import = @{
             LotusNotes                  = $true
             DeletePrintBrmAfterImport   = $true
-            EnableAdminHelper            = $false
+            EnableAdminHelper            = $true
             AppComparison                = $true
             AppDataReview                = $true
         }
@@ -524,7 +525,7 @@ $Script:Config = @{
         Import = @{
             LotusNotes = $true
             DeletePrintBrmAfterImport = $true
-            EnableAdminHelper = $false
+            EnableAdminHelper = $true
             AppComparison = $true
             AppDataReview = $true
         }
@@ -553,7 +554,7 @@ $Script:Config = @{
     Import = @{
         LotusNotes = $true
         DeletePrintBrmAfterImport = $true
-        EnableAdminHelper = $false
+        EnableAdminHelper = $true
         AppComparison = $true
         AppDataReview = $true
     }
@@ -819,36 +820,13 @@ function Read-MenuInputWithBackgroundRefresh {
 }
 
 function Start-ElevatedExport {
-    if ($Script:IsAdmin -or -not $Script:Config.Export.RequestAdministratorPrivileges) { return $true }
-
-    Write-Host "`n  Requesting administrator approval for the export..." -ForegroundColor Cyan
-    $scriptPath = $PSCommandPath
-    $elevatedArgs = "-ExecutionPolicy Bypass -File `"$scriptPath`" -TargetUserProfile `"$env:USERPROFILE`" -TargetUserName `"$env:USERNAME`" -TargetAppDataRoaming `"$env:APPDATA`" -TargetAppDataLocal `"$env:LOCALAPPDATA`""
-    if ($TransferMode) { $elevatedArgs += " -TransferMode `"$TransferMode`"" }
-    if ($DestinationPath) { $elevatedArgs += " -DestinationPath `"$DestinationPath`"" }
-    if ($OnlineMaxTransferGB -gt 0) { $elevatedArgs += " -OnlineMaxTransferGB $OnlineMaxTransferGB" }
-    $settingsToPreserve = [ordered]@{
-        Backup = $Script:Config.Backup
-        Import = $Script:Config.Import
-        Export = $Script:Config.Export
-        Online = $Script:Config.Online
-        AdditionalAppData = @($Script:SelectedAdditionalAppData)
-        TransferStartedAt = if ($Script:Results.StartTime) { $Script:Results.StartTime.ToString('o') } else { $null }
+    # Do not relaunch the whole exporter: that changes the transferring user's
+    # profile context. Start-ElevatedSystemExport later elevates only PrintBRM
+    # and the full power-plan capture.
+    if (-not $Script:IsAdmin -and $Script:Config.Export.RequestAdministratorPrivileges) {
+        Write-Host "`n  User data stays in the signed-in user's context; PrintBRM and power will request UAC separately." -ForegroundColor Cyan
     }
-    $encodedSettings = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($settingsToPreserve | ConvertTo-Json -Depth 5 -Compress)))
-    $elevatedArgs += " -RuntimeSettings `"$encodedSettings`" -ElevatedFromSettings"
-
-    try {
-        Start-Process PowerShell -Verb RunAs -ArgumentList $elevatedArgs -ErrorAction Stop | Out-Null
-        # The elevated process owns the transfer; stop this standard-user run.
-        return $false
-    }
-    catch {
-        Write-Host "  Administrator approval was cancelled or unavailable; continuing without it." -ForegroundColor Yellow
-        Write-Host "  Admin-only tasks will be included in the manual checklist.`n" -ForegroundColor Gray
-        $Script:Config.Export.RequestAdministratorPrivileges = $false
-        return $true
-    }
+    return $true
 }
 
 function Add-DisabledBackupResult {
@@ -3473,8 +3451,11 @@ function Backup-Printers {
             Write-Log "PrintBRM did not create Printers.printerExport (exit $brmExit)$elevationHint" -Level Warning
             Write-Status "Printer migration file" "WARN" "not created (exit $brmExit)"
             Add-Result -Category "Printers" -Item "Printer Migration File" -Status "Warning" -Details "Exit $brmExit$elevationHint; see printbrm_backup.log"
-            if (-not $Script:IsAdmin) {
+            if (-not $Script:IsAdmin -and -not $Script:Config.Export.RequestAdministratorPrivileges) {
                 Add-ManualTask -Task "Create PrintBRM printer migration file" -Reason "PrintBRM did not allow the standard-user export" -Instructions "Re-run Export-LaptopData.ps1 and select Y at the administrator prompt. The failed PrintBRM output is in Logs\\printbrm_backup.log."
+            }
+            elseif (-not $Script:IsAdmin) {
+                Write-Log "PrintBRM will be retried by the scoped elevated helper after normal export capture finishes." -Level Info
             }
         }
     }
@@ -3482,6 +3463,66 @@ function Backup-Printers {
         Write-Status "Local printers" "FAIL" $_.Exception.Message
         Add-Result -Category "Printers" -Item "Local Printers" -Status "Error" -Details $_.Exception.Message
     }
+}
+
+function Start-ElevatedSystemExport {
+    param([string]$DestinationBase)
+
+    if ($Script:IsAdmin -or -not $Script:Config.Export.RequestAdministratorPrivileges) { return }
+
+    # UAC receives only a completed package path. The helper has no access to
+    # user-data capture routines, so profile-scoped data remains normal-user.
+    $logsPath = Join-Path $DestinationBase 'Logs'
+    $helperPath = Join-Path $logsPath 'Export-SystemSettings.elevated.ps1'
+    $helperScript = @'
+#Requires -Version 5.1
+param([Parameter(Mandatory = $true)][string]$PackagePath)
+$ErrorActionPreference = 'Continue'
+$logsPath = Join-Path $PackagePath 'Logs'
+$logPath = Join-Path $logsPath 'AdminExportLog.txt'
+function Write-Audit([string]$Message) { Add-Content -LiteralPath $logPath -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message" }
+$failed = $false
+$settingsFile = Join-Path $PackagePath 'Settings\SystemSettings.json'
+try {
+    $settings = Get-Content -LiteralPath $settingsFile -Raw | ConvertFrom-Json
+    if ($settings.PowerScheme -match '([0-9a-fA-F-]{36})') {
+        $powerFile = Join-Path $PackagePath 'Settings\PowerScheme.pow'
+        if (Test-Path -LiteralPath $powerFile) { Remove-Item -LiteralPath $powerFile -Force }
+        & powercfg /export $powerFile $matches[1] 2>&1 | Add-Content -LiteralPath $logPath
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $powerFile)) { throw "powercfg /export failed (exit $LASTEXITCODE)." }
+        Write-Audit 'Full power plan exported.'
+    }
+} catch { $failed = $true; Write-Audit "Power export failed: $($_.Exception.Message)" }
+try {
+    $printBrm = Join-Path $env:WINDIR 'System32\spool\tools\PrintBrm.exe'
+    if (-not (Test-Path -LiteralPath $printBrm)) { throw 'PrintBRM.exe was not found.' }
+    $printerExport = Join-Path $PackagePath 'Printers\Printers.printerExport'
+    if (Test-Path -LiteralPath $printerExport) { Remove-Item -LiteralPath $printerExport -Force }
+    $arguments = @('-B', '-F', $printerExport)
+    if (-not {INCLUDE_DRIVERS}) { $arguments += '-NOBIN' }
+    & $printBrm @arguments 2>&1 | Tee-Object -LiteralPath (Join-Path $logsPath 'printbrm_backup_elevated.log') | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $printerExport) -or (Get-Item -LiteralPath $printerExport).Length -eq 0) { throw "PrintBRM backup failed (exit $LASTEXITCODE)." }
+    Write-Audit 'PrintBRM package created.'
+} catch { $failed = $true; Write-Audit "PrintBRM export failed: $($_.Exception.Message)" }
+exit $(if ($failed) { 1 } else { 0 })
+'@
+    $helperScript = $helperScript -replace '\{INCLUDE_DRIVERS\}', $Script:Config.IncludePrinterDrivers.ToString().ToLowerInvariant()
+    $helperScript | Set-Content -LiteralPath $helperPath -Encoding UTF8
+    try {
+        Write-Host '    Requesting administrator approval for PrintBRM and full power-plan capture...' -ForegroundColor Cyan
+        $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`" -PackagePath `"$DestinationBase`"" -ErrorAction Stop
+        if ($process.ExitCode -ne 0) { throw "Elevated helper exited with code $($process.ExitCode). Review Logs\\AdminExportLog.txt." }
+        Add-Result -Category 'Settings' -Item 'Power Scheme (elevated)' -Status 'Success' -Details 'Complete plan captured by scoped elevated helper'
+        Add-Result -Category 'Printers' -Item 'Printer Migration File (elevated)' -Status 'Success' -Details 'Created by scoped elevated helper; see printbrm_backup_elevated.log'
+        Write-Status 'Printer migration file' 'OK' 'created by elevated helper'
+        Write-Log 'Scoped elevated PrintBRM and power export completed.' -Level Success
+    }
+    catch {
+        Write-Log "Scoped elevated export was cancelled or failed: $($_.Exception.Message)" -Level Warning
+        Add-Result -Category 'System Export' -Item 'Elevated PrintBRM and power' -Status 'Warning' -Details $_.Exception.Message
+        Add-ManualTask -Task 'Capture PrintBRM and full power plan' -Reason 'Scoped administrator helper did not complete' -Instructions 'Review Logs\\AdminExportLog.txt and rerun with administrator approval.'
+    }
+    finally { Remove-Item -LiteralPath $helperPath -Force -ErrorAction SilentlyContinue }
 }
 
 # ============================================================================
@@ -6389,15 +6430,45 @@ Write-Host ""
 Write-Host "  See TransferReport.html for full export details." -ForegroundColor DarkGray
 Write-Host ""
 
-# The only elevation path is the narrowly-scoped system helper, and it is
-# offered only after all user-profile work has completed. TestMode must never
-# show UAC or launch the helper.
+# The only elevation path is the narrowly-scoped system helper. It starts only
+# after all user-profile work has completed and restores power plus PrintBRM.
+# TestMode must never show UAC or launch the helper.
 $adminAuditPath = Join-Path $logsPath "AdminImportResult.json"
 function Write-AdminHelperAudit {
     param([string]$Status, [string]$Detail)
     $audit = [PSCustomObject]@{ Timestamp = (Get-Date).ToString("o"); Status = $Status; Detail = $Detail; Source = "Import-LaptopData.ps1" }
     $audit | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $adminAuditPath -Encoding UTF8
     Add-Content -LiteralPath (Join-Path $logsPath "AdminImportLog.txt") -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Status] $Detail"
+}
+
+function Invoke-StandardSystemRestoreFallback {
+    param([string]$HelperPath)
+
+    # A complete .pow file is written only by an elevated export. A PrintBRM
+    # package may also be present from that export. If UAC is unavailable on
+    # the destination, give those artifacts one explicit standard-user try.
+    # The helper records each result and retains the package on failure.
+    if ($isAdmin) { return }
+    $hasAdminExportArtifacts = (Test-Path -LiteralPath (Join-Path $scriptPath 'Settings\PowerScheme.pow')) -or
+        (Test-Path -LiteralPath (Join-Path $scriptPath 'Printers\Printers.printerExport'))
+    if (-not $hasAdminExportArtifacts) { return }
+
+    try {
+        Write-Host '  Trying non-administrator fallback for power settings and PrintBRM...' -ForegroundColor Cyan
+        $fallbackProcess = Start-Process -FilePath 'powershell.exe' -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$HelperPath`" -AllowStandardUser"
+        if ($fallbackProcess.ExitCode -eq 0) {
+            Write-Host '  Non-administrator fallback completed. See Logs\AdminImportLog.txt.' -ForegroundColor Green
+            Write-AdminHelperAudit -Status 'FallbackCompleted' -Detail 'UAC was unavailable; standard-user power and PrintBRM fallback completed.'
+        }
+        else {
+            Write-Host '  Non-administrator fallback could not complete all system tasks; packages were retained.' -ForegroundColor Yellow
+            Write-AdminHelperAudit -Status 'FallbackPartial' -Detail "UAC was unavailable; standard-user fallback exited with code $($fallbackProcess.ExitCode). See AdminImportLog.txt."
+        }
+    }
+    catch {
+        Write-Host '  Non-administrator fallback could not start; system packages were retained.' -ForegroundColor Yellow
+        Write-AdminHelperAudit -Status 'FallbackFailed' -Detail "Could not start standard-user fallback: $($_.Exception.Message)"
+    }
 }
 
 if ($TestMode) {
@@ -6407,34 +6478,29 @@ elseif (-not $enableAdminHelper) {
     Write-AdminHelperAudit -Status "Skipped" -Detail "Optional administrator helper is disabled by package configuration."
 }
 else {
-    $runHelper = Read-Host "Run optional administrator helper for power settings and local printers? (Y/N) [N]"
-    if ($runHelper -match "^[Yy]") {
-        $helperPath = Join-Path $scriptPath "Import-SystemSettings.ps1"
-        if (-not (Test-Path -LiteralPath $helperPath)) {
-            Write-Host "  Administrator helper is missing; system tasks are deferred." -ForegroundColor Yellow
-            Write-AdminHelperAudit -Status "Deferred" -Detail "Import-SystemSettings.ps1 is missing."
-        }
-        else {
-            try {
-                Write-Host "  Requesting administrator approval..." -ForegroundColor Cyan
-                $helperProcess = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`""
-                if ($helperProcess.ExitCode -eq 0) {
-                    Write-Host "  Administrator helper completed. See Logs\\AdminImportLog.txt." -ForegroundColor Green
-                }
-                else {
-                    Write-Host "  Administrator helper reported an error; system tasks are deferred." -ForegroundColor Yellow
-                    Write-AdminHelperAudit -Status "Deferred" -Detail "Helper exited with code $($helperProcess.ExitCode)."
-                }
-            }
-            catch {
-                Write-Host "  Administrator approval was cancelled or denied; system tasks are deferred." -ForegroundColor Yellow
-                Write-AdminHelperAudit -Status "Cancelled" -Detail "UAC elevation was cancelled, denied, or could not start: $($_.Exception.Message)"
-            }
-        }
+    $helperPath = Join-Path $scriptPath "Import-SystemSettings.ps1"
+    if (-not (Test-Path -LiteralPath $helperPath)) {
+        Write-Host "  Administrator helper is missing; system tasks are deferred." -ForegroundColor Yellow
+        Write-AdminHelperAudit -Status "Deferred" -Detail "Import-SystemSettings.ps1 is missing."
     }
     else {
-        Write-Host "  Administrator helper skipped; power settings and local printers are deferred." -ForegroundColor DarkGray
-        Write-AdminHelperAudit -Status "Skipped" -Detail "Technician declined the optional administrator helper."
+        try {
+            Write-Host "  Requesting administrator approval for power settings and PrintBRM..." -ForegroundColor Cyan
+            $helperProcess = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`""
+            if ($helperProcess.ExitCode -eq 0) {
+                Write-Host "  Elevated power and printer restore completed. See Logs\\AdminImportLog.txt." -ForegroundColor Green
+            }
+            else {
+                Write-Host "  Administrator helper reported an error; system tasks are deferred." -ForegroundColor Yellow
+                Write-AdminHelperAudit -Status "Deferred" -Detail "Helper exited with code $($helperProcess.ExitCode)."
+                Invoke-StandardSystemRestoreFallback -HelperPath $helperPath
+            }
+        }
+        catch {
+            Write-Host "  Administrator approval was cancelled or denied; system tasks are deferred." -ForegroundColor Yellow
+            Write-AdminHelperAudit -Status "Cancelled" -Detail "UAC elevation was cancelled, denied, or could not start: $($_.Exception.Message)"
+            Invoke-StandardSystemRestoreFallback -HelperPath $helperPath
+        }
     }
 }
 
@@ -6559,9 +6625,11 @@ function New-AdminImportScript {
     STO Building Group Laptop Transfer - Optional Administrator Helper
 .DESCRIPTION
     Applies only system power settings and local/direct-IP printers from the
-    transfer package. It must be run elevated.
+    transfer package. It normally runs elevated; -AllowStandardUser is used
+    only as a logged fallback when destination UAC is unavailable.
 #>
 #Requires -Version 5.1
+param([switch]$AllowStandardUser)
 $ErrorActionPreference = 'Continue'
 $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logsPath = Join-Path $scriptPath 'Logs'
@@ -6583,12 +6651,15 @@ function Save-Result {
     [PSCustomObject]$result | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $resultPath -Encoding UTF8
 }
 $result.Elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $result.Elevated) {
+if (-not $result.Elevated -and -not $AllowStandardUser) {
     $result.Status = 'Denied'
     $result.Errors += 'Administrator privileges are required.'
     Write-Audit 'Administrator privileges are required; no changes were made.' 'Error'
     Save-Result
     exit 1
+}
+if (-not $result.Elevated -and $AllowStandardUser) {
+    Write-Audit 'Running explicit non-administrator fallback; Windows may reject protected power or printer changes.' 'Warning'
 }
 
 $settingsFile = Join-Path $scriptPath 'Settings\SystemSettings.json'
@@ -7019,7 +7090,11 @@ function Start-LaptopExport {
     else { Add-DisabledBackupResult -Item "Taskbar layout" -Category "Settings" }
     if ($Script:Config.Backup.DefaultApps) { Backup-DefaultApps -DestinationBase $transferBase }
     else { Add-DisabledBackupResult -Item "Default apps" -Category "Settings" }
-    
+
+    # The preceding export stays in the signed-in user's context. This is the
+    # only UAC prompt, limited to PrintBRM and the complete power-plan file.
+    Start-ElevatedSystemExport -DestinationBase $transferBase
+
     # 9. Generate import script
     New-ImportScript -DestinationBase $transferBase -Settings $settings
     New-AdminImportScript -DestinationBase $transferBase

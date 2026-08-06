@@ -112,7 +112,7 @@ $Script:Config = @{
         Import = @{
             LotusNotes = $true
             DeletePrintBrmAfterImport = $true
-            EnableAdminHelper = $false
+            EnableAdminHelper = $true
             AppComparison = $true
             AppDataReview = $true
         }
@@ -141,7 +141,7 @@ $Script:Config = @{
     Import = @{
         LotusNotes = $true
         DeletePrintBrmAfterImport = $true
-        EnableAdminHelper = $false
+        EnableAdminHelper = $true
         AppComparison = $true
         AppDataReview = $true
     }
@@ -407,36 +407,13 @@ function Read-MenuInputWithBackgroundRefresh {
 }
 
 function Start-ElevatedExport {
-    if ($Script:IsAdmin -or -not $Script:Config.Export.RequestAdministratorPrivileges) { return $true }
-
-    Write-Host "`n  Requesting administrator approval for the export..." -ForegroundColor Cyan
-    $scriptPath = $PSCommandPath
-    $elevatedArgs = "-ExecutionPolicy Bypass -File `"$scriptPath`" -TargetUserProfile `"$env:USERPROFILE`" -TargetUserName `"$env:USERNAME`" -TargetAppDataRoaming `"$env:APPDATA`" -TargetAppDataLocal `"$env:LOCALAPPDATA`""
-    if ($TransferMode) { $elevatedArgs += " -TransferMode `"$TransferMode`"" }
-    if ($DestinationPath) { $elevatedArgs += " -DestinationPath `"$DestinationPath`"" }
-    if ($OnlineMaxTransferGB -gt 0) { $elevatedArgs += " -OnlineMaxTransferGB $OnlineMaxTransferGB" }
-    $settingsToPreserve = [ordered]@{
-        Backup = $Script:Config.Backup
-        Import = $Script:Config.Import
-        Export = $Script:Config.Export
-        Online = $Script:Config.Online
-        AdditionalAppData = @($Script:SelectedAdditionalAppData)
-        TransferStartedAt = if ($Script:Results.StartTime) { $Script:Results.StartTime.ToString('o') } else { $null }
+    # Do not relaunch the whole exporter: that changes the transferring user's
+    # profile context. Start-ElevatedSystemExport later elevates only PrintBRM
+    # and the full power-plan capture.
+    if (-not $Script:IsAdmin -and $Script:Config.Export.RequestAdministratorPrivileges) {
+        Write-Host "`n  User data stays in the signed-in user's context; PrintBRM and power will request UAC separately." -ForegroundColor Cyan
     }
-    $encodedSettings = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($settingsToPreserve | ConvertTo-Json -Depth 5 -Compress)))
-    $elevatedArgs += " -RuntimeSettings `"$encodedSettings`" -ElevatedFromSettings"
-
-    try {
-        Start-Process PowerShell -Verb RunAs -ArgumentList $elevatedArgs -ErrorAction Stop | Out-Null
-        # The elevated process owns the transfer; stop this standard-user run.
-        return $false
-    }
-    catch {
-        Write-Host "  Administrator approval was cancelled or unavailable; continuing without it." -ForegroundColor Yellow
-        Write-Host "  Admin-only tasks will be included in the manual checklist.`n" -ForegroundColor Gray
-        $Script:Config.Export.RequestAdministratorPrivileges = $false
-        return $true
-    }
+    return $true
 }
 
 function Add-DisabledBackupResult {

@@ -2387,15 +2387,45 @@ Write-Host ""
 Write-Host "  See TransferReport.html for full export details." -ForegroundColor DarkGray
 Write-Host ""
 
-# The only elevation path is the narrowly-scoped system helper, and it is
-# offered only after all user-profile work has completed. TestMode must never
-# show UAC or launch the helper.
+# The only elevation path is the narrowly-scoped system helper. It starts only
+# after all user-profile work has completed and restores power plus PrintBRM.
+# TestMode must never show UAC or launch the helper.
 $adminAuditPath = Join-Path $logsPath "AdminImportResult.json"
 function Write-AdminHelperAudit {
     param([string]$Status, [string]$Detail)
     $audit = [PSCustomObject]@{ Timestamp = (Get-Date).ToString("o"); Status = $Status; Detail = $Detail; Source = "Import-LaptopData.ps1" }
     $audit | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $adminAuditPath -Encoding UTF8
     Add-Content -LiteralPath (Join-Path $logsPath "AdminImportLog.txt") -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Status] $Detail"
+}
+
+function Invoke-StandardSystemRestoreFallback {
+    param([string]$HelperPath)
+
+    # A complete .pow file is written only by an elevated export. A PrintBRM
+    # package may also be present from that export. If UAC is unavailable on
+    # the destination, give those artifacts one explicit standard-user try.
+    # The helper records each result and retains the package on failure.
+    if ($isAdmin) { return }
+    $hasAdminExportArtifacts = (Test-Path -LiteralPath (Join-Path $scriptPath 'Settings\PowerScheme.pow')) -or
+        (Test-Path -LiteralPath (Join-Path $scriptPath 'Printers\Printers.printerExport'))
+    if (-not $hasAdminExportArtifacts) { return }
+
+    try {
+        Write-Host '  Trying non-administrator fallback for power settings and PrintBRM...' -ForegroundColor Cyan
+        $fallbackProcess = Start-Process -FilePath 'powershell.exe' -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$HelperPath`" -AllowStandardUser"
+        if ($fallbackProcess.ExitCode -eq 0) {
+            Write-Host '  Non-administrator fallback completed. See Logs\AdminImportLog.txt.' -ForegroundColor Green
+            Write-AdminHelperAudit -Status 'FallbackCompleted' -Detail 'UAC was unavailable; standard-user power and PrintBRM fallback completed.'
+        }
+        else {
+            Write-Host '  Non-administrator fallback could not complete all system tasks; packages were retained.' -ForegroundColor Yellow
+            Write-AdminHelperAudit -Status 'FallbackPartial' -Detail "UAC was unavailable; standard-user fallback exited with code $($fallbackProcess.ExitCode). See AdminImportLog.txt."
+        }
+    }
+    catch {
+        Write-Host '  Non-administrator fallback could not start; system packages were retained.' -ForegroundColor Yellow
+        Write-AdminHelperAudit -Status 'FallbackFailed' -Detail "Could not start standard-user fallback: $($_.Exception.Message)"
+    }
 }
 
 if ($TestMode) {
@@ -2405,34 +2435,29 @@ elseif (-not $enableAdminHelper) {
     Write-AdminHelperAudit -Status "Skipped" -Detail "Optional administrator helper is disabled by package configuration."
 }
 else {
-    $runHelper = Read-Host "Run optional administrator helper for power settings and local printers? (Y/N) [N]"
-    if ($runHelper -match "^[Yy]") {
-        $helperPath = Join-Path $scriptPath "Import-SystemSettings.ps1"
-        if (-not (Test-Path -LiteralPath $helperPath)) {
-            Write-Host "  Administrator helper is missing; system tasks are deferred." -ForegroundColor Yellow
-            Write-AdminHelperAudit -Status "Deferred" -Detail "Import-SystemSettings.ps1 is missing."
-        }
-        else {
-            try {
-                Write-Host "  Requesting administrator approval..." -ForegroundColor Cyan
-                $helperProcess = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`""
-                if ($helperProcess.ExitCode -eq 0) {
-                    Write-Host "  Administrator helper completed. See Logs\\AdminImportLog.txt." -ForegroundColor Green
-                }
-                else {
-                    Write-Host "  Administrator helper reported an error; system tasks are deferred." -ForegroundColor Yellow
-                    Write-AdminHelperAudit -Status "Deferred" -Detail "Helper exited with code $($helperProcess.ExitCode)."
-                }
-            }
-            catch {
-                Write-Host "  Administrator approval was cancelled or denied; system tasks are deferred." -ForegroundColor Yellow
-                Write-AdminHelperAudit -Status "Cancelled" -Detail "UAC elevation was cancelled, denied, or could not start: $($_.Exception.Message)"
-            }
-        }
+    $helperPath = Join-Path $scriptPath "Import-SystemSettings.ps1"
+    if (-not (Test-Path -LiteralPath $helperPath)) {
+        Write-Host "  Administrator helper is missing; system tasks are deferred." -ForegroundColor Yellow
+        Write-AdminHelperAudit -Status "Deferred" -Detail "Import-SystemSettings.ps1 is missing."
     }
     else {
-        Write-Host "  Administrator helper skipped; power settings and local printers are deferred." -ForegroundColor DarkGray
-        Write-AdminHelperAudit -Status "Skipped" -Detail "Technician declined the optional administrator helper."
+        try {
+            Write-Host "  Requesting administrator approval for power settings and PrintBRM..." -ForegroundColor Cyan
+            $helperProcess = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`""
+            if ($helperProcess.ExitCode -eq 0) {
+                Write-Host "  Elevated power and printer restore completed. See Logs\\AdminImportLog.txt." -ForegroundColor Green
+            }
+            else {
+                Write-Host "  Administrator helper reported an error; system tasks are deferred." -ForegroundColor Yellow
+                Write-AdminHelperAudit -Status "Deferred" -Detail "Helper exited with code $($helperProcess.ExitCode)."
+                Invoke-StandardSystemRestoreFallback -HelperPath $helperPath
+            }
+        }
+        catch {
+            Write-Host "  Administrator approval was cancelled or denied; system tasks are deferred." -ForegroundColor Yellow
+            Write-AdminHelperAudit -Status "Cancelled" -Detail "UAC elevation was cancelled, denied, or could not start: $($_.Exception.Message)"
+            Invoke-StandardSystemRestoreFallback -HelperPath $helperPath
+        }
     }
 }
 
@@ -2557,9 +2582,11 @@ function New-AdminImportScript {
     STO Building Group Laptop Transfer - Optional Administrator Helper
 .DESCRIPTION
     Applies only system power settings and local/direct-IP printers from the
-    transfer package. It must be run elevated.
+    transfer package. It normally runs elevated; -AllowStandardUser is used
+    only as a logged fallback when destination UAC is unavailable.
 #>
 #Requires -Version 5.1
+param([switch]$AllowStandardUser)
 $ErrorActionPreference = 'Continue'
 $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logsPath = Join-Path $scriptPath 'Logs'
@@ -2581,12 +2608,15 @@ function Save-Result {
     [PSCustomObject]$result | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $resultPath -Encoding UTF8
 }
 $result.Elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $result.Elevated) {
+if (-not $result.Elevated -and -not $AllowStandardUser) {
     $result.Status = 'Denied'
     $result.Errors += 'Administrator privileges are required.'
     Write-Audit 'Administrator privileges are required; no changes were made.' 'Error'
     Save-Result
     exit 1
+}
+if (-not $result.Elevated -and $AllowStandardUser) {
+    Write-Audit 'Running explicit non-administrator fallback; Windows may reject protected power or printer changes.' 'Warning'
 }
 
 $settingsFile = Join-Path $scriptPath 'Settings\SystemSettings.json'

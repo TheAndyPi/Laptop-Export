@@ -169,13 +169,22 @@ Describe 'Advanced AppData size selection' {
 }
 
 Describe 'Deferred administrator elevation' {
-    It 'defaults the export elevation request off and exposes it in Transfer Settings' {
+    It 'keeps export user-context capture separate from the scoped elevated helper' {
         $config = Import-PowerShellDataFile -LiteralPath (Join-Path $script:RepoRoot 'src\00-development-config.psd1')
         $core = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\03-core.ps1') -Raw
         $main = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\10-main.ps1') -Raw
+        $printers = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\06-settings-printers.ps1') -Raw
+        $template = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\08-import-template.ps1') -Raw
         $config.Export.RequestAdministratorPrivileges | Should Be $false
+        $config.Import.EnableAdminHelper | Should Be $true
         $core | Should Match 'Run export as administrator'
-        $main | Should Match 'Start-ElevatedExport'
+        $core | Should Match 'Do not relaunch the whole exporter'
+        $main | Should Match 'Start-ElevatedSystemExport'
+        $printers | Should Match 'function Start-ElevatedSystemExport'
+        $printers | Should Match 'PrintBRM and full power-plan capture'
+        $template | Should Match 'Requesting administrator approval for power settings and PrintBRM'
+        $template | Should Match 'function Invoke-StandardSystemRestoreFallback'
+        $template | Should Match 'AllowStandardUser'
     }
 }
 

@@ -977,8 +977,11 @@ function Backup-Printers {
             Write-Log "PrintBRM did not create Printers.printerExport (exit $brmExit)$elevationHint" -Level Warning
             Write-Status "Printer migration file" "WARN" "not created (exit $brmExit)"
             Add-Result -Category "Printers" -Item "Printer Migration File" -Status "Warning" -Details "Exit $brmExit$elevationHint; see printbrm_backup.log"
-            if (-not $Script:IsAdmin) {
+            if (-not $Script:IsAdmin -and -not $Script:Config.Export.RequestAdministratorPrivileges) {
                 Add-ManualTask -Task "Create PrintBRM printer migration file" -Reason "PrintBRM did not allow the standard-user export" -Instructions "Re-run Export-LaptopData.ps1 and select Y at the administrator prompt. The failed PrintBRM output is in Logs\\printbrm_backup.log."
+            }
+            elseif (-not $Script:IsAdmin) {
+                Write-Log "PrintBRM will be retried by the scoped elevated helper after normal export capture finishes." -Level Info
             }
         }
     }
@@ -986,5 +989,65 @@ function Backup-Printers {
         Write-Status "Local printers" "FAIL" $_.Exception.Message
         Add-Result -Category "Printers" -Item "Local Printers" -Status "Error" -Details $_.Exception.Message
     }
+}
+
+function Start-ElevatedSystemExport {
+    param([string]$DestinationBase)
+
+    if ($Script:IsAdmin -or -not $Script:Config.Export.RequestAdministratorPrivileges) { return }
+
+    # UAC receives only a completed package path. The helper has no access to
+    # user-data capture routines, so profile-scoped data remains normal-user.
+    $logsPath = Join-Path $DestinationBase 'Logs'
+    $helperPath = Join-Path $logsPath 'Export-SystemSettings.elevated.ps1'
+    $helperScript = @'
+#Requires -Version 5.1
+param([Parameter(Mandatory = $true)][string]$PackagePath)
+$ErrorActionPreference = 'Continue'
+$logsPath = Join-Path $PackagePath 'Logs'
+$logPath = Join-Path $logsPath 'AdminExportLog.txt'
+function Write-Audit([string]$Message) { Add-Content -LiteralPath $logPath -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message" }
+$failed = $false
+$settingsFile = Join-Path $PackagePath 'Settings\SystemSettings.json'
+try {
+    $settings = Get-Content -LiteralPath $settingsFile -Raw | ConvertFrom-Json
+    if ($settings.PowerScheme -match '([0-9a-fA-F-]{36})') {
+        $powerFile = Join-Path $PackagePath 'Settings\PowerScheme.pow'
+        if (Test-Path -LiteralPath $powerFile) { Remove-Item -LiteralPath $powerFile -Force }
+        & powercfg /export $powerFile $matches[1] 2>&1 | Add-Content -LiteralPath $logPath
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $powerFile)) { throw "powercfg /export failed (exit $LASTEXITCODE)." }
+        Write-Audit 'Full power plan exported.'
+    }
+} catch { $failed = $true; Write-Audit "Power export failed: $($_.Exception.Message)" }
+try {
+    $printBrm = Join-Path $env:WINDIR 'System32\spool\tools\PrintBrm.exe'
+    if (-not (Test-Path -LiteralPath $printBrm)) { throw 'PrintBRM.exe was not found.' }
+    $printerExport = Join-Path $PackagePath 'Printers\Printers.printerExport'
+    if (Test-Path -LiteralPath $printerExport) { Remove-Item -LiteralPath $printerExport -Force }
+    $arguments = @('-B', '-F', $printerExport)
+    if (-not {INCLUDE_DRIVERS}) { $arguments += '-NOBIN' }
+    & $printBrm @arguments 2>&1 | Tee-Object -LiteralPath (Join-Path $logsPath 'printbrm_backup_elevated.log') | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $printerExport) -or (Get-Item -LiteralPath $printerExport).Length -eq 0) { throw "PrintBRM backup failed (exit $LASTEXITCODE)." }
+    Write-Audit 'PrintBRM package created.'
+} catch { $failed = $true; Write-Audit "PrintBRM export failed: $($_.Exception.Message)" }
+exit $(if ($failed) { 1 } else { 0 })
+'@
+    $helperScript = $helperScript -replace '\{INCLUDE_DRIVERS\}', $Script:Config.IncludePrinterDrivers.ToString().ToLowerInvariant()
+    $helperScript | Set-Content -LiteralPath $helperPath -Encoding UTF8
+    try {
+        Write-Host '    Requesting administrator approval for PrintBRM and full power-plan capture...' -ForegroundColor Cyan
+        $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`" -PackagePath `"$DestinationBase`"" -ErrorAction Stop
+        if ($process.ExitCode -ne 0) { throw "Elevated helper exited with code $($process.ExitCode). Review Logs\\AdminExportLog.txt." }
+        Add-Result -Category 'Settings' -Item 'Power Scheme (elevated)' -Status 'Success' -Details 'Complete plan captured by scoped elevated helper'
+        Add-Result -Category 'Printers' -Item 'Printer Migration File (elevated)' -Status 'Success' -Details 'Created by scoped elevated helper; see printbrm_backup_elevated.log'
+        Write-Status 'Printer migration file' 'OK' 'created by elevated helper'
+        Write-Log 'Scoped elevated PrintBRM and power export completed.' -Level Success
+    }
+    catch {
+        Write-Log "Scoped elevated export was cancelled or failed: $($_.Exception.Message)" -Level Warning
+        Add-Result -Category 'System Export' -Item 'Elevated PrintBRM and power' -Status 'Warning' -Details $_.Exception.Message
+        Add-ManualTask -Task 'Capture PrintBRM and full power plan' -Reason 'Scoped administrator helper did not complete' -Instructions 'Review Logs\\AdminExportLog.txt and rerun with administrator approval.'
+    }
+    finally { Remove-Item -LiteralPath $helperPath -Force -ErrorAction SilentlyContinue }
 }
 

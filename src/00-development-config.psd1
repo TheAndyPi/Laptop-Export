@@ -31,9 +31,10 @@
         # PrintBRM restore and completion of the generated import script.
         DeletePrintBrmAfterImport = $true
 
-        # When enabled, the normal user-context import offers to run the
-        # separate elevated helper after all user-scoped restoration finishes.
-        EnableAdminHelper = $false
+        # The normal user-context import launches a separate elevated helper
+        # after all user-scoped restoration finishes. Only power and PrintBRM
+        # run in that helper.
+        EnableAdminHelper = $true
         AppComparison = $true
         AppDataReview = $true
         # These technical uninstall entries are excluded from the user-facing
@@ -108,7 +109,7 @@
         Import = @{
             LotusNotes                  = $true
             DeletePrintBrmAfterImport   = $true
-            EnableAdminHelper            = $false
+            EnableAdminHelper            = $true
             AppComparison                = $true
             AppDataReview                = $true
         }
