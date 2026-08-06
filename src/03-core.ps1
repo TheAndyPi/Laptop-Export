@@ -2,6 +2,11 @@
 # ADMIN ELEVATION
 # ============================================================================
 
+# Core owns shared state and cross-cutting services.  It resolves the source
+# identity, builds the effective configuration, manages asynchronous size
+# estimates, writes logs/results, and provides the common copy primitive used
+# by user-data, settings, browser, and destination modules.
+
 # Track if we have admin privileges
 $Script:IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
@@ -250,6 +255,8 @@ if ($RuntimeSettings) {
 }
 
 function Apply-OnlineTransferDefaults {
+    # Online mode is a policy overlay: it changes only the switches that are
+    # explicitly online-sensitive, leaving the base configuration intact.
     if ($Script:Config.TransferMode -ne "Online") { return }
 
     $Script:Config.Backup.Downloads = $Script:Config.Online.Downloads
@@ -260,15 +267,24 @@ function Apply-OnlineTransferDefaults {
 }
 
 function Set-SettingsPreset {
+    # Presets mutate the selected backup switches as a group.  The UI can later
+    # change individual values, so this function is a starting state, not a
+    # second configuration source.
     param([ValidateSet('Basic', 'Advanced')][string]$Name)
 
     $Script:Config.Backup.EntireUserProfile = ($Name -eq 'Advanced')
     $Script:Config.Backup.AdditionalAppData = ($Name -eq 'Advanced')
+    # Advanced is the complete profile preset, including Chrome's full
+    # profile rather than only its portable bookmark/password handoff.
+    if ($Name -eq 'Advanced') { $Script:Config.Backup.Chrome = 'FullProfile' }
     if ($Name -eq 'Basic') { $Script:SelectedAdditionalAppData = @() }
     $Script:SettingsPreset = $Name
 }
 
 function Resolve-ExportUserFolderPath {
+    # Most profile folders resolve below the profile root; Start Menu is the
+    # exception and is stored under roaming AppData.  Centralizing this mapping
+    # prevents export and size-estimation paths from disagreeing.
     param([string]$Folder)
     if ($Folder -eq 'Start Menu') {
         return (Join-Path $Script:OriginalAppDataRoaming 'Microsoft\Windows\Start Menu')
@@ -277,6 +293,9 @@ function Resolve-ExportUserFolderPath {
 }
 
 function Start-TransferSizeEstimateJob {
+    # Run expensive recursive directory enumeration in a background job so the
+    # settings screen remains responsive.  The job returns plain objects only;
+    # UI state is updated by Receive-TransferSizeEstimateJob in the foreground.
     # Run the initial inventory out-of-process so Transfer Settings remains
     # responsive while large profiles are being scanned.
     # Keep large profile-related payloads near the end and normal user folders
@@ -373,6 +392,9 @@ function Get-TransferSizeDisplayEstimate {
 }
 
 function Receive-TransferSizeEstimateJob {
+    # Drain completed estimate jobs and copy their results into the cache.
+    # Stale or failed jobs are ignored because estimates are advisory and must
+    # never prevent an otherwise valid transfer.
     if (-not $Script:TransferSizeEstimateJob) { return $false }
     $updated = $false
     foreach ($inventory in @(Receive-Job -Job $Script:TransferSizeEstimateJob -ErrorAction SilentlyContinue)) {
@@ -384,7 +406,10 @@ function Receive-TransferSizeEstimateJob {
     }
     if ($updated) { $Script:TransferSizeDisplayEstimate = Get-TransferSizeDisplayEstimate }
     if ($Script:TransferSizeEstimateJob.State -eq 'Completed') {
-        $Script:StartupPayloadEstimate = Get-TransferPayloadEstimate
+        # The job has already walked these folders.  Never immediately walk
+        # them again here: the former foreground estimate made completion look
+        # stalled and doubled the I/O on large profiles.
+        $Script:StartupPayloadEstimate = Get-TransferSizeDisplayEstimate
         $Script:TransferSizeDisplayEstimate = $Script:StartupPayloadEstimate
     }
     elseif ($Script:TransferSizeEstimateJob.State -in @('Failed', 'Stopped')) {
@@ -400,6 +425,9 @@ function Receive-TransferSizeEstimateJob {
 }
 
 function Read-MenuInputWithBackgroundRefresh {
+    # Read-Host blocks the foreground thread, so refresh the estimate job before
+    # and after input.  This gives the operator current numbers at each menu
+    # transition without attempting unsafe concurrent console writes.
     param([string]$Prompt, [scriptblock]$Poll)
     try {
         $rawUi = $Host.UI.RawUI
@@ -426,6 +454,8 @@ function Show-BackupOverview {
         Write-Section 'OVERVIEW OF BACKUP INCLUDING ESTIMATED SIZE'
         $estimate = if ($Script:StartupPayloadEstimate) { $Script:StartupPayloadEstimate } else { $Script:TransferSizeDisplayEstimate }
         Write-KeyValue 'Transfer mode' $Script:Config.TransferMode
+        $modeGuidance = if ($Script:Config.TransferMode -eq 'Online') { 'Use Online for a network or cloud-synced destination.' } else { 'Use Local for an external or secondary drive.' }
+        Write-KeyValue 'Mode guidance' $modeGuidance
         Write-KeyValue 'Estimated size' $(if ($estimate) { Format-FileSize $estimate.TotalBytes } else { 'Calculating in background...' })
         $selection = Read-MenuInputWithBackgroundRefresh -Prompt '  [1] Start transfer  [2] Change settings  [3] Cancel' -Poll {
             $wasRunning = [bool]$Script:TransferSizeEstimateJob
@@ -433,7 +463,14 @@ function Show-BackupOverview {
             return ($wasRunning -and -not $Script:TransferSizeEstimateJob)
         }
         if ($selection -eq '__MENU_AUTO_REFRESH__') { continue }
-        if ($selection -eq '1') { return $true }
+        if ($selection -eq '1') {
+            if ($Script:TransferSizeEstimateJob) {
+                Write-Host '  Size calculation is still running. Please wait for the completed estimate before starting.' -ForegroundColor Yellow
+                Start-Sleep -Milliseconds 900
+                continue
+            }
+            return $true
+        }
         if ($selection -eq '3') { return $false }
         if ($selection -eq '2') { if (-not (Show-TransferSettingsMenu)) { return $false }; continue }
         Write-Host '  Enter 1, 2, or 3.' -ForegroundColor Yellow
@@ -442,6 +479,9 @@ function Show-BackupOverview {
 }
 
 function Start-ElevatedExport {
+    # Relaunch the same script with RunAs while passing the original profile and
+    # serialized settings.  The new process is the only elevated boundary;
+    # ordinary user data remains handled in the original user context.
     # Do not relaunch the whole exporter: that changes the transferring user's
     # profile context. Start-ElevatedSystemExport later elevates only PrintBRM
     # and the full power-plan capture.
@@ -452,6 +492,9 @@ function Start-ElevatedExport {
 }
 
 function Restart-AsAdministrator {
+    # Build a quoted argument list for Start-Process.  The helper preserves
+    # spaces in profile/destination paths and deliberately returns after the
+    # child process exits so the parent cannot continue a duplicate export.
     if ($Script:IsAdmin) { Write-Host '  Already running as Administrator.' -ForegroundColor Green; return }
     try {
         Start-Process PowerShell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -ErrorAction Stop
@@ -461,6 +504,8 @@ function Restart-AsAdministrator {
 }
 
 function Add-DisabledBackupResult {
+    # Disabled stages still get a result row.  This makes the report distinguish
+    # intentional omission from a stage that was attempted and failed.
     param(
         [string]$Item,
         [string]$Category = "Backup"
@@ -472,6 +517,8 @@ function Add-DisabledBackupResult {
 }
 
 function Show-OnlineAdvancedSettingsMenu {
+    # Present online-only payload controls and write the operator's selections
+    # back to the shared configuration used by subsequent copy stages.
     while ($true) {
         Clear-StoScreen
         Write-Banner -Title "Advanced Online Controls" -Subtitle "These choices affect this transfer only"
@@ -506,6 +553,9 @@ function Show-OnlineAdvancedSettingsMenu {
 }
 
 function Show-TransferSettingsMenu {
+    # This is the final preflight editor.  It validates combinations, displays
+    # the effective payload, and returns control to the main workflow only after
+    # the operator accepts or cancels the transfer.
     # These are the runtime counterparts of the switches in
     # src\00-development-config.psd1.  Values start with the compiled
     # defaults, but any changes made here apply only to the current transfer.
@@ -596,7 +646,6 @@ function Show-TransferSettingsMenu {
 
         Write-Host ""
         Write-Host "  Select a number to toggle it; [B] Basic; [V] Advanced; [R] Refresh; select Online payload limit to enter a GB value." -ForegroundColor Gray
-        if ($Script:Config.TransferMode -eq 'Online') { Write-Host "  [A] Advanced Online Controls" -ForegroundColor Cyan }
         Write-Host "  Select Chrome to cycle its three backup modes." -ForegroundColor DarkGray
         Write-Host "  Administrator mode is requested only after you choose Start transfer." -ForegroundColor DarkGray
         Write-Host "  ZIP archives are optional for Local transfers and enabled by default for Online transfers." -ForegroundColor DarkGray
@@ -610,11 +659,16 @@ function Show-TransferSettingsMenu {
         }
 
         if ($selection -eq '__MENU_AUTO_REFRESH__' -or $selection -match '^[Rr]$') { continue }
-        if ($selection -match "^[Ss]$") { return $true }
+        if ($selection -match "^[Ss]$") {
+            $confirmStart = Read-UserInput '  Type START to begin the transfer (or press Enter to return)'
+            if ($confirmStart -ceq 'START') { return $true }
+            Write-Host '  Transfer not started.' -ForegroundColor Yellow
+            Start-Sleep -Milliseconds 700
+            continue
+        }
         if ($selection -match "^[Qq]$") { return $false }
         if ($selection -match "^[Bb]$") { Set-SettingsPreset -Name Basic; Update-AdvancedPayloadEstimate; continue }
         if ($selection -match "^[Vv]$") { Set-SettingsPreset -Name Advanced; $Script:SelectedAdditionalAppData = Select-AdditionalAppData; $Script:SkipAdditionalAppDataSizing = $false; Update-AdvancedPayloadEstimate; continue }
-        if ($selection -match "^[Aa]$" -and $Script:Config.TransferMode -eq 'Online') { Show-OnlineAdvancedSettingsMenu; continue }
 
         $selectedIndex = 0
         if ([int]::TryParse($selection, [ref]$selectedIndex) -and
@@ -667,6 +721,8 @@ $Script:Results = @{
 }
 
 function Write-Log {
+    # Append a timestamped line to the package log and mirror it to the console.
+    # Logging is best-effort so a locked log file cannot abort data collection.
     param(
         [string]$Message,
         [ValidateSet("Info", "Success", "Warning", "Error")]
@@ -688,6 +744,8 @@ function Write-Log {
 }
 
 function Add-Result {
+    # Results are structured records consumed by the HTML report and summary
+    # counters.  Keep status vocabulary stable because report sorting matches it.
     param(
         [string]$Category,
         [string]$Item,
@@ -728,6 +786,9 @@ function Format-RemainingTime {
 }
 
 function Copy-WithProgress {
+    # Wrap robocopy, translate its bitmask exit code into application statuses,
+    # and stream progress from the generated log.  Robocopy codes 0-7 represent
+    # success or acceptable differences; 8 and above mean a copy failure.
     param(
         [string]$Source,
         [string]$Destination,
@@ -869,6 +930,8 @@ function Copy-WithProgress {
 }
 
 function Add-ManualTask {
+    # Record work that cannot be automated safely, such as protected browser
+    # credentials or actions requiring a different security context.
     param(
         [string]$Task,
         [string]$Reason,

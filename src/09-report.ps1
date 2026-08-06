@@ -1,4 +1,10 @@
+# Report generation is deliberately last-mile: it reads the structured result
+# ledger and substitutes escaped values into a static HTML template.  It does
+# not infer success from console text or filesystem guesses.
+
 function Get-TransferReportTemplate {
+    # Cache the template after the first read because report generation may be
+    # retried and the template is immutable for the lifetime of this process.
     if ($Script:TransferReportTemplate) { return $Script:TransferReportTemplate }
     $templatePath = Join-Path $PSScriptRoot 'TransferReport.template.html'
     if (-not (Test-Path -LiteralPath $templatePath)) { throw "Transfer report template is missing: $templatePath" }
@@ -6,12 +12,15 @@ function Get-TransferReportTemplate {
 }
 
 function New-TransferReport {
+    # Freeze timing, classify actions, render manual handoff tasks, and write a
+    # self-contained report.  HTML encoding is applied at every dynamic field
+    # boundary so paths and user-controlled names cannot alter the markup.
     param([string]$DestinationBase)
 
     $Script:Results.EndTime = Get-Date
     $duration = $Script:Results.EndTime - $Script:Results.StartTime
     $successCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Success' }).Count
-    $warningCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Warning' }).Count
+    $warningCount = @($Script:Results.Actions | Where-Object { $_.Status -in @('Warning', 'Manual', 'Pending') }).Count
     $errorCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Error' -or $_.Status -like 'NOT EXPORTED*' }).Count
     $skippedCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Skipped' }).Count
 

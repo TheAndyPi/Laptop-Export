@@ -1,4 +1,4 @@
-# ---------------------------------------------------------------------------
+﻿# ---------------------------------------------------------------------------
 # GENERATED FILE - DO NOT EDIT DIRECTLY
 # Source modules: src\\01-bootstrap.ps1 through src\\10-main.ps1
 # Build command: powershell -ExecutionPolicy Bypass -File .\\Build-Deployment.ps1
@@ -240,19 +240,19 @@ $Script:TransferReportTemplate = @'
   <title>Laptop Transfer Report - {{USER}}</title>
   <style>
     :root{color-scheme:dark;--ink:#f5f9ff;--muted:#9daec6;--panel:#111d33;--panel2:#172744;--line:rgba(173,204,255,.17);--blue:#29b8ff;--violet:#9d7bff;--green:#44dda4;--amber:#ffc45d;--red:#ff7185}
-    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% -10%,#235e91 0,transparent 38%),radial-gradient(circle at 90% 5%,#4d327b 0,transparent 31%),#08111f;color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif}.container{max-width:1160px;margin:auto;padding:32px 20px 48px}.hero,.section,.stat,.route-card,.duration-card{border:1px solid var(--line);background:linear-gradient(145deg,rgba(27,45,76,.93),rgba(12,23,41,.94));box-shadow:0 18px 50px rgba(0,0,0,.19)}.hero{border-radius:24px;padding:30px;margin-bottom:18px;overflow:hidden;position:relative}.hero:after{content:"";position:absolute;width:280px;height:280px;border-radius:50%;right:-100px;top:-165px;background:radial-gradient(circle,rgba(41,184,255,.22),transparent 70%);pointer-events:none}.eyebrow,.label{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}h1{margin:5px 0 4px;font-size:clamp(28px,4vw,42px);line-height:1.1;letter-spacing:-.035em}.accent{color:var(--blue)}.meta{color:var(--muted);margin:0}.route{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:stretch;margin-top:25px}.route-card{min-width:0;border-radius:16px;padding:16px;background:rgba(7,17,31,.55)}.route-name{overflow-wrap:anywhere;font-size:20px;font-weight:700;color:#fff;margin-top:4px}.route-arrow{align-self:center;color:var(--blue);font-size:28px;text-align:center}.duration-card{border-radius:16px;margin-top:16px;padding:18px 20px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(100deg,rgba(41,184,255,.14),rgba(157,123,255,.14))}.duration{font-size:clamp(34px,5vw,56px);line-height:1;font-weight:800;letter-spacing:-.06em;color:#fff}.duration-copy{text-align:right;color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.stat{border-radius:16px;padding:18px}.number{font-size:30px;font-weight:800;line-height:1.1}.success .number,.success-text{color:var(--green)}.warning .number{color:var(--amber)}.error .number{color:var(--red)}.skipped .number{color:#c8d2e3}.section{border-radius:18px;margin:18px 0;overflow:hidden}.section-header{padding:17px 20px;background:rgba(255,255,255,.035);font-size:17px;font-weight:700}.section-subtitle{display:block;margin-top:2px;color:var(--muted);font-size:12px;font-weight:400}.section-content{padding:20px}.app-summary{border:1px solid rgba(41,184,255,.35);border-radius:14px;padding:18px;background:linear-gradient(110deg,rgba(41,184,255,.1),rgba(157,123,255,.08))}.app-summary h3{margin:0 0 6px;font-size:19px}.app-summary p{margin:0;color:var(--muted)}.app-summary.ready{border-color:rgba(255,196,93,.55)}.app-summary.ok{border-color:rgba(68,221,164,.55)}.app-list{margin:16px 0 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:9px}.app-list li{padding:11px 12px;border-radius:10px;background:rgba(6,15,28,.55);border:1px solid var(--line)}.app-list small{display:block;color:var(--muted);margin-top:2px}table{width:100%;border-collapse:collapse}th,td{padding:12px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}.status{display:inline-block;border-radius:999px;padding:4px 9px;font-size:12px;white-space:nowrap}.status-success{background:rgba(68,221,164,.15);color:#84f2c6}.status-warning{background:rgba(255,196,93,.14);color:#ffda91}.status-error{background:rgba(255,113,133,.16);color:#ffb3be}.status-skipped{background:rgba(187,202,224,.13);color:#d9e2f0}.critical-warning{border:1px solid rgba(255,113,133,.7);background:rgba(127,29,29,.28);border-radius:18px;padding:20px;margin:18px 0}.critical-warning h2{margin:0 0 4px;color:#ffbac4}.critical-warning p{margin:0;color:#ffd1d8}.admin-success{border-radius:16px;padding:15px 20px;margin:18px 0;color:#a1f6d1}.manual-task{border-left:3px solid var(--violet);border-radius:0 10px 10px 0;background:rgba(157,123,255,.1);padding:14px 16px;margin-bottom:10px}.manual-task.critical{border-color:var(--red);background:rgba(255,113,133,.1)}.manual-task h4{margin:0 0 4px}.manual-task p{margin:0;color:var(--muted)}.manual-task pre{white-space:pre-wrap;margin:10px 0 0;color:#dfeaff;font:12px/1.45 Consolas,monospace}details.section{padding:0}details summary{cursor:pointer;list-style:none;padding:18px 20px;font-size:17px;font-weight:700;background:rgba(255,255,255,.035)}details summary::-webkit-details-marker{display:none}details summary:after{content:'+';float:right;color:var(--blue);font-size:22px;line-height:.8}details[open] summary:after{content:'−'}details summary span{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:2px}details ul{margin:0;padding-left:22px}details li{margin:9px 0;color:#dce8fa}footer{text-align:center;color:#7f91ac;font-size:12px;padding:10px}@media(max-width:700px){.container{padding:18px 14px 35px}.hero{padding:22px}.route{grid-template-columns:1fr}.route-arrow{transform:rotate(90deg);padding:0}.duration-card{align-items:flex-start;gap:12px;flex-direction:column}.duration-copy{text-align:left}.stats{grid-template-columns:repeat(2,1fr)}.section-content{overflow:auto;padding:14px}table{min-width:680px}}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% -10%,#235e91 0,transparent 38%),radial-gradient(circle at 90% 5%,#4d327b 0,transparent 31%),#08111f;color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif}.container{max-width:1160px;margin:auto;padding:32px 20px 48px}.hero,.section,.stat,.route-card,.duration-card{border:1px solid var(--line);background:linear-gradient(145deg,rgba(27,45,76,.93),rgba(12,23,41,.94));box-shadow:0 18px 50px rgba(0,0,0,.19)}.hero{border-radius:24px;padding:30px;margin-bottom:18px;overflow:hidden;position:relative}.hero:after{content:"";position:absolute;width:280px;height:280px;border-radius:50%;right:-100px;top:-165px;background:radial-gradient(circle,rgba(41,184,255,.22),transparent 70%);pointer-events:none}.eyebrow,.label{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}h1{margin:5px 0 4px;font-size:clamp(28px,4vw,42px);line-height:1.1;letter-spacing:-.035em}.accent{color:var(--blue)}.meta{color:var(--muted);margin:0}.route{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:stretch;margin-top:25px}.route-card{min-width:0;border-radius:16px;padding:16px;background:rgba(7,17,31,.55)}.route-name{overflow-wrap:anywhere;font-size:20px;font-weight:700;color:#fff;margin-top:4px}.route-arrow{align-self:center;color:var(--blue);font-size:28px;text-align:center}.duration-card{border-radius:16px;margin-top:16px;padding:18px 20px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(100deg,rgba(41,184,255,.14),rgba(157,123,255,.14))}.duration{font-size:clamp(34px,5vw,56px);line-height:1;font-weight:800;letter-spacing:-.06em;color:#fff}.duration-copy{text-align:right;color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.stat{border-radius:16px;padding:18px}.number{font-size:30px;font-weight:800;line-height:1.1}.success .number,.success-text{color:var(--green)}.warning .number{color:var(--amber)}.error .number{color:var(--red)}.skipped .number{color:#c8d2e3}.section{border-radius:18px;margin:18px 0;overflow:hidden}.section-header{padding:17px 20px;background:rgba(255,255,255,.035);font-size:17px;font-weight:700}.section-subtitle{display:block;margin-top:2px;color:var(--muted);font-size:12px;font-weight:400}.section-content{padding:20px}.app-summary{border:1px solid rgba(41,184,255,.35);border-radius:14px;padding:18px;background:linear-gradient(110deg,rgba(41,184,255,.1),rgba(157,123,255,.08))}.app-summary h3{margin:0 0 6px;font-size:19px}.app-summary p{margin:0;color:var(--muted)}.app-summary.ready{border-color:rgba(255,196,93,.55)}.app-summary.ok{border-color:rgba(68,221,164,.55)}.app-list{margin:16px 0 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:9px}.app-list li{padding:11px 12px;border-radius:10px;background:rgba(6,15,28,.55);border:1px solid var(--line)}.app-list small{display:block;color:var(--muted);margin-top:2px}table{width:100%;border-collapse:collapse}th,td{padding:12px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}.status{display:inline-block;border-radius:999px;padding:4px 9px;font-size:12px;white-space:nowrap}.status-success{background:rgba(68,221,164,.15);color:#84f2c6}.status-warning{background:rgba(255,196,93,.14);color:#ffda91}.status-error{background:rgba(255,113,133,.16);color:#ffb3be}.status-skipped{background:rgba(187,202,224,.13);color:#d9e2f0}.critical-warning{border:1px solid rgba(255,113,133,.7);background:rgba(127,29,29,.28);border-radius:18px;padding:20px;margin:18px 0}.critical-warning h2{margin:0 0 4px;color:#ffbac4}.critical-warning p{margin:0;color:#ffd1d8}.admin-success{border-radius:16px;padding:15px 20px;margin:18px 0;color:#a1f6d1}.manual-task{border-left:3px solid var(--violet);border-radius:0 10px 10px 0;background:rgba(157,123,255,.1);padding:14px 16px;margin-bottom:10px}.manual-task.critical{border-color:var(--red);background:rgba(255,113,133,.1)}.manual-task h4{margin:0 0 4px}.manual-task p{margin:0;color:var(--muted)}.manual-task pre{white-space:pre-wrap;margin:10px 0 0;color:#dfeaff;font:12px/1.45 Consolas,monospace}details.section{padding:0}details summary{cursor:pointer;list-style:none;padding:18px 20px;font-size:17px;font-weight:700;background:rgba(255,255,255,.035)}details summary::-webkit-details-marker{display:none}details summary:after{content:'+';float:right;color:var(--blue);font-size:22px;line-height:.8}details[open] summary:after{content:'âˆ’'}details summary span{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:2px}details ul{margin:0;padding-left:22px}details li{margin:9px 0;color:#dce8fa}footer{text-align:center;color:#7f91ac;font-size:12px;padding:10px}@media(max-width:700px){.container{padding:18px 14px 35px}.hero{padding:22px}.route{grid-template-columns:1fr}.route-arrow{transform:rotate(90deg);padding:0}.duration-card{align-items:flex-start;gap:12px;flex-direction:column}.duration-copy{text-align:left}.stats{grid-template-columns:repeat(2,1fr)}.section-content{overflow:auto;padding:14px}table{min-width:680px}}
   </style>
 </head>
 <body>
 <main class="container">
   <header class="hero">
-    <div class="eyebrow">STO · laptop handoff</div>
+    <div class="eyebrow">STO Â· laptop handoff</div>
     <h1>Transfer <span class="accent">handoff report</span></h1>
-    <p class="meta">Prepared for {{USER}} · {{DATE}} · {{MODE}} transfer</p>
+    <p class="meta">Prepared for {{USER}} Â· {{DATE}} Â· {{MODE}} transfer</p>
     <div class="route">
-      <div class="route-card"><div class="label">Old computer · export source</div><div class="route-name">{{SOURCE_COMPUTER}}</div></div>
-      <div class="route-arrow" aria-hidden="true">→</div>
-      <div class="route-card"><div class="label">New computer · import destination</div><div class="route-name"><!-- DESTINATION_COMPUTER -->{{DESTINATION_COMPUTER}}<!-- /DESTINATION_COMPUTER --></div></div>
+      <div class="route-card"><div class="label">Old computer Â· export source</div><div class="route-name">{{SOURCE_COMPUTER}}</div></div>
+      <div class="route-arrow" aria-hidden="true">â†’</div>
+      <div class="route-card"><div class="label">New computer Â· import destination</div><div class="route-name"><!-- DESTINATION_COMPUTER -->{{DESTINATION_COMPUTER}}<!-- /DESTINATION_COMPUTER --></div></div>
     </div>
     <div class="duration-card"><div><div class="label">Total export time</div><div class="duration">{{DURATION}}</div></div><div class="duration-copy">Time from transfer start<br>to completed export report</div></div>
   </header>
@@ -262,8 +262,8 @@ $Script:TransferReportTemplate = @'
   <!-- IMPORT_RESULTS --><!-- /IMPORT_RESULTS -->
   <section class="section"><div class="section-header">Export actions<span class="section-subtitle">Items needing attention are listed first</span></div><div class="section-content"><table><thead><tr><th>Category</th><th>Item</th><th>Status</th><th>Details</th></tr></thead><tbody>{{ACTION_ROWS}}</tbody></table></div></section>
   <section class="section"><div class="section-header">Other manual tasks</div><div class="section-content">{{MANUAL_TASKS}}</div></section>
-  <details class="section"><summary>New machine checklist<span>Collapsed by default — expand while completing the handoff</span></summary><div class="section-content"><ul><li>Run Import-LaptopData.ps1</li><li>Verify Windows Updates and BitLocker</li><li>Sign in to OneDrive and Teams</li><li>Configure Office 365 and Outlook signatures</li><li>Review Logs/AppMigrationReview.html</li><li>Verify printers, drives, power settings, and default browser</li></ul></div></details>
-  <footer>Generated by STO Laptop Transfer Tool v{{VERSION}} · {{YEAR}}</footer>
+  <details class="section"><summary>New machine checklist<span>Collapsed by default â€” expand while completing the handoff</span></summary><div class="section-content"><ul><li>Run Import-LaptopData.ps1</li><li>Verify Windows Updates and BitLocker</li><li>Sign in to OneDrive and Teams</li><li>Configure Office 365 and Outlook signatures</li><li>Review Logs/AppMigrationReview.html</li><li>Verify printers, drives, power settings, and default browser</li></ul></div></details>
+  <footer>Generated by STO Laptop Transfer Tool v{{VERSION}} Â· {{YEAR}}</footer>
 </main>
 </body>
 </html>
@@ -685,6 +685,9 @@ function Set-SettingsPreset {
 
     $Script:Config.Backup.EntireUserProfile = ($Name -eq 'Advanced')
     $Script:Config.Backup.AdditionalAppData = ($Name -eq 'Advanced')
+    # Advanced is the complete profile preset, including Chrome's full
+    # profile rather than only its portable bookmark/password handoff.
+    if ($Name -eq 'Advanced') { $Script:Config.Backup.Chrome = 'FullProfile' }
     if ($Name -eq 'Basic') { $Script:SelectedAdditionalAppData = @() }
     $Script:SettingsPreset = $Name
 }
@@ -805,7 +808,10 @@ function Receive-TransferSizeEstimateJob {
     }
     if ($updated) { $Script:TransferSizeDisplayEstimate = Get-TransferSizeDisplayEstimate }
     if ($Script:TransferSizeEstimateJob.State -eq 'Completed') {
-        $Script:StartupPayloadEstimate = Get-TransferPayloadEstimate
+        # The job has already walked these folders.  Never immediately walk
+        # them again here: the former foreground estimate made completion look
+        # stalled and doubled the I/O on large profiles.
+        $Script:StartupPayloadEstimate = Get-TransferSizeDisplayEstimate
         $Script:TransferSizeDisplayEstimate = $Script:StartupPayloadEstimate
     }
     elseif ($Script:TransferSizeEstimateJob.State -in @('Failed', 'Stopped')) {
@@ -847,6 +853,8 @@ function Show-BackupOverview {
         Write-Section 'OVERVIEW OF BACKUP INCLUDING ESTIMATED SIZE'
         $estimate = if ($Script:StartupPayloadEstimate) { $Script:StartupPayloadEstimate } else { $Script:TransferSizeDisplayEstimate }
         Write-KeyValue 'Transfer mode' $Script:Config.TransferMode
+        $modeGuidance = if ($Script:Config.TransferMode -eq 'Online') { 'Use Online for a network or cloud-synced destination.' } else { 'Use Local for an external or secondary drive.' }
+        Write-KeyValue 'Mode guidance' $modeGuidance
         Write-KeyValue 'Estimated size' $(if ($estimate) { Format-FileSize $estimate.TotalBytes } else { 'Calculating in background...' })
         $selection = Read-MenuInputWithBackgroundRefresh -Prompt '  [1] Start transfer  [2] Change settings  [3] Cancel' -Poll {
             $wasRunning = [bool]$Script:TransferSizeEstimateJob
@@ -854,7 +862,14 @@ function Show-BackupOverview {
             return ($wasRunning -and -not $Script:TransferSizeEstimateJob)
         }
         if ($selection -eq '__MENU_AUTO_REFRESH__') { continue }
-        if ($selection -eq '1') { return $true }
+        if ($selection -eq '1') {
+            if ($Script:TransferSizeEstimateJob) {
+                Write-Host '  Size calculation is still running. Please wait for the completed estimate before starting.' -ForegroundColor Yellow
+                Start-Sleep -Milliseconds 900
+                continue
+            }
+            return $true
+        }
         if ($selection -eq '3') { return $false }
         if ($selection -eq '2') { if (-not (Show-TransferSettingsMenu)) { return $false }; continue }
         Write-Host '  Enter 1, 2, or 3.' -ForegroundColor Yellow
@@ -1017,7 +1032,6 @@ function Show-TransferSettingsMenu {
 
         Write-Host ""
         Write-Host "  Select a number to toggle it; [B] Basic; [V] Advanced; [R] Refresh; select Online payload limit to enter a GB value." -ForegroundColor Gray
-        if ($Script:Config.TransferMode -eq 'Online') { Write-Host "  [A] Advanced Online Controls" -ForegroundColor Cyan }
         Write-Host "  Select Chrome to cycle its three backup modes." -ForegroundColor DarkGray
         Write-Host "  Administrator mode is requested only after you choose Start transfer." -ForegroundColor DarkGray
         Write-Host "  ZIP archives are optional for Local transfers and enabled by default for Online transfers." -ForegroundColor DarkGray
@@ -1031,11 +1045,16 @@ function Show-TransferSettingsMenu {
         }
 
         if ($selection -eq '__MENU_AUTO_REFRESH__' -or $selection -match '^[Rr]$') { continue }
-        if ($selection -match "^[Ss]$") { return $true }
+        if ($selection -match "^[Ss]$") {
+            $confirmStart = Read-UserInput '  Type START to begin the transfer (or press Enter to return)'
+            if ($confirmStart -ceq 'START') { return $true }
+            Write-Host '  Transfer not started.' -ForegroundColor Yellow
+            Start-Sleep -Milliseconds 700
+            continue
+        }
         if ($selection -match "^[Qq]$") { return $false }
         if ($selection -match "^[Bb]$") { Set-SettingsPreset -Name Basic; Update-AdvancedPayloadEstimate; continue }
         if ($selection -match "^[Vv]$") { Set-SettingsPreset -Name Advanced; $Script:SelectedAdditionalAppData = Select-AdditionalAppData; $Script:SkipAdditionalAppDataSizing = $false; Update-AdvancedPayloadEstimate; continue }
-        if ($selection -match "^[Aa]$" -and $Script:Config.TransferMode -eq 'Online') { Show-OnlineAdvancedSettingsMenu; continue }
 
         $selectedIndex = 0
         if ([int]::TryParse($selection, [ref]$selectedIndex) -and
@@ -1457,7 +1476,6 @@ namespace Sto {
 }
 
 function Select-TargetDrive {
-    Write-Banner -Title "Laptop Transfer  -  Export Tool" -Subtitle "v$($Script:Config.Version)"
     Write-KeyValue "Transferring" $Script:OriginalUserName
     Write-KeyValue "Computer" $env:COMPUTERNAME
     Write-KeyValue "Transfer" $Script:Config.TransferMode
@@ -1511,6 +1529,9 @@ function Select-TargetDrive {
                 $selectedDrive = $drives[$index]
                 $confirm = Read-UserInput "Proceed with $($selectedDrive.Display)? (Y/N)"
                 if ($confirm -match "^[Yy]") { return $selectedDrive.Letter }
+                if ($confirm -match "^[Nn]$") { continue }
+                Write-Host '  Enter Y or N.' -ForegroundColor Yellow
+                continue
             }
         }
         Write-Host "Invalid selection. Please try again." -ForegroundColor Red
@@ -1518,7 +1539,6 @@ function Select-TargetDrive {
 }
 
 function Select-TargetDestination {
-    Write-Banner -Title "Laptop Transfer  -  Export Tool" -Subtitle "v$($Script:Config.Version)"
     Write-KeyValue "Transferring" $Script:OriginalUserName
     Write-KeyValue "Computer" $env:COMPUTERNAME
     if ($Script:IsAdmin) {
@@ -1965,20 +1985,16 @@ function Resolve-TransferMode {
     if ($Script:Config.TransferMode -in @("Local", "Online") -and $TransferMode) {
         return  # already set from param
     }
-    Write-StoLogo
     Write-Section "Transfer mode"
     Write-Host "  [1] Local  " -ForegroundColor Cyan -NoNewline
     Write-Host "- full copy (USB / on-site)" -ForegroundColor DarkGray
     Write-Host "  [2] Online " -ForegroundColor Cyan -NoNewline
     Write-Host "- Online Downloads default on; folders above $($Script:Config.Online.DownloadsCapGB)GB require confirmation" -ForegroundColor DarkGray
-    Write-Host "  [3] Administrator " -ForegroundColor Cyan -NoNewline
-    Write-Host "- restart with administrator privileges" -ForegroundColor DarkGray
     Write-Host ""
     do {
-        $m = Read-UserInput "  Select transfer mode (1-3)"
+        $m = Read-UserInput "  Select transfer mode (1-2)"
         if ($m -eq "1") { $Script:Config.TransferMode = "Local"; break }
         if ($m -eq "2") { $Script:Config.TransferMode = "Online"; break }
-        if ($m -eq '3') { Restart-AsAdministrator; continue }
         Write-Host "  Invalid selection." -ForegroundColor Red
     } while ($true)
 }
@@ -2545,6 +2561,21 @@ function Get-SystemSettings {
         UserName = $Script:OriginalUserName
         ComputerName = $env:COMPUTERNAME
         TransferMode = $Script:Config.TransferMode
+        ExportWasAdministrator = [bool]$Script:IsAdmin
+    }
+
+    # BitLocker state is a handoff prerequisite. Capture it without making an
+    # unavailable management module an export-stopping condition.
+    try {
+        $bitLocker = @(Get-BitLockerVolume -ErrorAction Stop | ForEach-Object {
+            [PSCustomObject]@{ MountPoint = $_.MountPoint; VolumeStatus = [string]$_.VolumeStatus; ProtectionStatus = [string]$_.ProtectionStatus; EncryptionPercentage = $_.EncryptionPercentage }
+        })
+        $settings.BitLocker = $bitLocker
+        Add-Result -Category 'Settings' -Item 'BitLocker status' -Status 'Success' -Details (($bitLocker | ForEach-Object { "$($_.MountPoint): $($_.ProtectionStatus), $($_.VolumeStatus)" }) -join '; ')
+    }
+    catch {
+        $settings.BitLocker = @()
+        Add-Result -Category 'Settings' -Item 'BitLocker status' -Status 'Skipped' -Details 'Could not query BitLocker on this device'
     }
     
     # Power Settings
@@ -2812,7 +2843,9 @@ function Get-SystemSettings {
         # for the importer to apply to the destination monitor entries.
         $perMonitorDpi = @(Get-ChildItem -Path 'HKCU:\Control Panel\Desktop\PerMonitorSettings' -ErrorAction SilentlyContinue | ForEach-Object {
             $dpi = (Get-ItemProperty -LiteralPath $_.PSPath -Name DpiValue -ErrorAction SilentlyContinue).DpiValue
-            if ($null -ne $dpi) { [int]$dpi }
+            # DpiValue is an unsigned registry DWORD; 0xffffffff is valid
+            # there but cannot be cast to Int32.
+            if ($null -ne $dpi) { [uint32]$dpi }
         })
         $personalization.ScreenScale = @{
             LogPixels = $personalization.LogPixels
@@ -2823,7 +2856,7 @@ function Get-SystemSettings {
         # Accessibility > Text size is a percentage stored per user.
         $accessibility = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Accessibility' -ErrorAction SilentlyContinue
         if ($accessibility -and $null -ne $accessibility.TextScaleFactor) {
-            $personalization.TextScaleFactor = [int]$accessibility.TextScaleFactor
+            $personalization.TextScaleFactor = [uint32]$accessibility.TextScaleFactor
         }
         
         $settings.Personalization = $personalization
@@ -3293,7 +3326,7 @@ function Receive-AdditionalAppDataSizeJob {
 }
 
 function Show-AdditionalAppDataMenu {
-    param([array]$Candidates, [bool]$Calculating, [bool]$Skipped)
+    param([array]$Candidates, [bool]$Calculating, [bool]$Skipped, [System.Collections.Generic.HashSet[int]]$Selected = $null)
     Clear-StoScreen
     Write-Banner -Title 'Advanced AppData Selection' -Subtitle 'Select additional folders to include in this transfer'
     Write-Host '  Curated AppData items remain included automatically. Select only extra folders below.' -ForegroundColor DarkGray
@@ -3303,7 +3336,10 @@ function Show-AdditionalAppDataMenu {
     for ($index = 0; $index -lt $Candidates.Count; $index++) {
         $item = $Candidates[$index]
         $sizeText = if ($null -eq $item.SizeBytes) { 'calculating...' } else { Format-FileSize $item.SizeBytes }
-        Write-Host "  [$($index + 1)] $($item.Area.PadRight(7)) $($item.RelativePath.PadRight(32)) $sizeText" -ForegroundColor White
+        $state = if ($Selected -and $Selected.Contains($index + 1)) { 'ON ' } else { 'OFF' }
+        $color = if ($state -eq 'ON ') { 'Green' } else { 'DarkGray' }
+        Write-Host "  [$($index + 1)] $state " -ForegroundColor $color -NoNewline
+        Write-Host "$($item.Area.PadRight(7)) $($item.RelativePath.PadRight(32)) $sizeText" -ForegroundColor White
     }
     Write-Host ''
 }
@@ -3321,10 +3357,11 @@ function Select-AdditionalAppData {
     $Script:AdditionalAppDataSizeJob = $sizeJob
     $Script:AdditionalAppDataMenuCandidates = $candidates
     $Script:AdditionalAppDataSizeAutoRefreshed = $false
+    $selectedNumbers = [System.Collections.Generic.HashSet[int]]::new()
     try {
         while ($true) {
-            Show-AdditionalAppDataMenu -Candidates $Script:AdditionalAppDataMenuCandidates -Calculating ($Script:AdditionalAppDataSizeJob.State -eq 'Running') -Skipped $false
-            Write-Host '  Enter numbers separated by commas, A for all, N for none, or R to refresh' -ForegroundColor Gray -NoNewline
+            Show-AdditionalAppDataMenu -Candidates $Script:AdditionalAppDataMenuCandidates -Calculating ($Script:AdditionalAppDataSizeJob.State -eq 'Running') -Skipped $false -Selected $selectedNumbers
+            Write-Host '  Enter a number to toggle it; [A] all; [N] none; [S] save; [R] refresh' -ForegroundColor Gray
             $answer = Read-MenuInputWithBackgroundRefresh -Prompt '' -Poll {
                 $wasRunning = [bool]$Script:AdditionalAppDataSizeJob
                 [void](Receive-AdditionalAppDataSizeJob -Job $Script:AdditionalAppDataSizeJob -Candidates $Script:AdditionalAppDataMenuCandidates)
@@ -3335,26 +3372,24 @@ function Select-AdditionalAppData {
                 return $false
             }
             if ($answer -eq '__MENU_AUTO_REFRESH__' -or $answer -match '^[Rr]$') { continue }
-            break
+            if ($answer -match '^[Aa]$') { $selectedNumbers.Clear(); 1..$candidates.Count | ForEach-Object { [void]$selectedNumbers.Add($_) }; continue }
+            if ($answer -match '^[Nn]$') { $selectedNumbers.Clear(); continue }
+            if ($answer -match '^[Ss]$') { break }
+            $number = 0
+            if ([int]::TryParse($answer, [ref]$number) -and $number -ge 1 -and $number -le $candidates.Count) {
+                if ($selectedNumbers.Contains($number)) { [void]$selectedNumbers.Remove($number) } else { [void]$selectedNumbers.Add($number) }
+                continue
+            }
+            Write-Host '  Enter a listed number, A, N, S, or R.' -ForegroundColor Yellow
+            Start-Sleep -Milliseconds 700
         }
         if ($sizeJob.State -eq 'Running') { Stop-Job -Job $sizeJob -ErrorAction SilentlyContinue }
     }
     finally {
         Remove-Job -Job $sizeJob -Force -ErrorAction SilentlyContinue
     }
-    if ($answer -match '^[Aa]$') { return $candidates }
-    if ($answer -match '^[Nn]?$') { return @() }
-
     $selected = [System.Collections.Generic.List[object]]::new()
-    $invalidEntry = $false
-    foreach ($part in ($answer -split ',')) {
-        $number = 0
-        if ([int]::TryParse($part.Trim(), [ref]$number) -and $number -ge 1 -and $number -le $candidates.Count) {
-            [void]$selected.Add($candidates[$number - 1])
-        }
-        else { $invalidEntry = $true }
-    }
-    if ($invalidEntry) { Write-Host '  Ignored invalid AppData selection entries.' -ForegroundColor Yellow }
+    foreach ($number in $selectedNumbers) { [void]$selected.Add($candidates[$number - 1]) }
     return @($selected | Sort-Object Area, RelativePath -Unique)
 }
 
@@ -3686,10 +3721,13 @@ function Request-BrowserClose {
     if ($processes.Count -eq 0) { return $true }
 
     Write-Host ""
-    Write-Host "  $DisplayName is open. Close it to capture its profile databases consistently." -ForegroundColor Yellow
-    $response = Read-UserInput "  Close $DisplayName, then press Enter to continue (S to copy while it is open)"
-    $processes = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
-    if ($processes.Count -eq 0) { return $true }
+    Write-Host "  $DisplayName is open. Waiting up to 30 seconds for it to close; copying will continue afterward." -ForegroundColor Yellow
+    $deadline = (Get-Date).AddSeconds(30)
+    do {
+        Start-Sleep -Milliseconds 750
+        $processes = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+        if ($processes.Count -eq 0) { return $true }
+    } while ((Get-Date) -lt $deadline)
 
     Write-Log "$DisplayName is still running; some active database files may be unavailable or inconsistent" -Level Warning
     Add-ManualTask -Task "Verify $DisplayName profile export" -Reason "$DisplayName was open during export" -Instructions "Close $DisplayName and run the export again before the old laptop is wiped if its current browser data is important."
@@ -3779,7 +3817,7 @@ On the old laptop, while signed in as the original Windows user:
     }
 
     try {
-        Start-Process "chrome.exe" "chrome://password-manager/settings" -ErrorAction Stop
+        Start-Process -FilePath 'chrome.exe' -ArgumentList '--new-window', 'chrome://password-manager/settings' -ErrorAction Stop
         Write-Host "  Complete Chrome's export, choose the folder shown above, then return here." -ForegroundColor Gray
         [void](Read-UserInput "  Press Enter after saving the CSV (S to skip)")
     }
@@ -4052,7 +4090,9 @@ function Set-OneDriveLocalSync {
             
             # Use attrib to remove cloud-only and set pinned
             # /S = process subfolders, /D = process directories too
-            $attribResult = Start-Process -FilePath "attrib.exe" -ArgumentList "+P", "-U", "/S", "/D", "`"$targetPath\*`"" -Wait -PassThru -NoNewWindow -ErrorAction Stop
+            # attrib requires the file specification before /S and /D.  The
+            # former order silently skipped hydration on some Windows builds.
+            $attribResult = Start-Process -FilePath "attrib.exe" -ArgumentList "+P", "-U", "`"$targetPath\*`"", "/S", "/D" -Wait -PassThru -NoNewWindow -ErrorAction Stop
             
             if ($attribResult.ExitCode -eq 0) {
                 $success = $true
@@ -5371,7 +5411,8 @@ if ($hasIndividualPowerSettings) {
                 } else {
                     $failureDetail = "$settingGuid ($($powerType.Name)): $(($powerOutput | Out-String).Trim())"
                     [void]$powerValueFailures.Add($failureDetail)
-                    Add-Result -Category 'Settings' -Item "Power setting $settingGuid" -Status 'Skipped' -Details "$($powerType.Name) value rejected: $(($powerOutput | Out-String).Trim())"
+                    # Individual failures are summarized below so the handoff
+                    # report remains useful instead of repeating every GUID.
                 }
             }
         }
@@ -5385,9 +5426,8 @@ if ($hasIndividualPowerSettings) {
             Write-Log "Individual power settings applied: $powerValuesApplied AC/DC value(s)" -Level "Success"
             Add-Result -Category "Settings" -Item "Individual Power Settings" -Status "Success" -Details "$powerValuesApplied AC/DC values applied to the current plan"
         } else {
-            $failurePreview = @($powerValueFailures | Select-Object -First 3) -join " | "
             Write-Log "Individual power settings applied: $powerValuesApplied; $($powerValueFailures.Count) value(s) could not be applied" -Level "Warning"
-            Add-Result -Category "Settings" -Item "Individual Power Settings" -Status "Warning" -Details "$powerValuesApplied applied; $($powerValueFailures.Count) rejected/unsupported. $failurePreview"
+            Add-Result -Category "Settings" -Item "Individual Power Settings" -Status "Warning" -Details "$powerValuesApplied applied; $($powerValueFailures.Count) settings rejected or unsupported. See Logs\\AdminImportLog.txt for details."
             $Script:Results.Warnings += "Some individual power settings were rejected by the current plan, policy, or hardware. See ImportLog.txt."
         }
     }
@@ -6352,6 +6392,7 @@ function Set-TransferReportMarkedContent {
 function Update-TransferReportFromImport {
     param(
         [object[]]$MissingPrograms = @(),
+        [object[]]$AppDataCandidates = @(),
         [ValidateSet('Complete', 'Disabled', 'Unavailable', 'Failed')][string]$State = 'Complete',
         [string]$Detail = ''
     )
@@ -6367,13 +6408,15 @@ function Update-TransferReportFromImport {
                 $name = & $encode ([string]$_.DisplayName)
                 $publisher = & $encode ([string]$_.Publisher)
                 $version = & $encode ([string]$_.DisplayVersion)
-                "<li><strong>$name</strong><small>$publisher · old version: $version</small></li>"
+                "<li><strong>$name</strong><small>$publisher Â· old version: $version</small></li>"
             }) -join "`n"
+            $candidateItems = @($AppDataCandidates | ForEach-Object { "<li><strong>$(& $encode ([string]$_.RelativePath))</strong><small>$(& $encode ([string]$_.Area)) - $(& $encode ([string]$_.Association))</small></li>" }) -join "`n"
+            $candidatePanel = if ($candidateItems) { "<details class='section'><summary>AppData migration review<span>$($AppDataCandidates.Count) folder(s) to review; none are copied automatically</span></summary><div class='section-content'><ul class='app-list'>$candidateItems</ul></div></details>" } else { '' }
             if ($MissingPrograms.Count -gt 0) {
-                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><ul class='app-list'>$appItems</ul></div>"
+                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><ul class='app-list'>$appItems</ul></div>$candidatePanel"
             }
             else {
-                $appSection = "<div class='app-summary ok'><h3>Application comparison complete</h3><p>No applications from the old computer are missing on this new computer.</p></div>"
+                $appSection = "<div class='app-summary ok'><h3>Application comparison complete</h3><p>No applications from the old computer are missing on this new computer.</p></div>$candidatePanel"
             }
         }
         else {
@@ -6409,7 +6452,7 @@ function Update-TransferReportImportOutcomes {
         $encode = { param($Value) [Security.SecurityElement]::Escape([string]$Value) }
         $content = if ($attention.Count) {
             $items = @($attention | ForEach-Object {
-                "<li><strong>$(& $encode ([string]$_.Item))</strong><small>$(& $encode ([string]$_.Status)) · $(& $encode ([string]$_.Details))</small></li>"
+                "<li><strong>$(& $encode ([string]$_.Item))</strong><small>$(& $encode ([string]$_.Status)) Â· $(& $encode ([string]$_.Details))</small></li>"
             }) -join "`n"
             "<section class='section'><div class='section-header'>Import actions needing attention<span class='section-subtitle'>Settings or layout items Windows could not apply</span></div><div class='section-content'><div class='app-summary ready'><ul class='app-list'>$items</ul></div></div></section>"
         }
@@ -6467,13 +6510,14 @@ else {
         $comparison | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationComparison.json') -Encoding UTF8
         @('Application migration review', '', "Missing user-facing applications: $($missingPrograms.Count)", "Filtered technical entries: $($filteredPrograms.Count)", '') + @($missingPrograms | ForEach-Object { "MISSING | $($_.DisplayName) | $($_.Publisher) | old version: $($_.DisplayVersion)" }) + @('', 'Filtered technical entries:') + @($filteredPrograms | ForEach-Object { "FILTERED | $($_.DisplayName) | $($_.Publisher)" }) + @('', 'AppData candidates:') + @($candidateItems | ForEach-Object { "[$($_.Area)] $($_.RelativePath) | $($_.Association)" }) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.txt') -Encoding UTF8
         (ConvertTo-ReviewHtml -Missing $missingPrograms -Candidates $candidateItems) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.html') -Encoding UTF8
-        if (-not $TestMode) { Update-TransferReportFromImport -MissingPrograms $missingPrograms }
+        if (-not $TestMode) { Update-TransferReportFromImport -MissingPrograms $missingPrograms -AppDataCandidates $candidateItems }
         $detail = "$($missingPrograms.Count) missing app(s); $($candidateItems.Count) AppData candidate(s)"
         Write-Log "Application migration review created: $detail" -Level $(if ($missingPrograms.Count -gt 0) { 'Warning' } else { 'Success' })
         Add-Result -Category 'Reference' -Item 'Application migration review' -Status $(if ($missingPrograms.Count -gt 0) { 'Manual' } else { 'Success' }) -Details $detail
         if ($missingPrograms.Count -gt 0 -or $candidateItems.Count -gt 0) {
             Add-ManualTask -Task 'Review applications and AppData' -Reason $detail -Instructions 'Review Logs\AppMigrationReview.html, install/configure required apps, and decide whether any AppData candidate needs manual migration.'
-            if (-not $TestMode) { Start-Process (Join-Path $logsPath 'AppMigrationReview.html') -ErrorAction SilentlyContinue }
+            # The handoff report now contains the interactive application
+            # review; do not open a competing standalone browser page.
         }
     } catch {
         Write-Log "Application comparison failed: $($_.Exception.Message)" -Level 'Warning'
@@ -6599,6 +6643,19 @@ elseif (-not $enableAdminHelper) {
     Write-AdminHelperAudit -Status "Skipped" -Detail "Optional administrator helper is disabled by package configuration."
 }
 else {
+    $exportAdminState = 'unknown'
+    try {
+        $exportSettings = Get-Content -LiteralPath (Join-Path $scriptPath 'Settings\SystemSettings.json') -Raw | ConvertFrom-Json
+        $exportAdminState = if ($exportSettings.ExportWasAdministrator) { 'with administrator rights' } else { 'without administrator rights' }
+    } catch { }
+    Write-Host "  System settings were exported $exportAdminState." -ForegroundColor DarkGray
+    $adminChoice = Read-UserInput '  Run the optional elevated power/PrintBRM restore? (Y/N) [Y]'
+    if ($adminChoice -match '^[Nn]') { $enableAdminHelper = $false }
+    if (-not $enableAdminHelper) {
+        Write-AdminHelperAudit -Status 'Skipped' -Detail 'Technician chose not to run the optional administrator helper.'
+        Write-Host '  Elevated power and PrintBRM restore skipped by technician.' -ForegroundColor Yellow
+    }
+    else {
     $helperPath = Join-Path $scriptPath "Import-SystemSettings.ps1"
     if (-not (Test-Path -LiteralPath $helperPath)) {
         Write-Host "  Administrator helper is missing; system tasks are deferred." -ForegroundColor Yellow
@@ -6622,6 +6679,7 @@ else {
             Write-AdminHelperAudit -Status "Cancelled" -Detail "UAC elevation was cancelled, denied, or could not start: $($_.Exception.Message)"
             Invoke-StandardSystemRestoreFallback -HelperPath $helperPath
         }
+    }
     }
 }
 
@@ -6871,7 +6929,7 @@ function New-TransferReport {
     $Script:Results.EndTime = Get-Date
     $duration = $Script:Results.EndTime - $Script:Results.StartTime
     $successCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Success' }).Count
-    $warningCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Warning' }).Count
+    $warningCount = @($Script:Results.Actions | Where-Object { $_.Status -in @('Warning', 'Manual', 'Pending') }).Count
     $errorCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Error' -or $_.Status -like 'NOT EXPORTED*' }).Count
     $skippedCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Skipped' }).Count
 
@@ -7077,11 +7135,12 @@ function Start-LaptopExport {
         $payloadEstimate = $Script:StartupPayloadEstimate
     }
     elseif ($Script:TransferSizeEstimateJob) {
-        Stop-Job -Job $Script:TransferSizeEstimateJob -ErrorAction SilentlyContinue
-        Remove-Job -Job $Script:TransferSizeEstimateJob -Force -ErrorAction SilentlyContinue
-        $Script:TransferSizeEstimateJob = $null
-        $payloadEstimate = [PSCustomObject]@{ TotalBytes = [long]0; ItemBytes = @{} }
-        Write-Host '  Folder-size calculation is still running; continuing without a size estimate.' -ForegroundColor Yellow
+        # Show-BackupOverview does not allow Start until this job completes,
+        # but retain a safe wait for alternate/noninteractive callers.
+        Write-Host '  Finalizing background folder-size calculation...' -ForegroundColor Cyan
+        Wait-Job -Job $Script:TransferSizeEstimateJob | Out-Null
+        [void](Receive-TransferSizeEstimateJob)
+        $payloadEstimate = $Script:StartupPayloadEstimate
     }
     else { $payloadEstimate = Get-TransferPayloadEstimate }
     $estBytes = $payloadEstimate.TotalBytes
@@ -7254,7 +7313,7 @@ function Start-LaptopExport {
     $Script:Results.EndTime = Get-Date
     $dur = $Script:Results.EndTime - $Script:Results.StartTime
     $sc = ($Script:Results.Actions | Where-Object { $_.Status -eq "Success" }).Count
-    $wc = ($Script:Results.Actions | Where-Object { $_.Status -match "Warning|Manual" }).Count
+    $wc = ($Script:Results.Actions | Where-Object { $_.Status -in @('Warning', 'Manual', 'Pending') }).Count
     $ec = @($Script:Results.Actions | Where-Object {
         $_.Status -eq "Error" -or $_.Status -like "NOT EXPORTED*"
     }).Count

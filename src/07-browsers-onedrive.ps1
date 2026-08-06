@@ -2,7 +2,14 @@
 # BROWSER DATA
 # ============================================================================
 
+# Browser handling separates portable data (bookmarks and an operator-approved
+# password CSV) from protected profile state.  Windows user-protection keys are
+# tied to the original account, so the module never pretends that copying a raw
+# database is equivalent to restoring credentials on another computer.
+
 function Convert-ChromeBookmarksToHtml {
+    # Convert Chromium's JSON bookmark tree into Netscape bookmark HTML, which
+    # Chrome, Edge, and Firefox can import.  Names and URLs are HTML-escaped.
     param(
         [string]$JsonPath,
         [string]$HtmlPath
@@ -97,6 +104,9 @@ function Get-ChromeProfileDirectories {
 }
 
 function Request-BrowserClose {
+    # Browser databases may be locked.  Ask the operator to close the relevant
+    # process and give them a chance to retry before falling back to a manual
+    # task rather than copying an inconsistent live database.
     param(
         [string]$ProcessName,
         [string]$DisplayName
@@ -106,10 +116,13 @@ function Request-BrowserClose {
     if ($processes.Count -eq 0) { return $true }
 
     Write-Host ""
-    Write-Host "  $DisplayName is open. Close it to capture its profile databases consistently." -ForegroundColor Yellow
-    $response = Read-UserInput "  Close $DisplayName, then press Enter to continue (S to copy while it is open)"
-    $processes = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
-    if ($processes.Count -eq 0) { return $true }
+    Write-Host "  $DisplayName is open. Waiting up to 30 seconds for it to close; copying will continue afterward." -ForegroundColor Yellow
+    $deadline = (Get-Date).AddSeconds(30)
+    do {
+        Start-Sleep -Milliseconds 750
+        $processes = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+        if ($processes.Count -eq 0) { return $true }
+    } while ((Get-Date) -lt $deadline)
 
     Write-Log "$DisplayName is still running; some active database files may be unavailable or inconsistent" -Level Warning
     Add-ManualTask -Task "Verify $DisplayName profile export" -Reason "$DisplayName was open during export" -Instructions "Close $DisplayName and run the export again before the old laptop is wiped if its current browser data is important."
@@ -199,7 +212,7 @@ On the old laptop, while signed in as the original Windows user:
     }
 
     try {
-        Start-Process "chrome.exe" "chrome://password-manager/settings" -ErrorAction Stop
+        Start-Process -FilePath 'chrome.exe' -ArgumentList '--new-window', 'chrome://password-manager/settings' -ErrorAction Stop
         Write-Host "  Complete Chrome's export, choose the folder shown above, then return here." -ForegroundColor Gray
         [void](Read-UserInput "  Press Enter after saving the CSV (S to skip)")
     }
@@ -221,6 +234,9 @@ On the old laptop, while signed in as the original Windows user:
 }
 
 function Copy-BrowserData {
+    # Orchestrate per-browser exports and preserve independent results.  A
+    # failure in one browser must not suppress OneDrive processing or the other
+    # browser stages.
     param(
         [string]$DestinationBase
     )
@@ -434,7 +450,14 @@ function Copy-BrowserData {
 # ONEDRIVE
 # ============================================================================
 
+# OneDrive work is performed through filesystem state and documented shell
+# commands.  Online mode deliberately avoids force-hydrating every cloud file;
+# local mode may request hydration when the operator has chosen it.
+
 function Set-OneDriveLocalSync {
+    # Apply the selected hydration policy to the user's synchronized folders.
+    # Errors are warnings because sign-in and tenant policy can legitimately
+    # prevent a command from changing cloud-file availability.
     Write-Log "Checking OneDrive status..." -Level Info
 
     # Online mode: don't force-hydrate OneDrive. Pinning every file would
@@ -472,7 +495,9 @@ function Set-OneDriveLocalSync {
             
             # Use attrib to remove cloud-only and set pinned
             # /S = process subfolders, /D = process directories too
-            $attribResult = Start-Process -FilePath "attrib.exe" -ArgumentList "+P", "-U", "/S", "/D", "`"$targetPath\*`"" -Wait -PassThru -NoNewWindow -ErrorAction Stop
+            # attrib requires the file specification before /S and /D.  The
+            # former order silently skipped hydration on some Windows builds.
+            $attribResult = Start-Process -FilePath "attrib.exe" -ArgumentList "+P", "-U", "`"$targetPath\*`"", "/S", "/D" -Wait -PassThru -NoNewWindow -ErrorAction Stop
             
             if ($attribResult.ExitCode -eq 0) {
                 $success = $true

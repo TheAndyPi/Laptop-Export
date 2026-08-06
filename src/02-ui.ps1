@@ -1,4 +1,11 @@
+# UI helpers are deliberately side-effect-light: they format text or write to
+# the console, while the feature modules own filesystem and registry changes.
+# This keeps progress output consistent and makes non-interactive validation
+# possible without duplicating the transfer logic.
+
 function Get-VisibleLength {
+    # ANSI color sequences occupy characters in the raw string but no columns
+    # on screen, so remove them before calculating padding and alignment.
     # Length of a string ignoring ANSI escape sequences (for correct padding)
     param([string]$Text)
     return ([regex]::Replace($Text, "$([char]27)\[[0-9;]*m", "")).Length
@@ -85,6 +92,9 @@ function Write-Status {
 }
 
 function Write-KeyValue {
+    # Render a two-column diagnostic row.  Values are intentionally strings so
+    # callers can pass formatted sizes, paths, or settings without conversion
+    # rules leaking into the presentation layer.
     param([string]$Key, [string]$Value, [int]$KeyWidth = 18)
     Write-Host "    $($Key.PadRight($KeyWidth))" -ForegroundColor DarkGray -NoNewline
     Write-Host $Value -ForegroundColor White
@@ -143,6 +153,8 @@ function Clear-StoScreen {
 }
 
 function Read-UserInput {
+    # Keep input acquisition centralized so prompts have the same indentation
+    # and can be replaced or bypassed by an automation harness.
     param([string]$Prompt)
     Write-Host $Prompt
     return Read-Host '  > '

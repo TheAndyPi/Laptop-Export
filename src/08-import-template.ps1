@@ -1,6 +1,19 @@
 # ============================================================================
 
+# This module has two execution layers.  New-ImportScript emits the normal
+# user-context importer as a here-string, while New-AdminImportScript emits a
+# separate elevated helper.  Code inside those strings executes later on the
+# replacement computer and therefore cannot depend on the export process's
+# variables or functions.
+#
+# The generated importer restores user data first, then settings and browsers,
+# updates the handoff report, and invokes the helper last.  That ordering keeps
+# privileged work narrowly limited to operations Windows requires to elevate.
+
 function New-ImportScript {
+    # Materialize the import script by expanding export-time settings into a
+    # self-contained template.  Runtime checks still verify source paths before
+    # copying because the package may be moved between computers.
     param(
         [string]$DestinationBase,
         [hashtable]$Settings
@@ -215,6 +228,8 @@ function Read-UserInput {
 }
 
 function Invoke-OnlineChromePasswordImport {
+    # Guide the operator through Chrome's supported CSV import flow.  The CSV is
+    # sensitive plaintext, so this code never attempts to decrypt browser data.
     $passwordExportPath = Join-Path $browserDataPath 'Chrome\PasswordExport'
     $csvs = @(Get-ChildItem -LiteralPath $passwordExportPath -Filter '*.csv' -File -Force -ErrorAction SilentlyContinue)
     if (-not $csvs.Count) { return }
@@ -257,6 +272,8 @@ function Add-Result {
 }
 
 function Test-RobocopySuccess {
+    # Robocopy codes below 8 represent success or acceptable differences; 8+
+    # indicates that one or more files failed to copy.
     param([int]$ExitCode, [string]$LogPath)
     
     # Robocopy exit codes: 0-7 = success levels, 8+ = errors
@@ -310,6 +327,8 @@ function Format-RemainingTime {
 }
 
 function Copy-WithProgress {
+    # Import-side copy wrapper that converts robocopy output into the same
+    # structured result vocabulary used by the export phase.
     param(
         [string]$Source,
         [string]$Destination,
@@ -542,6 +561,8 @@ foreach ($folder in $folders) {
 # ============================================================================
 
 function Get-OneDriveDesktopPaths {
+    # Return redirected, local, and Public Desktop roots used to find duplicate
+    # shortcuts after restoring a profile into OneDrive.
     $paths = @()
     foreach ($root in @($env:OneDriveCommercial, $env:OneDrive)) {
         if ($root) {
@@ -555,6 +576,8 @@ function Get-OneDriveDesktopPaths {
 function Get-ShortcutHash { param([string]$Path) try { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash } catch { return $null } }
 
 function Send-ShortcutToRecycleBin {
+    # Recycle only a confirmed duplicate shortcut, preserving a recovery path
+    # and avoiding permanent deletion of user content.
     param([string]$Path)
     Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction SilentlyContinue
     [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($Path, [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
@@ -574,6 +597,8 @@ function Remove-MicrosoftStoreTaskbarPin {
 }
 
 function Initialize-DesktopRestoreInterop {
+    # Load the COM interop used for shell/taskbar operations once; repeated
+    # initialization is safe when the generated script is rerun.
     # Use Explorer's supported IFolderView positioning API. Registry ItemPos
     # values are retained only as a legacy-package fallback.
     if ('StoDesktopRestoreInterop' -as [type]) { return }
@@ -1229,6 +1254,8 @@ elseif ((Test-Path $powerScheme) -and $hasIndividualPowerSettings) {
 # intentionally attempted even without elevation.  Settings rejected by a
 # policy or unsupported by the new hardware are reported individually.
 function Set-ImportedPowerOverlay {
+    # Apply captured AC/DC values independently to the existing managed plan so
+    # a policy rejection of one setting does not hide the others.
     param([string]$OverlayGuid)
     if ([string]::IsNullOrWhiteSpace($OverlayGuid) -or $OverlayGuid -notmatch '^[0-9a-fA-F-]{36}$') { return $false }
     try {
@@ -1273,7 +1300,8 @@ if ($hasIndividualPowerSettings) {
                 } else {
                     $failureDetail = "$settingGuid ($($powerType.Name)): $(($powerOutput | Out-String).Trim())"
                     [void]$powerValueFailures.Add($failureDetail)
-                    Add-Result -Category 'Settings' -Item "Power setting $settingGuid" -Status 'Skipped' -Details "$($powerType.Name) value rejected: $(($powerOutput | Out-String).Trim())"
+                    # Individual failures are summarized below so the handoff
+                    # report remains useful instead of repeating every GUID.
                 }
             }
         }
@@ -1287,9 +1315,8 @@ if ($hasIndividualPowerSettings) {
             Write-Log "Individual power settings applied: $powerValuesApplied AC/DC value(s)" -Level "Success"
             Add-Result -Category "Settings" -Item "Individual Power Settings" -Status "Success" -Details "$powerValuesApplied AC/DC values applied to the current plan"
         } else {
-            $failurePreview = @($powerValueFailures | Select-Object -First 3) -join " | "
             Write-Log "Individual power settings applied: $powerValuesApplied; $($powerValueFailures.Count) value(s) could not be applied" -Level "Warning"
-            Add-Result -Category "Settings" -Item "Individual Power Settings" -Status "Warning" -Details "$powerValuesApplied applied; $($powerValueFailures.Count) rejected/unsupported. $failurePreview"
+            Add-Result -Category "Settings" -Item "Individual Power Settings" -Status "Warning" -Details "$powerValuesApplied applied; $($powerValueFailures.Count) settings rejected or unsupported. See Logs\\AdminImportLog.txt for details."
             $Script:Results.Warnings += "Some individual power settings were rejected by the current plan, policy, or hardware. See ImportLog.txt."
         }
     }
@@ -1388,6 +1415,8 @@ if ($false -and -not $powerPlanRestored -and $settingsData -and $settingsData.Li
 
 # Mapped network drives
 function Get-CurrentNetworkDriveMappings {
+    # Snapshot current drive mappings for comparison without attempting to
+    # recreate credentials or connections that require user approval.
     $mappings = @()
     try {
         $mappings += @(Get-PSDrive -PSProvider FileSystem -ErrorAction Stop |
@@ -1407,6 +1436,7 @@ function Get-CurrentNetworkDriveMappings {
 }
 
 function Write-NetworkDriveComparison {
+    # Render the captured/current mapping difference as an import handoff item.
     param([object[]]$ExpectedDrives)
 
     $currentDrives = @(Get-CurrentNetworkDriveMappings)
@@ -1813,6 +1843,8 @@ Write-Host ""
 $browserDataPath = Join-Path $scriptPath "BrowserData"
 
 function Restore-ChromiumProfileBookmarks {
+    # Restore portable bookmark HTML into the active profile discovered at
+    # runtime; usernames and profile directories may differ on the new machine.
     param(
         [string]$BrowserName,
         [string]$ProcessName,
@@ -1893,6 +1925,8 @@ function Restore-ChromiumProfileBookmarks {
 }
 
 function Restore-ChromeProfileArchive {
+    # Restore an optional raw archive for reference/recovery, separate from
+    # bookmark import because protected credentials remain account-bound.
     param([string]$PackageUserDataPath, [string]$TargetUserDataPath)
     if (-not (Test-Path -LiteralPath $PackageUserDataPath)) { return }
     if ($TestMode) {
@@ -1969,6 +2003,8 @@ if (Test-Path -LiteralPath $chromeProfileArchive) {
 # protections are intentional. Instead, guide the user through Chrome's own
 # CSV import and offer to remove the sensitive export after confirmation.
 function Invoke-ChromePasswordImport {
+    # Execute the operator-mediated password CSV workflow and record its outcome
+    # instead of silently treating a skipped import as success.
 if ($Script:ChromePasswordImportHandled) { return }
 $chromePasswordExportPath = Join-Path $browserDataPath "Chrome\PasswordExport"
 $chromePasswordCsvs = @(Get-ChildItem -LiteralPath $chromePasswordExportPath -Filter "*.csv" -File -Force -ErrorAction SilentlyContinue)
@@ -2016,6 +2052,8 @@ if ($chromePasswordCsvs.Count -gt 0) {
 # OneDrive Files On-Demand: after the user has signed in, pin every synced
 # folder so Windows keeps the content available on this replacement device.
 function Enable-OneDriveAlwaysOnDevice {
+    # Request local availability for synced files after sign-in.  Tenant policy
+    # can reject this request, so failures remain visible but non-fatal.
     $oneDriveFolders = @($env:OneDriveCommercial, $env:OneDrive) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Sort-Object -Unique
     if ($TestMode) {
         Write-Log "OneDrive - Would enable 'Always keep on this device' after sign-in" -Level "Info"
@@ -2068,6 +2106,8 @@ if (Test-Path -LiteralPath $edgeProfileArchive) {
 
 # Firefox profile data
 function Remove-FirefoxProfileLocks {
+    # Remove only transient Firefox lock files before copying a profile, after
+    # the caller has ensured Firefox is not actively changing its databases.
     param([string]$FirefoxRoot)
 
     # A lock copied from an interrupted/forced-close session can make Firefox
@@ -2252,8 +2292,11 @@ function Set-TransferReportMarkedContent {
 }
 
 function Update-TransferReportFromImport {
+    # Merge import outcomes into the export report through stable HTML markers,
+    # keeping a partial import auditable instead of overwriting its history.
     param(
         [object[]]$MissingPrograms = @(),
+        [object[]]$AppDataCandidates = @(),
         [ValidateSet('Complete', 'Disabled', 'Unavailable', 'Failed')][string]$State = 'Complete',
         [string]$Detail = ''
     )
@@ -2271,11 +2314,13 @@ function Update-TransferReportFromImport {
                 $version = & $encode ([string]$_.DisplayVersion)
                 "<li><strong>$name</strong><small>$publisher · old version: $version</small></li>"
             }) -join "`n"
+            $candidateItems = @($AppDataCandidates | ForEach-Object { "<li><strong>$(& $encode ([string]$_.RelativePath))</strong><small>$(& $encode ([string]$_.Area)) - $(& $encode ([string]$_.Association))</small></li>" }) -join "`n"
+            $candidatePanel = if ($candidateItems) { "<details class='section'><summary>AppData migration review<span>$($AppDataCandidates.Count) folder(s) to review; none are copied automatically</span></summary><div class='section-content'><ul class='app-list'>$candidateItems</ul></div></details>" } else { '' }
             if ($MissingPrograms.Count -gt 0) {
-                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><ul class='app-list'>$appItems</ul></div>"
+                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><ul class='app-list'>$appItems</ul></div>$candidatePanel"
             }
             else {
-                $appSection = "<div class='app-summary ok'><h3>Application comparison complete</h3><p>No applications from the old computer are missing on this new computer.</p></div>"
+                $appSection = "<div class='app-summary ok'><h3>Application comparison complete</h3><p>No applications from the old computer are missing on this new computer.</p></div>$candidatePanel"
             }
         }
         else {
@@ -2299,6 +2344,8 @@ function Update-TransferReportFromImport {
 }
 
 function Update-TransferReportImportOutcomes {
+    # Replace pending application and AppData review sections with final
+    # comparison results collected on the replacement computer.
     # The export report remains the handoff document. Surface only import
     # outcomes that require a technician's attention, ahead of its export log.
     $reportPath = Join-Path $scriptPath 'TransferReport.html'
@@ -2369,13 +2416,14 @@ else {
         $comparison | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationComparison.json') -Encoding UTF8
         @('Application migration review', '', "Missing user-facing applications: $($missingPrograms.Count)", "Filtered technical entries: $($filteredPrograms.Count)", '') + @($missingPrograms | ForEach-Object { "MISSING | $($_.DisplayName) | $($_.Publisher) | old version: $($_.DisplayVersion)" }) + @('', 'Filtered technical entries:') + @($filteredPrograms | ForEach-Object { "FILTERED | $($_.DisplayName) | $($_.Publisher)" }) + @('', 'AppData candidates:') + @($candidateItems | ForEach-Object { "[$($_.Area)] $($_.RelativePath) | $($_.Association)" }) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.txt') -Encoding UTF8
         (ConvertTo-ReviewHtml -Missing $missingPrograms -Candidates $candidateItems) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.html') -Encoding UTF8
-        if (-not $TestMode) { Update-TransferReportFromImport -MissingPrograms $missingPrograms }
+        if (-not $TestMode) { Update-TransferReportFromImport -MissingPrograms $missingPrograms -AppDataCandidates $candidateItems }
         $detail = "$($missingPrograms.Count) missing app(s); $($candidateItems.Count) AppData candidate(s)"
         Write-Log "Application migration review created: $detail" -Level $(if ($missingPrograms.Count -gt 0) { 'Warning' } else { 'Success' })
         Add-Result -Category 'Reference' -Item 'Application migration review' -Status $(if ($missingPrograms.Count -gt 0) { 'Manual' } else { 'Success' }) -Details $detail
         if ($missingPrograms.Count -gt 0 -or $candidateItems.Count -gt 0) {
             Add-ManualTask -Task 'Review applications and AppData' -Reason $detail -Instructions 'Review Logs\AppMigrationReview.html, install/configure required apps, and decide whether any AppData candidate needs manual migration.'
-            if (-not $TestMode) { Start-Process (Join-Path $logsPath 'AppMigrationReview.html') -ErrorAction SilentlyContinue }
+            # The handoff report now contains the interactive application
+            # review; do not open a competing standalone browser page.
         }
     } catch {
         Write-Log "Application comparison failed: $($_.Exception.Message)" -Level 'Warning'
@@ -2465,6 +2513,8 @@ function Write-AdminHelperAudit {
 }
 
 function Invoke-StandardSystemRestoreFallback {
+    # Attempt system restoration that is allowed in the signed-in context and
+    # turn policy/hardware rejections into explicit result entries.
     param([string]$HelperPath)
 
     # A complete .pow file is written only by an elevated export. A PrintBRM
@@ -2501,6 +2551,19 @@ elseif (-not $enableAdminHelper) {
     Write-AdminHelperAudit -Status "Skipped" -Detail "Optional administrator helper is disabled by package configuration."
 }
 else {
+    $exportAdminState = 'unknown'
+    try {
+        $exportSettings = Get-Content -LiteralPath (Join-Path $scriptPath 'Settings\SystemSettings.json') -Raw | ConvertFrom-Json
+        $exportAdminState = if ($exportSettings.ExportWasAdministrator) { 'with administrator rights' } else { 'without administrator rights' }
+    } catch { }
+    Write-Host "  System settings were exported $exportAdminState." -ForegroundColor DarkGray
+    $adminChoice = Read-UserInput '  Run the optional elevated power/PrintBRM restore? (Y/N) [Y]'
+    if ($adminChoice -match '^[Nn]') { $enableAdminHelper = $false }
+    if (-not $enableAdminHelper) {
+        Write-AdminHelperAudit -Status 'Skipped' -Detail 'Technician chose not to run the optional administrator helper.'
+        Write-Host '  Elevated power and PrintBRM restore skipped by technician.' -ForegroundColor Yellow
+    }
+    else {
     $helperPath = Join-Path $scriptPath "Import-SystemSettings.ps1"
     if (-not (Test-Path -LiteralPath $helperPath)) {
         Write-Host "  Administrator helper is missing; system tasks are deferred." -ForegroundColor Yellow
@@ -2525,11 +2588,14 @@ else {
             Invoke-StandardSystemRestoreFallback -HelperPath $helperPath
         }
     }
+    }
 }
 
 if (-not $TestMode) { Update-TransferReportImportOutcomes }
 
 function Resolve-PostImportLaunchTarget {
+    # Resolve configured alternatives by checking desktop shortcuts first and
+    # executable lookup second, keeping launch behavior data-driven.
     param([object]$Alternative, [object]$LaunchConfig)
     foreach ($folder in @($LaunchConfig.DesktopFolders)) {
         if ([string]::IsNullOrWhiteSpace([string]$folder)) { continue }
@@ -2552,6 +2618,8 @@ function Resolve-PostImportLaunchTarget {
 }
 
 function Start-PostImportHandoff {
+    # Open the final report and configured handoff applications only after all
+    # restoration work is complete; launch failures remain non-fatal.
     $reportPath = Join-Path $scriptPath 'TransferReport.html'
     try {
         if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) { throw 'TransferReport.html is missing from this package.' }
@@ -2639,6 +2707,8 @@ if (-not $TestMode) {
 }
 
 function New-AdminImportScript {
+    # Emit the isolated administrator helper with a narrow input surface and
+    # audit log.  User-profile restoration intentionally stays outside it.
     param([string]$DestinationBase)
 
     # This helper deliberately has no user-profile, HKCU, drive-mapping, or

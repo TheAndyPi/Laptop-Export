@@ -141,7 +141,8 @@ Describe 'Startup presentation and size placeholders' {
         $core | Should Match 'Start-TransferSizeEstimateJob'
         $core | Should Match 'Calculating folder sizes in the background'
         $core | Should Match '\$normalPaths \+ \$heavyPaths \+ \$userDataPaths'
-        $core | Should Match 'Get-TransferPayloadEstimate'
+        $core | Should Match '\$Script:StartupPayloadEstimate = Get-TransferSizeDisplayEstimate'
+        $core | Should Not Match '\$Script:StartupPayloadEstimate = Get-TransferPayloadEstimate'
         $core | Should Match "default \{ @\{ Foreground = 'Cyan'; Background = 'DarkBlue' \} \}"
         $core | Should Match 'Receive-TransferSizeEstimateJob'
         $core | Should Match 'Get-TransferSizeDisplayEstimate'
@@ -382,7 +383,9 @@ Describe 'Application migration review implementation' {
         $template | Should Match '& \$encode \(\[string\]\$_\.DisplayName\)'
         $template | Should Match 'DESTINATION_COMPUTER'
         $template | Should Match 'IMPORT_APP_COMPARISON'
-        $template | Should Match 'if \(-not \$TestMode\) \{ Start-Process'
+        $template | Should Match 'AppDataCandidates = @\(\)'
+        $template | Should Match 'AppData migration review'
+        $template | Should Not Match "Start-Process \(Join-Path \$logsPath 'AppMigrationReview\\.html'\)"
     }
 }
 
@@ -396,7 +399,8 @@ Describe 'Power replication implementation' {
         $template | Should Match 'function Set-ImportedPowerOverlay'
         $template | Should Match "Item 'Lid actions'"
         $template | Should Match 'LidClose -and \$settingsData\.LidClose\.OnAC'
-        $template | Should Match 'Power setting \$settingGuid'
+        $template | Should Match 'Individual failures are summarized below'
+        $template | Should Match 'settings rejected or unsupported'
         $template | Should Match 'Update-TransferReportImportOutcomes'
     }
 }

@@ -1,4 +1,12 @@
+# User-data copying is intentionally separate from AppData copying.  These
+# stages use the source profile resolved by 03-core.ps1, preserve relative
+# paths below UserData, and report each folder independently so one locked file
+# does not hide the outcome of the other folders.
+
 function Copy-UserFolders {
+    # Apply online size gates before invoking robocopy, then record the result of
+    # each folder.  Downloads has a distinct cap because it is commonly large
+    # and is often less important to restore than profile settings.
     param(
         [string]$DestinationBase
     )
@@ -317,6 +325,9 @@ function Copy-UserFolders {
 }
 
 function Copy-AppData {
+    # Copy only known application payloads and the optional candidate inventory.
+    # AppData is handled by explicit mappings so caches and machine-specific
+    # state are not blindly moved into the replacement profile.
     param(
         [string]$DestinationBase
     )

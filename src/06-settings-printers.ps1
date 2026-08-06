@@ -1,7 +1,16 @@
 # SETTINGS CAPTURE
 # ============================================================================
 
+# This module captures settings as portable evidence or importable artifacts.
+# Registry exports, text/JSON snapshots, shortcut metadata, application lists,
+# and printer packages have different portability and privilege rules; each
+# function keeps those rules explicit instead of treating the entire profile as
+# a raw filesystem copy.
+
 function Get-SystemSettings {
+    # Collect power, personalization, network-drive, desktop, taskbar, and
+    # default-app state into package files.  Capture failures are recorded as
+    # manual tasks because a missing setting should be visible at handoff.
     param(
         [string]$DestinationBase
     )
@@ -18,6 +27,21 @@ function Get-SystemSettings {
         UserName = $Script:OriginalUserName
         ComputerName = $env:COMPUTERNAME
         TransferMode = $Script:Config.TransferMode
+        ExportWasAdministrator = [bool]$Script:IsAdmin
+    }
+
+    # BitLocker state is a handoff prerequisite. Capture it without making an
+    # unavailable management module an export-stopping condition.
+    try {
+        $bitLocker = @(Get-BitLockerVolume -ErrorAction Stop | ForEach-Object {
+            [PSCustomObject]@{ MountPoint = $_.MountPoint; VolumeStatus = [string]$_.VolumeStatus; ProtectionStatus = [string]$_.ProtectionStatus; EncryptionPercentage = $_.EncryptionPercentage }
+        })
+        $settings.BitLocker = $bitLocker
+        Add-Result -Category 'Settings' -Item 'BitLocker status' -Status 'Success' -Details (($bitLocker | ForEach-Object { "$($_.MountPoint): $($_.ProtectionStatus), $($_.VolumeStatus)" }) -join '; ')
+    }
+    catch {
+        $settings.BitLocker = @()
+        Add-Result -Category 'Settings' -Item 'BitLocker status' -Status 'Skipped' -Details 'Could not query BitLocker on this device'
     }
     
     # Power Settings
@@ -285,7 +309,9 @@ function Get-SystemSettings {
         # for the importer to apply to the destination monitor entries.
         $perMonitorDpi = @(Get-ChildItem -Path 'HKCU:\Control Panel\Desktop\PerMonitorSettings' -ErrorAction SilentlyContinue | ForEach-Object {
             $dpi = (Get-ItemProperty -LiteralPath $_.PSPath -Name DpiValue -ErrorAction SilentlyContinue).DpiValue
-            if ($null -ne $dpi) { [int]$dpi }
+            # DpiValue is an unsigned registry DWORD; 0xffffffff is valid
+            # there but cannot be cast to Int32.
+            if ($null -ne $dpi) { [uint32]$dpi }
         })
         $personalization.ScreenScale = @{
             LogPixels = $personalization.LogPixels
@@ -296,7 +322,7 @@ function Get-SystemSettings {
         # Accessibility > Text size is a percentage stored per user.
         $accessibility = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Accessibility' -ErrorAction SilentlyContinue
         if ($accessibility -and $null -ne $accessibility.TextScaleFactor) {
-            $personalization.TextScaleFactor = [int]$accessibility.TextScaleFactor
+            $personalization.TextScaleFactor = [uint32]$accessibility.TextScaleFactor
         }
         
         $settings.Personalization = $personalization
@@ -593,6 +619,8 @@ function Backup-DefaultApps {
 }
 
 function Get-InstalledPrograms {
+    # Read the machine's uninstall inventories from both registry views and
+    # normalize them into a deduplicated list for comparison during import.
     param(
         [string]$DestinationBase
     )
@@ -766,7 +794,7 @@ function Receive-AdditionalAppDataSizeJob {
 }
 
 function Show-AdditionalAppDataMenu {
-    param([array]$Candidates, [bool]$Calculating, [bool]$Skipped)
+    param([array]$Candidates, [bool]$Calculating, [bool]$Skipped, [System.Collections.Generic.HashSet[int]]$Selected = $null)
     Clear-StoScreen
     Write-Banner -Title 'Advanced AppData Selection' -Subtitle 'Select additional folders to include in this transfer'
     Write-Host '  Curated AppData items remain included automatically. Select only extra folders below.' -ForegroundColor DarkGray
@@ -776,7 +804,10 @@ function Show-AdditionalAppDataMenu {
     for ($index = 0; $index -lt $Candidates.Count; $index++) {
         $item = $Candidates[$index]
         $sizeText = if ($null -eq $item.SizeBytes) { 'calculating...' } else { Format-FileSize $item.SizeBytes }
-        Write-Host "  [$($index + 1)] $($item.Area.PadRight(7)) $($item.RelativePath.PadRight(32)) $sizeText" -ForegroundColor White
+        $state = if ($Selected -and $Selected.Contains($index + 1)) { 'ON ' } else { 'OFF' }
+        $color = if ($state -eq 'ON ') { 'Green' } else { 'DarkGray' }
+        Write-Host "  [$($index + 1)] $state " -ForegroundColor $color -NoNewline
+        Write-Host "$($item.Area.PadRight(7)) $($item.RelativePath.PadRight(32)) $sizeText" -ForegroundColor White
     }
     Write-Host ''
 }
@@ -794,10 +825,11 @@ function Select-AdditionalAppData {
     $Script:AdditionalAppDataSizeJob = $sizeJob
     $Script:AdditionalAppDataMenuCandidates = $candidates
     $Script:AdditionalAppDataSizeAutoRefreshed = $false
+    $selectedNumbers = [System.Collections.Generic.HashSet[int]]::new()
     try {
         while ($true) {
-            Show-AdditionalAppDataMenu -Candidates $Script:AdditionalAppDataMenuCandidates -Calculating ($Script:AdditionalAppDataSizeJob.State -eq 'Running') -Skipped $false
-            Write-Host '  Enter numbers separated by commas, A for all, N for none, or R to refresh' -ForegroundColor Gray -NoNewline
+            Show-AdditionalAppDataMenu -Candidates $Script:AdditionalAppDataMenuCandidates -Calculating ($Script:AdditionalAppDataSizeJob.State -eq 'Running') -Skipped $false -Selected $selectedNumbers
+            Write-Host '  Enter a number to toggle it; [A] all; [N] none; [S] save; [R] refresh' -ForegroundColor Gray
             $answer = Read-MenuInputWithBackgroundRefresh -Prompt '' -Poll {
                 $wasRunning = [bool]$Script:AdditionalAppDataSizeJob
                 [void](Receive-AdditionalAppDataSizeJob -Job $Script:AdditionalAppDataSizeJob -Candidates $Script:AdditionalAppDataMenuCandidates)
@@ -808,26 +840,24 @@ function Select-AdditionalAppData {
                 return $false
             }
             if ($answer -eq '__MENU_AUTO_REFRESH__' -or $answer -match '^[Rr]$') { continue }
-            break
+            if ($answer -match '^[Aa]$') { $selectedNumbers.Clear(); 1..$candidates.Count | ForEach-Object { [void]$selectedNumbers.Add($_) }; continue }
+            if ($answer -match '^[Nn]$') { $selectedNumbers.Clear(); continue }
+            if ($answer -match '^[Ss]$') { break }
+            $number = 0
+            if ([int]::TryParse($answer, [ref]$number) -and $number -ge 1 -and $number -le $candidates.Count) {
+                if ($selectedNumbers.Contains($number)) { [void]$selectedNumbers.Remove($number) } else { [void]$selectedNumbers.Add($number) }
+                continue
+            }
+            Write-Host '  Enter a listed number, A, N, S, or R.' -ForegroundColor Yellow
+            Start-Sleep -Milliseconds 700
         }
         if ($sizeJob.State -eq 'Running') { Stop-Job -Job $sizeJob -ErrorAction SilentlyContinue }
     }
     finally {
         Remove-Job -Job $sizeJob -Force -ErrorAction SilentlyContinue
     }
-    if ($answer -match '^[Aa]$') { return $candidates }
-    if ($answer -match '^[Nn]?$') { return @() }
-
     $selected = [System.Collections.Generic.List[object]]::new()
-    $invalidEntry = $false
-    foreach ($part in ($answer -split ',')) {
-        $number = 0
-        if ([int]::TryParse($part.Trim(), [ref]$number) -and $number -ge 1 -and $number -le $candidates.Count) {
-            [void]$selected.Add($candidates[$number - 1])
-        }
-        else { $invalidEntry = $true }
-    }
-    if ($invalidEntry) { Write-Host '  Ignored invalid AppData selection entries.' -ForegroundColor Yellow }
+    foreach ($number in $selectedNumbers) { [void]$selected.Add($candidates[$number - 1]) }
     return @($selected | Sort-Object Area, RelativePath -Unique)
 }
 
@@ -861,6 +891,9 @@ function Copy-SelectedAdditionalAppData {
 }
 
 function Backup-Printers {
+    # Capture printers using the least-privileged supported path first.  PrintBRM
+    # is an optional elevated fallback because it can include drivers and local
+    # queues that ordinary Add-Printer connections cannot recreate.
     param(
         [string]$DestinationBase
     )

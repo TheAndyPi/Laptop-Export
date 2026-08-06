@@ -26,6 +26,10 @@
 
 #Requires -Version 5.1
 
+# Bootstrap runs first.  It defines command-line inputs and process-wide
+# presentation state before any feature module is loaded.  Nothing here copies
+# user data; it establishes the environment in which the later modules run.
+
 param(
     [string]$TargetUserProfile = "",
     [string]$TargetUserName = "",

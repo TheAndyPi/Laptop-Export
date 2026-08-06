@@ -2,7 +2,15 @@
 # DESTINATION SELECTION
 # ============================================================================
 
+# Destination code validates that the package does not overlap the source
+# profile, supports local/removable/network targets, and creates the final
+# archive.  It performs validation before copying so a bad target fails early
+# rather than producing a partially self-overwriting package.
+
 function Test-PathIsSameOrChild {
+    # Normalize both paths and compare with an explicit directory boundary;
+    # a simple string prefix would incorrectly treat C:\Data2 as a child of
+    # C:\Data.
     param(
         [string]$Path,
         [string]$ParentPath
@@ -21,6 +29,8 @@ function Test-PathIsSameOrChild {
 }
 
 function Test-DestinationIsWithinSourceProfile {
+    # Source-profile destinations are blocked except for the dedicated AppData
+    # export area, which is an intentional supported fallback location.
     param([string]$Path)
 
     if (-not (Test-PathIsSameOrChild -Path $Path -ParentPath $Script:OriginalUserProfile)) { return $false }
@@ -35,6 +45,9 @@ function Test-DestinationIsWithinSourceProfile {
 }
 
 function Show-NativeWindowsFolderPicker {
+    # Use the COM Common Item Dialog so the operator receives a filesystem-only
+    # folder picker.  The interop is loaded once and the selected path is
+    # released after conversion to a managed string.
     param([string]$InitialPath = "")
 
     # Use Windows' Common Item Dialog: the modern Explorer-style picker used
@@ -150,7 +163,6 @@ namespace Sto {
 }
 
 function Select-TargetDrive {
-    Write-Banner -Title "Laptop Transfer  -  Export Tool" -Subtitle "v$($Script:Config.Version)"
     Write-KeyValue "Transferring" $Script:OriginalUserName
     Write-KeyValue "Computer" $env:COMPUTERNAME
     Write-KeyValue "Transfer" $Script:Config.TransferMode
@@ -204,6 +216,9 @@ function Select-TargetDrive {
                 $selectedDrive = $drives[$index]
                 $confirm = Read-UserInput "Proceed with $($selectedDrive.Display)? (Y/N)"
                 if ($confirm -match "^[Yy]") { return $selectedDrive.Letter }
+                if ($confirm -match "^[Nn]$") { continue }
+                Write-Host '  Enter Y or N.' -ForegroundColor Yellow
+                continue
             }
         }
         Write-Host "Invalid selection. Please try again." -ForegroundColor Red
@@ -211,7 +226,6 @@ function Select-TargetDrive {
 }
 
 function Select-TargetDestination {
-    Write-Banner -Title "Laptop Transfer  -  Export Tool" -Subtitle "v$($Script:Config.Version)"
     Write-KeyValue "Transferring" $Script:OriginalUserName
     Write-KeyValue "Computer" $env:COMPUTERNAME
     if ($Script:IsAdmin) {
@@ -293,6 +307,9 @@ function Test-FolderInventoryAbortRequested {
 }
 
 function Get-FolderInventory {
+    # Enumerate folders while excluding reparse points to avoid traversing
+    # junctions into unrelated data.  The inventory is used for size prompts,
+    # not as the authoritative copy operation.
     param([string]$Path)
 
     if (-not $Script:FolderInventoryCache) { $Script:FolderInventoryCache = @{} }
@@ -326,6 +343,8 @@ function Get-FolderInventory {
 }
 
 function Get-FolderSizeBytes {
+    # Sum file lengths defensively.  Files can disappear during enumeration,
+    # therefore inaccessible items are skipped and the estimate is advisory.
     param([string]$Path)
     return (Get-FolderInventory -Path $Path).Bytes
 }
@@ -477,6 +496,8 @@ function Clear-ArchiveProgress {
 }
 
 function Publish-TransferArchive {
+    # Compress the completed transfer folder into a sibling ZIP and report
+    # progress.  The original folder remains available until the ZIP succeeds.
     param(
         [string]$ArchivePath,
         [string]$DestinationFolder,
@@ -561,6 +582,8 @@ function Publish-TransferArchive {
 }
 
 function New-TransferArchive {
+    # Select the archive implementation and destination naming convention for
+    # the current transfer mode, then return the created archive path.
     param([string]$TransferBase)
 
     if ($Script:Config.TransferMode -ne "Online") {
@@ -658,20 +681,16 @@ function Resolve-TransferMode {
     if ($Script:Config.TransferMode -in @("Local", "Online") -and $TransferMode) {
         return  # already set from param
     }
-    Write-StoLogo
     Write-Section "Transfer mode"
     Write-Host "  [1] Local  " -ForegroundColor Cyan -NoNewline
     Write-Host "- full copy (USB / on-site)" -ForegroundColor DarkGray
     Write-Host "  [2] Online " -ForegroundColor Cyan -NoNewline
     Write-Host "- Online Downloads default on; folders above $($Script:Config.Online.DownloadsCapGB)GB require confirmation" -ForegroundColor DarkGray
-    Write-Host "  [3] Administrator " -ForegroundColor Cyan -NoNewline
-    Write-Host "- restart with administrator privileges" -ForegroundColor DarkGray
     Write-Host ""
     do {
-        $m = Read-UserInput "  Select transfer mode (1-3)"
+        $m = Read-UserInput "  Select transfer mode (1-2)"
         if ($m -eq "1") { $Script:Config.TransferMode = "Local"; break }
         if ($m -eq "2") { $Script:Config.TransferMode = "Online"; break }
-        if ($m -eq '3') { Restart-AsAdministrator; continue }
         Write-Host "  Invalid selection." -ForegroundColor Red
     } while ($true)
 }

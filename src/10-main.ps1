@@ -1,4 +1,11 @@
+# Main coordinates the ordered export lifecycle.  The numbered build order
+# supplies its dependencies; this file should mostly orchestrate and should
+# not duplicate copy, logging, or formatting implementations.
+
 function New-QuickImportBatch {
+    # Emit a tiny operator-facing launcher.  It intentionally invokes the
+    # user-context import first; that generated script owns any narrowly scoped
+    # administrator helper needed after user-scoped restoration.
     param(
         [string]$DestinationBase
     )
@@ -43,6 +50,10 @@ pause >nul
 # ============================================================================
 
 function Start-LaptopExport {
+    # Drive the complete state machine: resolve mode and settings, choose a
+    # destination, execute enabled stages, generate the import/report artifacts,
+    # and optionally create the online ZIP.  Each stage records its own result,
+    # allowing the final report to distinguish success, omission, and failure.
     Clear-StoScreen
     Write-StoLogo
     Write-Banner -Title 'Laptop Transfer  -  Export Tool' -Subtitle "v$($Script:Config.Version)"
@@ -145,11 +156,12 @@ function Start-LaptopExport {
         $payloadEstimate = $Script:StartupPayloadEstimate
     }
     elseif ($Script:TransferSizeEstimateJob) {
-        Stop-Job -Job $Script:TransferSizeEstimateJob -ErrorAction SilentlyContinue
-        Remove-Job -Job $Script:TransferSizeEstimateJob -Force -ErrorAction SilentlyContinue
-        $Script:TransferSizeEstimateJob = $null
-        $payloadEstimate = [PSCustomObject]@{ TotalBytes = [long]0; ItemBytes = @{} }
-        Write-Host '  Folder-size calculation is still running; continuing without a size estimate.' -ForegroundColor Yellow
+        # Show-BackupOverview does not allow Start until this job completes,
+        # but retain a safe wait for alternate/noninteractive callers.
+        Write-Host '  Finalizing background folder-size calculation...' -ForegroundColor Cyan
+        Wait-Job -Job $Script:TransferSizeEstimateJob | Out-Null
+        [void](Receive-TransferSizeEstimateJob)
+        $payloadEstimate = $Script:StartupPayloadEstimate
     }
     else { $payloadEstimate = Get-TransferPayloadEstimate }
     $estBytes = $payloadEstimate.TotalBytes
@@ -322,7 +334,7 @@ function Start-LaptopExport {
     $Script:Results.EndTime = Get-Date
     $dur = $Script:Results.EndTime - $Script:Results.StartTime
     $sc = ($Script:Results.Actions | Where-Object { $_.Status -eq "Success" }).Count
-    $wc = ($Script:Results.Actions | Where-Object { $_.Status -match "Warning|Manual" }).Count
+    $wc = ($Script:Results.Actions | Where-Object { $_.Status -in @('Warning', 'Manual', 'Pending') }).Count
     $ec = @($Script:Results.Actions | Where-Object {
         $_.Status -eq "Error" -or $_.Status -like "NOT EXPORTED*"
     }).Count

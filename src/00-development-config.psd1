@@ -1,4 +1,9 @@
 @{
+    # This is a PowerShell data file, not executable code.  Build-Deployment.ps1
+    # reads it as trusted configuration and selectively embeds the supported
+    # values into the runtime configuration created by 03-core.ps1.  Keeping
+    # the allowlists in the runtime prevents an accidental config key from
+    # changing an unrelated implementation detail.
     # Development-time defaults. Edit these values, then run
     # Build-Deployment.ps1 to embed the configuration in Export-LaptopData.ps1.
     # Every backup stage is enabled by default.
