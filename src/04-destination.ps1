@@ -7,6 +7,92 @@
 # archive.  It performs validation before copying so a bad target fails early
 # rather than producing a partially self-overwriting package.
 
+if (-not ('LaptopExport.NativeMethods' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace LaptopExport {
+    public static class NativeMethods {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr CreateFile(
+            string lpFileName,
+            uint dwDesiredAccess,
+            uint dwShareMode,
+            IntPtr lpSecurityAttributes,
+            uint dwCreationDisposition,
+            uint dwFlagsAndAttributes,
+            IntPtr hTemplateFile);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern uint GetFinalPathNameByHandle(
+            IntPtr hFile,
+            StringBuilder lpszFilePath,
+            uint cchFilePath,
+            uint dwFlags);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool CloseHandle(IntPtr hObject);
+    }
+}
+'@ -ErrorAction Stop
+}
+
+function Get-CanonicalTransferPath {
+    # Resolve the deepest existing path through the Win32 file handle API.
+    # Unlike lexical normalization, this follows junctions and symbolic links.
+    # Non-existent destination children are appended to the canonical parent.
+    param([string]$Path)
+
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+        $probe = $fullPath
+        $suffix = [System.Collections.Generic.List[string]]::new()
+        while (-not (Test-Path -LiteralPath $probe)) {
+            $leaf = Split-Path -Path $probe -Leaf
+            $parent = Split-Path -Path $probe -Parent
+            if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $probe) { return $null }
+            [void]$suffix.Insert(0, $leaf)
+            $probe = $parent
+        }
+
+        $handle = [LaptopExport.NativeMethods]::CreateFile(
+            $probe,
+            0,
+            7,
+            [IntPtr]::Zero,
+            3,
+            0x02000000,
+            [IntPtr]::Zero)
+        if ($handle -eq [IntPtr](-1)) { return $null }
+        try {
+            $buffer = New-Object System.Text.StringBuilder 32768
+            $length = [LaptopExport.NativeMethods]::GetFinalPathNameByHandle($handle, $buffer, [uint32]$buffer.Capacity, 0)
+            if ($length -eq 0 -or $length -ge $buffer.Capacity) { return $null }
+            $canonical = $buffer.ToString()
+        }
+        finally {
+            [void][LaptopExport.NativeMethods]::CloseHandle($handle)
+        }
+
+        if ($canonical.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $canonical = '\\' + $canonical.Substring(8)
+        }
+        elseif ($canonical.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $canonical = $canonical.Substring(4)
+        }
+        foreach ($part in $suffix) {
+            $canonical = Join-Path -Path $canonical -ChildPath $part
+        }
+        return [System.IO.Path]::GetFullPath($canonical)
+    }
+    catch {
+        return $null
+    }
+}
+
 function Test-PathIsSameOrChild {
     # Normalize both paths and compare with an explicit directory boundary;
     # a simple string prefix would incorrectly treat C:\Data2 as a child of
@@ -17,14 +103,20 @@ function Test-PathIsSameOrChild {
     )
 
     try {
-        $destination = [System.IO.Path]::GetFullPath($Path).TrimEnd([char]92)
-        $parent = [System.IO.Path]::GetFullPath($ParentPath).TrimEnd([char]92)
+        $destination = Get-CanonicalTransferPath -Path $Path
+        $parent = Get-CanonicalTransferPath -Path $ParentPath
+        if ([string]::IsNullOrWhiteSpace($destination) -or [string]::IsNullOrWhiteSpace($parent)) {
+            # Fail closed if canonicalization is unavailable.
+            return $true
+        }
+        $destination = $destination.TrimEnd([char]92)
+        $parent = $parent.TrimEnd([char]92)
         $parentPrefix = $parent + [System.IO.Path]::DirectorySeparatorChar
         return $destination.Equals($parent, [System.StringComparison]::OrdinalIgnoreCase) -or
                $destination.StartsWith($parentPrefix, [System.StringComparison]::OrdinalIgnoreCase)
     }
     catch {
-        return $false
+        return $true
     }
 }
 
@@ -38,8 +130,11 @@ function Test-DestinationIsWithinSourceProfile {
     $exportsRoot = Join-Path $appDataRoot 'Exports'
     # The caller treats $true as blocked. AppData itself and its dedicated
     # Exports child are the only source-profile destinations allowed.
-    $normalizedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd([char]92)
-    $normalizedAppData = [System.IO.Path]::GetFullPath($appDataRoot).TrimEnd([char]92)
+    $normalizedPath = Get-CanonicalTransferPath -Path $Path
+    $normalizedAppData = Get-CanonicalTransferPath -Path $appDataRoot
+    if ([string]::IsNullOrWhiteSpace($normalizedPath) -or [string]::IsNullOrWhiteSpace($normalizedAppData)) { return $true }
+    $normalizedPath = $normalizedPath.TrimEnd([char]92)
+    $normalizedAppData = $normalizedAppData.TrimEnd([char]92)
     if ($normalizedPath -eq $normalizedAppData -or (Test-PathIsSameOrChild -Path $Path -ParentPath $exportsRoot)) { return $false }
     return $true
 }
@@ -357,18 +452,54 @@ function Get-TransferPayloadEstimate {
 
     if ($Script:Config.Backup.UserData) {
         foreach ($folder in $Script:Config.UserFolders) {
-            if ($folder -ne 'Downloads') { $sizes.UserData += Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder) }
+            if ($folder -ne 'Downloads') { $sizes.UserData += Get-FolderSizeBytes (Resolve-ExportUserFolderPath $folder) }
         }
     }
-    if ($Script:Config.Backup.Downloads) { $sizes.Downloads = Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile 'Downloads') }
+    if ($Script:Config.Backup.Downloads) { $sizes.Downloads = Get-FolderSizeBytes (Resolve-ExportUserFolderPath 'Downloads') }
 
     if ($Script:Config.Backup.EntireUserProfile) {
         # The full-profile stage excludes standard user folders and AppData,
         # both of which are handled by their dedicated export stages.
         $sizes.EntireUserProfile = Get-FolderSizeBytes $Script:OriginalUserProfile
-        foreach ($folder in @($Script:Config.UserFolders + 'AppData')) {
-            $sizes.EntireUserProfile -= Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder)
+        foreach ($folder in $Script:Config.UserFolders) {
+            $sizes.EntireUserProfile -= Get-FolderSizeBytes (Resolve-ExportUserFolderPath $folder)
         }
+        $sizes.EntireUserProfile -= Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile 'AppData')
+        if ($sizes.EntireUserProfile -lt 0) { $sizes.EntireUserProfile = 0 }
+    }
+
+    if (-not $Script:Config.Backup.EntireUserProfile) {
+        $excludeFolders = @(
+            'AppData', 'Application Data', 'Local Settings', 'NetHood', 'PrintHood',
+            'Recent', 'SendTo', 'Start Menu', 'Templates', 'Cookies', 'Links',
+            'Saved Games', 'Searches', 'Contacts', '3D Objects',
+            'OneDrive', 'OneDrive - STO Building Group', 'STO Building Group',
+            'Dropbox', 'Google Drive', 'iCloudDrive', 'Box', 'Box Sync'
+        ) + $Script:Config.UserFolders
+        $includeAdditional = $Script:Config.TransferMode -ne 'Online' -or $Script:Config.Online.IncludeAdditionalUserFolders
+        if ($includeAdditional) {
+            foreach ($folder in @(Get-ChildItem -LiteralPath $Script:OriginalUserProfile -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -notin $excludeFolders -and
+                -not $_.Name.StartsWith('.') -and
+                -not $_.Name.StartsWith('OneDrive') -and
+                -not $_.Attributes.HasFlag([System.IO.FileAttributes]::Hidden) -and
+                -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)
+            })) {
+                $sizes.UserData += Get-FolderSizeBytes $folder.FullName
+            }
+        }
+        $looseFiles = @(Get-ChildItem -LiteralPath $Script:OriginalUserProfile -File -Force -ErrorAction SilentlyContinue | Where-Object {
+            -not $_.Name.StartsWith('.') -and
+            -not $_.Attributes.HasFlag([System.IO.FileAttributes]::Hidden) -and
+            -not $_.Attributes.HasFlag([System.IO.FileAttributes]::System) -and
+            $_.Extension -notin @('.ini', '.dat', '.log')
+        })
+        $sizes.UserData += [long]$(if ($looseFiles.Count) { ($looseFiles | Measure-Object -Property Length -Sum).Sum } else { 0 })
+    }
+
+    $ocsPath = 'C:\OCS Documents'
+    if ((Test-Path -LiteralPath $ocsPath) -and ($Script:Config.TransferMode -ne 'Online' -or $Script:Config.Online.IncludeOcsDocuments)) {
+        $sizes.UserData += Get-FolderSizeBytes $ocsPath
     }
 
     if ($Script:Config.Backup.AdditionalAppData) {
@@ -408,24 +539,13 @@ function Get-TransferPayloadEstimate {
 }
 
 function Update-AdvancedPayloadEstimate {
-    # Use the startup inventory cache to update only the advanced rows. This
-    # avoids re-walking the backup tree each time a menu toggle is pressed.
+    # Recalculate all display rows from the completed inventory cache. This is
+    # still a zero-I/O refresh, but it prevents toggles such as Chrome
+    # FullProfile or Downloads from leaving the final estimate stale.
     if ($null -eq $Script:StartupPayloadEstimate) { return }
-    $items = $Script:StartupPayloadEstimate.ItemBytes
-    $items.EntireUserProfile = [long]0
-    $items.AdditionalAppData = [long]0
-    if ($Script:Config.Backup.EntireUserProfile) {
-        $items.EntireUserProfile = Get-FolderSizeBytes $Script:OriginalUserProfile
-        foreach ($folder in @($Script:Config.UserFolders + 'AppData')) {
-            $items.EntireUserProfile -= Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder)
-        }
-    }
-    if ($Script:Config.Backup.AdditionalAppData) {
-        foreach ($item in @($Script:SelectedAdditionalAppData)) {
-            if ($null -ne $item -and $null -ne $item.SizeBytes) { $items.AdditionalAppData += [long]$item.SizeBytes }
-        }
-    }
-    $Script:StartupPayloadEstimate.TotalBytes = [long](($items.Values | Measure-Object -Sum).Sum)
+    $estimate = Get-TransferSizeDisplayEstimate
+    $Script:StartupPayloadEstimate = $estimate
+    $Script:TransferSizeDisplayEstimate = $estimate
 }
 
 function Get-DestinationFreeSpaceBytes {
@@ -586,11 +706,6 @@ function New-TransferArchive {
     # the current transfer mode, then return the created archive path.
     param([string]$TransferBase)
 
-    if ($Script:Config.TransferMode -ne "Online") {
-        Write-Log "Skipping ZIP archive for Local transfer" -Level Info
-        return $null
-    }
-
     $parentFolder = Split-Path -Path $TransferBase -Parent
     $archiveName = "$(Split-Path -Path $TransferBase -Leaf).zip"
     $archivePath = Join-Path $parentFolder $archiveName
@@ -603,7 +718,19 @@ function New-TransferArchive {
 
     try {
         Write-Host "`n  Creating ZIP archive..." -ForegroundColor Cyan
-        $files = @(Get-ChildItem -LiteralPath $TransferBase -Recurse -File -Force -ErrorAction Stop)
+        $allFiles = @(Get-ChildItem -LiteralPath $TransferBase -Recurse -File -Force -ErrorAction Stop)
+        $sensitivePasswordFiles = @($allFiles | Where-Object {
+            $relativePath = $_.FullName.Substring($TransferBase.Length).TrimStart([char]92)
+            $relativePath -match '^BrowserData[\\/]+Chrome[\\/]+PasswordExport[\\/]+.+\.csv$'
+        })
+        $files = @($allFiles | Where-Object {
+            $relativePath = $_.FullName.Substring($TransferBase.Length).TrimStart([char]92)
+            $relativePath -notmatch '^BrowserData[\\/]+Chrome[\\/]+PasswordExport[\\/]+.+\.csv$'
+        })
+        if ($sensitivePasswordFiles.Count -gt 0) {
+            Write-Log "Excluded $($sensitivePasswordFiles.Count) plaintext Chrome password CSV file(s) from ZIP archive" -Level Warning
+            Add-ManualTask -Task "Transfer Chrome passwords securely" -Reason "Plaintext Chrome password CSV files are intentionally excluded from the ZIP archive" -Instructions "Use Chrome's native password import workflow from the uncompressed transfer folder or securely transfer the CSV separately, then delete it after verification."
+        }
         $totalBytes = [long](($files | Measure-Object -Property Length -Sum).Sum)
         $startedAt = Get-Date
         $completedBytes = [long]0

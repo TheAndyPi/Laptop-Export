@@ -1,4 +1,4 @@
-﻿# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # GENERATED FILE - DO NOT EDIT DIRECTLY
 # Source modules: src\\01-bootstrap.ps1 through src\\10-main.ps1
 # Build command: powershell -ExecutionPolicy Bypass -File .\\Build-Deployment.ps1
@@ -30,6 +30,10 @@
 #>
 
 #Requires -Version 5.1
+
+# Bootstrap runs first.  It defines command-line inputs and process-wide
+# presentation state before any feature module is loaded.  Nothing here copies
+# user data; it establishes the environment in which the later modules run.
 
 param(
     [string]$TargetUserProfile = "",
@@ -112,6 +116,11 @@ $Script:Theme = @{
 }
 
 $Script:DevelopmentConfig = @{
+    # This is a PowerShell data file, not executable code.  Build-Deployment.ps1
+    # reads it as trusted configuration and selectively embeds the supported
+    # values into the runtime configuration created by 03-core.ps1.  Keeping
+    # the allowlists in the runtime prevents an accidental config key from
+    # changing an unrelated implementation detail.
     # Development-time defaults. Edit these values, then run
     # Build-Deployment.ps1 to embed the configuration in Export-LaptopData.ps1.
     # Every backup stage is enabled by default.
@@ -232,6 +241,11 @@ $Script:DevelopmentConfig = @{
 }
 
 $Script:TransferReportTemplate = @'
+<!--
+  Static presentation template for the transfer ledger.  09-report.ps1
+  replaces {{TOKEN}} placeholders with HTML-encoded values before writing the
+  final report.  Keep layout/CSS here and counting/classification logic there.
+-->
 <!doctype html>
 <html lang="en">
 <head>
@@ -240,19 +254,19 @@ $Script:TransferReportTemplate = @'
   <title>Laptop Transfer Report - {{USER}}</title>
   <style>
     :root{color-scheme:dark;--ink:#f5f9ff;--muted:#9daec6;--panel:#111d33;--panel2:#172744;--line:rgba(173,204,255,.17);--blue:#29b8ff;--violet:#9d7bff;--green:#44dda4;--amber:#ffc45d;--red:#ff7185}
-    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% -10%,#235e91 0,transparent 38%),radial-gradient(circle at 90% 5%,#4d327b 0,transparent 31%),#08111f;color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif}.container{max-width:1160px;margin:auto;padding:32px 20px 48px}.hero,.section,.stat,.route-card,.duration-card{border:1px solid var(--line);background:linear-gradient(145deg,rgba(27,45,76,.93),rgba(12,23,41,.94));box-shadow:0 18px 50px rgba(0,0,0,.19)}.hero{border-radius:24px;padding:30px;margin-bottom:18px;overflow:hidden;position:relative}.hero:after{content:"";position:absolute;width:280px;height:280px;border-radius:50%;right:-100px;top:-165px;background:radial-gradient(circle,rgba(41,184,255,.22),transparent 70%);pointer-events:none}.eyebrow,.label{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}h1{margin:5px 0 4px;font-size:clamp(28px,4vw,42px);line-height:1.1;letter-spacing:-.035em}.accent{color:var(--blue)}.meta{color:var(--muted);margin:0}.route{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:stretch;margin-top:25px}.route-card{min-width:0;border-radius:16px;padding:16px;background:rgba(7,17,31,.55)}.route-name{overflow-wrap:anywhere;font-size:20px;font-weight:700;color:#fff;margin-top:4px}.route-arrow{align-self:center;color:var(--blue);font-size:28px;text-align:center}.duration-card{border-radius:16px;margin-top:16px;padding:18px 20px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(100deg,rgba(41,184,255,.14),rgba(157,123,255,.14))}.duration{font-size:clamp(34px,5vw,56px);line-height:1;font-weight:800;letter-spacing:-.06em;color:#fff}.duration-copy{text-align:right;color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.stat{border-radius:16px;padding:18px}.number{font-size:30px;font-weight:800;line-height:1.1}.success .number,.success-text{color:var(--green)}.warning .number{color:var(--amber)}.error .number{color:var(--red)}.skipped .number{color:#c8d2e3}.section{border-radius:18px;margin:18px 0;overflow:hidden}.section-header{padding:17px 20px;background:rgba(255,255,255,.035);font-size:17px;font-weight:700}.section-subtitle{display:block;margin-top:2px;color:var(--muted);font-size:12px;font-weight:400}.section-content{padding:20px}.app-summary{border:1px solid rgba(41,184,255,.35);border-radius:14px;padding:18px;background:linear-gradient(110deg,rgba(41,184,255,.1),rgba(157,123,255,.08))}.app-summary h3{margin:0 0 6px;font-size:19px}.app-summary p{margin:0;color:var(--muted)}.app-summary.ready{border-color:rgba(255,196,93,.55)}.app-summary.ok{border-color:rgba(68,221,164,.55)}.app-list{margin:16px 0 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:9px}.app-list li{padding:11px 12px;border-radius:10px;background:rgba(6,15,28,.55);border:1px solid var(--line)}.app-list small{display:block;color:var(--muted);margin-top:2px}table{width:100%;border-collapse:collapse}th,td{padding:12px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}.status{display:inline-block;border-radius:999px;padding:4px 9px;font-size:12px;white-space:nowrap}.status-success{background:rgba(68,221,164,.15);color:#84f2c6}.status-warning{background:rgba(255,196,93,.14);color:#ffda91}.status-error{background:rgba(255,113,133,.16);color:#ffb3be}.status-skipped{background:rgba(187,202,224,.13);color:#d9e2f0}.critical-warning{border:1px solid rgba(255,113,133,.7);background:rgba(127,29,29,.28);border-radius:18px;padding:20px;margin:18px 0}.critical-warning h2{margin:0 0 4px;color:#ffbac4}.critical-warning p{margin:0;color:#ffd1d8}.admin-success{border-radius:16px;padding:15px 20px;margin:18px 0;color:#a1f6d1}.manual-task{border-left:3px solid var(--violet);border-radius:0 10px 10px 0;background:rgba(157,123,255,.1);padding:14px 16px;margin-bottom:10px}.manual-task.critical{border-color:var(--red);background:rgba(255,113,133,.1)}.manual-task h4{margin:0 0 4px}.manual-task p{margin:0;color:var(--muted)}.manual-task pre{white-space:pre-wrap;margin:10px 0 0;color:#dfeaff;font:12px/1.45 Consolas,monospace}details.section{padding:0}details summary{cursor:pointer;list-style:none;padding:18px 20px;font-size:17px;font-weight:700;background:rgba(255,255,255,.035)}details summary::-webkit-details-marker{display:none}details summary:after{content:'+';float:right;color:var(--blue);font-size:22px;line-height:.8}details[open] summary:after{content:'âˆ’'}details summary span{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:2px}details ul{margin:0;padding-left:22px}details li{margin:9px 0;color:#dce8fa}footer{text-align:center;color:#7f91ac;font-size:12px;padding:10px}@media(max-width:700px){.container{padding:18px 14px 35px}.hero{padding:22px}.route{grid-template-columns:1fr}.route-arrow{transform:rotate(90deg);padding:0}.duration-card{align-items:flex-start;gap:12px;flex-direction:column}.duration-copy{text-align:left}.stats{grid-template-columns:repeat(2,1fr)}.section-content{overflow:auto;padding:14px}table{min-width:680px}}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% -10%,#235e91 0,transparent 38%),radial-gradient(circle at 90% 5%,#4d327b 0,transparent 31%),#08111f;color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif}.container{max-width:1160px;margin:auto;padding:32px 20px 48px}.hero,.section,.stat,.route-card,.duration-card{border:1px solid var(--line);background:linear-gradient(145deg,rgba(27,45,76,.93),rgba(12,23,41,.94));box-shadow:0 18px 50px rgba(0,0,0,.19)}.hero{border-radius:24px;padding:30px;margin-bottom:18px;overflow:hidden;position:relative}.hero:after{content:"";position:absolute;width:280px;height:280px;border-radius:50%;right:-100px;top:-165px;background:radial-gradient(circle,rgba(41,184,255,.22),transparent 70%);pointer-events:none}.eyebrow,.label{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}h1{margin:5px 0 4px;font-size:clamp(28px,4vw,42px);line-height:1.1;letter-spacing:-.035em}.accent{color:var(--blue)}.meta{color:var(--muted);margin:0}.route{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:stretch;margin-top:25px}.route-card{min-width:0;border-radius:16px;padding:16px;background:rgba(7,17,31,.55)}.route-name{overflow-wrap:anywhere;font-size:20px;font-weight:700;color:#fff;margin-top:4px}.route-arrow{align-self:center;color:var(--blue);font-size:28px;text-align:center}.duration-card{border-radius:16px;margin-top:16px;padding:18px 20px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(100deg,rgba(41,184,255,.14),rgba(157,123,255,.14))}.duration{font-size:clamp(34px,5vw,56px);line-height:1;font-weight:800;letter-spacing:-.06em;color:#fff}.duration-copy{text-align:right;color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.stat{border-radius:16px;padding:18px}.number{font-size:30px;font-weight:800;line-height:1.1}.success .number,.success-text{color:var(--green)}.warning .number{color:var(--amber)}.error .number{color:var(--red)}.skipped .number{color:#c8d2e3}.section{border-radius:18px;margin:18px 0;overflow:hidden}.section-header{padding:17px 20px;background:rgba(255,255,255,.035);font-size:17px;font-weight:700}.section-subtitle{display:block;margin-top:2px;color:var(--muted);font-size:12px;font-weight:400}.section-content{padding:20px}.app-summary{border:1px solid rgba(41,184,255,.35);border-radius:14px;padding:18px;background:linear-gradient(110deg,rgba(41,184,255,.1),rgba(157,123,255,.08))}.app-summary h3{margin:0 0 6px;font-size:19px}.app-summary p{margin:0;color:var(--muted)}.app-summary.ready{border-color:rgba(255,196,93,.55)}.app-summary.ok{border-color:rgba(68,221,164,.55)}.app-list{margin:16px 0 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:9px}.app-list li{padding:11px 12px;border-radius:10px;background:rgba(6,15,28,.55);border:1px solid var(--line)}.app-list small{display:block;color:var(--muted);margin-top:2px}table{width:100%;border-collapse:collapse}th,td{padding:12px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}.status{display:inline-block;border-radius:999px;padding:4px 9px;font-size:12px;white-space:nowrap}.status-success{background:rgba(68,221,164,.15);color:#84f2c6}.status-warning{background:rgba(255,196,93,.14);color:#ffda91}.status-error{background:rgba(255,113,133,.16);color:#ffb3be}.status-skipped{background:rgba(187,202,224,.13);color:#d9e2f0}.critical-warning{border:1px solid rgba(255,113,133,.7);background:rgba(127,29,29,.28);border-radius:18px;padding:20px;margin:18px 0}.critical-warning h2{margin:0 0 4px;color:#ffbac4}.critical-warning p{margin:0;color:#ffd1d8}.admin-success{border-radius:16px;padding:15px 20px;margin:18px 0;color:#a1f6d1}.manual-task{border-left:3px solid var(--violet);border-radius:0 10px 10px 0;background:rgba(157,123,255,.1);padding:14px 16px;margin-bottom:10px}.manual-task.critical{border-color:var(--red);background:rgba(255,113,133,.1)}.manual-task h4{margin:0 0 4px}.manual-task p{margin:0;color:var(--muted)}.manual-task pre{white-space:pre-wrap;margin:10px 0 0;color:#dfeaff;font:12px/1.45 Consolas,monospace}details.section{padding:0}details summary{cursor:pointer;list-style:none;padding:18px 20px;font-size:17px;font-weight:700;background:rgba(255,255,255,.035)}details summary::-webkit-details-marker{display:none}details summary:after{content:'+';float:right;color:var(--blue);font-size:22px;line-height:.8}details[open] summary:after{content:'−'}details summary span{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:2px}details ul{margin:0;padding-left:22px}details li{margin:9px 0;color:#dce8fa}footer{text-align:center;color:#7f91ac;font-size:12px;padding:10px}@media(max-width:700px){.container{padding:18px 14px 35px}.hero{padding:22px}.route{grid-template-columns:1fr}.route-arrow{transform:rotate(90deg);padding:0}.duration-card{align-items:flex-start;gap:12px;flex-direction:column}.duration-copy{text-align:left}.stats{grid-template-columns:repeat(2,1fr)}.section-content{overflow:auto;padding:14px}table{min-width:680px}}
   </style>
 </head>
 <body>
 <main class="container">
   <header class="hero">
-    <div class="eyebrow">STO Â· laptop handoff</div>
+    <div class="eyebrow">STO · laptop handoff</div>
     <h1>Transfer <span class="accent">handoff report</span></h1>
-    <p class="meta">Prepared for {{USER}} Â· {{DATE}} Â· {{MODE}} transfer</p>
+    <p class="meta">Prepared for {{USER}} · {{DATE}} · {{MODE}} transfer</p>
     <div class="route">
-      <div class="route-card"><div class="label">Old computer Â· export source</div><div class="route-name">{{SOURCE_COMPUTER}}</div></div>
-      <div class="route-arrow" aria-hidden="true">â†’</div>
-      <div class="route-card"><div class="label">New computer Â· import destination</div><div class="route-name"><!-- DESTINATION_COMPUTER -->{{DESTINATION_COMPUTER}}<!-- /DESTINATION_COMPUTER --></div></div>
+      <div class="route-card"><div class="label">Old computer · export source</div><div class="route-name">{{SOURCE_COMPUTER}}</div></div>
+      <div class="route-arrow" aria-hidden="true">→</div>
+      <div class="route-card"><div class="label">New computer · import destination</div><div class="route-name"><!-- DESTINATION_COMPUTER -->{{DESTINATION_COMPUTER}}<!-- /DESTINATION_COMPUTER --></div></div>
     </div>
     <div class="duration-card"><div><div class="label">Total export time</div><div class="duration">{{DURATION}}</div></div><div class="duration-copy">Time from transfer start<br>to completed export report</div></div>
   </header>
@@ -262,14 +276,21 @@ $Script:TransferReportTemplate = @'
   <!-- IMPORT_RESULTS --><!-- /IMPORT_RESULTS -->
   <section class="section"><div class="section-header">Export actions<span class="section-subtitle">Items needing attention are listed first</span></div><div class="section-content"><table><thead><tr><th>Category</th><th>Item</th><th>Status</th><th>Details</th></tr></thead><tbody>{{ACTION_ROWS}}</tbody></table></div></section>
   <section class="section"><div class="section-header">Other manual tasks</div><div class="section-content">{{MANUAL_TASKS}}</div></section>
-  <details class="section"><summary>New machine checklist<span>Collapsed by default â€” expand while completing the handoff</span></summary><div class="section-content"><ul><li>Run Import-LaptopData.ps1</li><li>Verify Windows Updates and BitLocker</li><li>Sign in to OneDrive and Teams</li><li>Configure Office 365 and Outlook signatures</li><li>Review Logs/AppMigrationReview.html</li><li>Verify printers, drives, power settings, and default browser</li></ul></div></details>
-  <footer>Generated by STO Laptop Transfer Tool v{{VERSION}} Â· {{YEAR}}</footer>
+  <details class="section"><summary>New machine checklist<span>Collapsed by default — expand while completing the handoff</span></summary><div class="section-content"><ul><li>Run Import-LaptopData.ps1</li><li>Verify Windows Updates and BitLocker</li><li>Sign in to OneDrive and Teams</li><li>Configure Office 365 and Outlook signatures</li><li>Review Logs/AppMigrationReview.html</li><li>Verify printers, drives, power settings, and default browser</li></ul></div></details>
+  <footer>Generated by STO Laptop Transfer Tool v{{VERSION}} · {{YEAR}}</footer>
 </main>
 </body>
 </html>
 '@
 
+# UI helpers are deliberately side-effect-light: they format text or write to
+# the console, while the feature modules own filesystem and registry changes.
+# This keeps progress output consistent and makes non-interactive validation
+# possible without duplicating the transfer logic.
+
 function Get-VisibleLength {
+    # ANSI color sequences occupy characters in the raw string but no columns
+    # on screen, so remove them before calculating padding and alignment.
     # Length of a string ignoring ANSI escape sequences (for correct padding)
     param([string]$Text)
     return ([regex]::Replace($Text, "$([char]27)\[[0-9;]*m", "")).Length
@@ -356,6 +377,9 @@ function Write-Status {
 }
 
 function Write-KeyValue {
+    # Render a two-column diagnostic row.  Values are intentionally strings so
+    # callers can pass formatted sizes, paths, or settings without conversion
+    # rules leaking into the presentation layer.
     param([string]$Key, [string]$Value, [int]$KeyWidth = 18)
     Write-Host "    $($Key.PadRight($KeyWidth))" -ForegroundColor DarkGray -NoNewline
     Write-Host $Value -ForegroundColor White
@@ -414,6 +438,8 @@ function Clear-StoScreen {
 }
 
 function Read-UserInput {
+    # Keep input acquisition centralized so prompts have the same indentation
+    # and can be replaced or bypassed by an automation harness.
     param([string]$Prompt)
     Write-Host $Prompt
     return Read-Host '  > '
@@ -422,6 +448,11 @@ function Read-UserInput {
 # ============================================================================
 # ADMIN ELEVATION
 # ============================================================================
+
+# Core owns shared state and cross-cutting services.  It resolves the source
+# identity, builds the effective configuration, manages asynchronous size
+# estimates, writes logs/results, and provides the common copy primitive used
+# by user-data, settings, browser, and destination modules.
 
 # Track if we have admin privileges
 $Script:IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -497,7 +528,7 @@ $Script:Config = @{
     # slower for normal local/USB copies. A failed copy can be rerun safely,
     # so favor throughput with parallel file copies. (/J remains in use for
     # the one-file ZIP upload, where unbuffered I/O is beneficial.)
-    RobocopyArgs = @("/E", "/R:2", "/W:3", "/MT:16", "/NP", "/NDL", "/NFL", "/NJH", "/NJS")
+    RobocopyArgs = @("/E", "/XJ", "/R:2", "/W:3", "/MT:16", "/NP", "/NDL", "/NFL", "/NJH", "/NJS")
 
     # ---- Transfer mode ----
     # "Local"  = full copy (USB/on-site).  "Online" = trimmed for slow/remote links.
@@ -671,16 +702,27 @@ if ($RuntimeSettings) {
 }
 
 function Apply-OnlineTransferDefaults {
+    # Online mode is a policy overlay: it changes only the switches that are
+    # explicitly online-sensitive, leaving the base configuration intact.
     if ($Script:Config.TransferMode -ne "Online") { return }
 
     $Script:Config.Backup.Downloads = $Script:Config.Online.Downloads
     $Script:Config.Transfer.CreateZipArchive = $Script:Config.Online.CreateZipArchive
+    if ($Script:Config.Online.IncludeChromeProfileArchive -and $Script:Config.Backup.Chrome -ne 'Off') {
+        $Script:Config.Backup.Chrome = 'FullProfile'
+    }
+    elseif (-not $Script:Config.Online.IncludeChromeProfileArchive -and $Script:Config.Backup.Chrome -eq 'FullProfile') {
+        $Script:Config.Backup.Chrome = 'BookmarksAndPasswords'
+    }
     foreach ($switchName in $Script:Config.Online.Import.Keys) {
         $Script:Config.Import[$switchName] = $Script:Config.Online.Import[$switchName]
     }
 }
 
 function Set-SettingsPreset {
+    # Presets mutate the selected backup switches as a group.  The UI can later
+    # change individual values, so this function is a starting state, not a
+    # second configuration source.
     param([ValidateSet('Basic', 'Advanced')][string]$Name)
 
     $Script:Config.Backup.EntireUserProfile = ($Name -eq 'Advanced')
@@ -693,6 +735,9 @@ function Set-SettingsPreset {
 }
 
 function Resolve-ExportUserFolderPath {
+    # Most profile folders resolve below the profile root; Start Menu is the
+    # exception and is stored under roaming AppData.  Centralizing this mapping
+    # prevents export and size-estimation paths from disagreeing.
     param([string]$Folder)
     if ($Folder -eq 'Start Menu') {
         return (Join-Path $Script:OriginalAppDataRoaming 'Microsoft\Windows\Start Menu')
@@ -701,6 +746,9 @@ function Resolve-ExportUserFolderPath {
 }
 
 function Start-TransferSizeEstimateJob {
+    # Run expensive recursive directory enumeration in a background job so the
+    # settings screen remains responsive.  The job returns plain objects only;
+    # UI state is updated by Receive-TransferSizeEstimateJob in the foreground.
     # Run the initial inventory out-of-process so Transfer Settings remains
     # responsive while large profiles are being scanned.
     # Keep large profile-related payloads near the end and normal user folders
@@ -770,7 +818,13 @@ function Get-TransferSizeDisplayEstimate {
     foreach ($key in @('UserData', 'Downloads', 'EntireUserProfile', 'AdditionalAppData', 'AppData', 'LotusNotes', 'Firefox', 'Edge')) {
         if ($Script:Config.Backup[$key]) { $sizes[$key] = $null }
     }
-    if ($Script:Config.Backup.UserData) { $sizes.UserData = Get-CachedFolderSizeSum -Paths @($Script:Config.UserFolders | ForEach-Object { Resolve-ExportUserFolderPath $_ }) }
+    if ($Script:Config.Backup.UserData) {
+        $userDataPaths = @($Script:Config.UserFolders | Where-Object { $_ -ne 'Downloads' } | ForEach-Object { Resolve-ExportUserFolderPath $_ })
+        $sizes.UserData = Get-CachedFolderSizeSum -Paths $userDataPaths
+    }
+    if ($Script:Config.Backup.Downloads) {
+        $sizes.Downloads = Get-CachedFolderSizeBytes -Path (Resolve-ExportUserFolderPath 'Downloads')
+    }
     if ($Script:Config.Backup.AppData) {
         $appDataPaths = @($Script:Config.BluebeamPaths | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ }) + @($Script:Config.AppDataRoaming.Values | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
         $sizes.AppData = Get-CachedFolderSizeSum -Paths $appDataPaths
@@ -797,6 +851,9 @@ function Get-TransferSizeDisplayEstimate {
 }
 
 function Receive-TransferSizeEstimateJob {
+    # Drain completed estimate jobs and copy their results into the cache.
+    # Stale or failed jobs are ignored because estimates are advisory and must
+    # never prevent an otherwise valid transfer.
     if (-not $Script:TransferSizeEstimateJob) { return $false }
     $updated = $false
     foreach ($inventory in @(Receive-Job -Job $Script:TransferSizeEstimateJob -ErrorAction SilentlyContinue)) {
@@ -827,6 +884,9 @@ function Receive-TransferSizeEstimateJob {
 }
 
 function Read-MenuInputWithBackgroundRefresh {
+    # Read-Host blocks the foreground thread, so refresh the estimate job before
+    # and after input.  This gives the operator current numbers at each menu
+    # transition without attempting unsafe concurrent console writes.
     param([string]$Prompt, [scriptblock]$Poll)
     try {
         $rawUi = $Host.UI.RawUI
@@ -878,6 +938,9 @@ function Show-BackupOverview {
 }
 
 function Start-ElevatedExport {
+    # Relaunch the same script with RunAs while passing the original profile and
+    # serialized settings.  The new process is the only elevated boundary;
+    # ordinary user data remains handled in the original user context.
     # Do not relaunch the whole exporter: that changes the transferring user's
     # profile context. Start-ElevatedSystemExport later elevates only PrintBRM
     # and the full power-plan capture.
@@ -888,6 +951,9 @@ function Start-ElevatedExport {
 }
 
 function Restart-AsAdministrator {
+    # Build a quoted argument list for Start-Process.  The helper preserves
+    # spaces in profile/destination paths and deliberately returns after the
+    # child process exits so the parent cannot continue a duplicate export.
     if ($Script:IsAdmin) { Write-Host '  Already running as Administrator.' -ForegroundColor Green; return }
     try {
         Start-Process PowerShell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -ErrorAction Stop
@@ -897,6 +963,8 @@ function Restart-AsAdministrator {
 }
 
 function Add-DisabledBackupResult {
+    # Disabled stages still get a result row.  This makes the report distinguish
+    # intentional omission from a stage that was attempted and failed.
     param(
         [string]$Item,
         [string]$Category = "Backup"
@@ -908,6 +976,8 @@ function Add-DisabledBackupResult {
 }
 
 function Show-OnlineAdvancedSettingsMenu {
+    # Present online-only payload controls and write the operator's selections
+    # back to the shared configuration used by subsequent copy stages.
     while ($true) {
         Clear-StoScreen
         Write-Banner -Title "Advanced Online Controls" -Subtitle "These choices affect this transfer only"
@@ -915,6 +985,7 @@ function Show-OnlineAdvancedSettingsMenu {
             @{ Number = 1; Key = 'IncludeAdditionalUserFolders'; Label = 'Include additional user folders'; Detail = 'OFF skips unlisted profile folders in Online mode' }
             @{ Number = 2; Key = 'IncludeOcsDocuments'; Label = 'Include C:\\OCS Documents'; Detail = 'OFF skips this optional project folder in Online mode' }
             @{ Number = 3; Key = 'DetailedAppDataCandidateInventory'; Label = 'Detailed AppData candidate sizes'; Detail = 'OFF records names only and avoids recursive sizing' }
+            @{ Number = 4; Key = 'IncludeChromeProfileArchive'; Label = 'Include Chrome full profile'; Detail = 'OFF keeps the lean bookmarks/password handoff only' }
         )) {
             $state = if ($Script:Config.Online[$setting.Key]) { 'ON ' } else { 'OFF' }
             $color = if ($Script:Config.Online[$setting.Key]) { 'Green' } else { 'DarkGray' }
@@ -922,26 +993,33 @@ function Show-OnlineAdvancedSettingsMenu {
             Write-Host $setting.Label -ForegroundColor $color -NoNewline
             Write-Host "  $($setting.Detail)" -ForegroundColor DarkGray
         }
-        Write-Host "  [4] $($Script:Config.Online.AdditionalFolderCapGB) GB " -ForegroundColor Cyan -NoNewline
+        Write-Host "  [5] $($Script:Config.Online.AdditionalFolderCapGB) GB " -ForegroundColor Cyan -NoNewline
         Write-Host "Additional-folder cap" -ForegroundColor Yellow -NoNewline
         Write-Host "  folders above this require confirmation when included" -ForegroundColor DarkGray
-        $selection = (Read-UserInput "  Select 1-4, [B] Back").Trim()
+        $selection = (Read-UserInput "  Select 1-5, [B] Back").Trim()
         if ($selection -match '^[Bb]$') { return }
-        if ($selection -eq '4') {
+        if ($selection -eq '5') {
             $value = 0.0; $entered = Read-UserInput "  Enter additional-folder cap in GB (current: $($Script:Config.Online.AdditionalFolderCapGB))"
             if ([double]::TryParse($entered, [ref]$value) -and $value -gt 0) { $Script:Config.Online.AdditionalFolderCapGB = $value }
             continue
         }
         $index = 0
-        if ([int]::TryParse($selection, [ref]$index) -and $index -ge 1 -and $index -le 3) {
-            $key = @('IncludeAdditionalUserFolders', 'IncludeOcsDocuments', 'DetailedAppDataCandidateInventory')[$index - 1]
+        if ([int]::TryParse($selection, [ref]$index) -and $index -ge 1 -and $index -le 4) {
+            $key = @('IncludeAdditionalUserFolders', 'IncludeOcsDocuments', 'DetailedAppDataCandidateInventory', 'IncludeChromeProfileArchive')[$index - 1]
             $Script:Config.Online[$key] = -not [bool]$Script:Config.Online[$key]
+            if ($key -eq 'IncludeChromeProfileArchive') {
+                if ($Script:Config.Online[$key]) { $Script:Config.Backup.Chrome = 'FullProfile' }
+                elseif ($Script:Config.Backup.Chrome -eq 'FullProfile') { $Script:Config.Backup.Chrome = 'BookmarksAndPasswords' }
+            }
             $Script:SettingsPreset = 'Custom'
         }
     }
 }
 
 function Show-TransferSettingsMenu {
+    # This is the final preflight editor.  It validates combinations, displays
+    # the effective payload, and returns control to the main workflow only after
+    # the operator accepts or cancels the transfer.
     # These are the runtime counterparts of the switches in
     # src\00-development-config.psd1.  Values start with the compiled
     # defaults, but any changes made here apply only to the current transfer.
@@ -1031,7 +1109,8 @@ function Show-TransferSettingsMenu {
         }
 
         Write-Host ""
-        Write-Host "  Select a number to toggle it; [B] Basic; [V] Advanced; [R] Refresh; select Online payload limit to enter a GB value." -ForegroundColor Gray
+        $advancedHint = if ($Script:Config.TransferMode -eq 'Online') { '; [A] Advanced Online Controls' } else { '' }
+        Write-Host "  Select a number to toggle it; [B] Basic; [V] Advanced$advancedHint; [R] Refresh; select Online payload limit to enter a GB value." -ForegroundColor Gray
         Write-Host "  Select Chrome to cycle its three backup modes." -ForegroundColor DarkGray
         Write-Host "  Administrator mode is requested only after you choose Start transfer." -ForegroundColor DarkGray
         Write-Host "  ZIP archives are optional for Local transfers and enabled by default for Online transfers." -ForegroundColor DarkGray
@@ -1055,6 +1134,7 @@ function Show-TransferSettingsMenu {
         if ($selection -match "^[Qq]$") { return $false }
         if ($selection -match "^[Bb]$") { Set-SettingsPreset -Name Basic; Update-AdvancedPayloadEstimate; continue }
         if ($selection -match "^[Vv]$") { Set-SettingsPreset -Name Advanced; $Script:SelectedAdditionalAppData = Select-AdditionalAppData; $Script:SkipAdditionalAppDataSizing = $false; Update-AdvancedPayloadEstimate; continue }
+        if ($selection -match "^[Aa]$" -and $Script:Config.TransferMode -eq 'Online') { Show-OnlineAdvancedSettingsMenu; Update-AdvancedPayloadEstimate; continue }
 
         $selectedIndex = 0
         if ([int]::TryParse($selection, [ref]$selectedIndex) -and
@@ -1068,7 +1148,9 @@ function Show-TransferSettingsMenu {
             }
             elseif ($setting.Type -eq 'ChromeMode') {
                 $Script:Config.Backup.Chrome = switch ($Script:Config.Backup.Chrome) { 'Off' { 'BookmarksAndPasswords' } 'BookmarksAndPasswords' { 'FullProfile' } default { 'Off' } }
+                if ($Script:Config.TransferMode -eq 'Online') { $Script:Config.Online.IncludeChromeProfileArchive = $Script:Config.Backup.Chrome -eq 'FullProfile' }
                 $Script:SettingsPreset = 'Custom'
+                Update-AdvancedPayloadEstimate
             }
             else {
                 $Script:Config[$setting.Section][$setting.Key] = -not [bool]$Script:Config[$setting.Section][$setting.Key]
@@ -1107,6 +1189,8 @@ $Script:Results = @{
 }
 
 function Write-Log {
+    # Append a timestamped line to the package log and mirror it to the console.
+    # Logging is best-effort so a locked log file cannot abort data collection.
     param(
         [string]$Message,
         [ValidateSet("Info", "Success", "Warning", "Error")]
@@ -1128,6 +1212,8 @@ function Write-Log {
 }
 
 function Add-Result {
+    # Results are structured records consumed by the HTML report and summary
+    # counters.  Keep status vocabulary stable because report sorting matches it.
     param(
         [string]$Category,
         [string]$Item,
@@ -1168,6 +1254,9 @@ function Format-RemainingTime {
 }
 
 function Copy-WithProgress {
+    # Wrap robocopy, translate its bitmask exit code into application statuses,
+    # and stream progress from the generated log.  Robocopy codes 0-7 represent
+    # success or acceptable differences; 8 and above mean a copy failure.
     param(
         [string]$Source,
         [string]$Destination,
@@ -1262,8 +1351,9 @@ function Copy-WithProgress {
     $exitCode = $process.ExitCode
     
     $elapsed = (Get-Date) - $startTime
-    $copiedSize = $totalSize
-    $copiedFiles = $totalFiles
+    $copySucceeded = $exitCode -lt 8
+    $copiedSize = if ($copySucceeded) { $totalSize } else { [long]0 }
+    $copiedFiles = if ($copySucceeded) { $totalFiles } else { 0 }
     
     # Complete the progress bar (clear the line first, then draw the final state)
     if ($abortedByOperator) {
@@ -1289,15 +1379,7 @@ function Copy-WithProgress {
     Write-Host " 100%  $(Format-FileSize $copiedSize)  in $([math]::Round($elapsed.TotalSeconds, 1))s" -ForegroundColor DarkGray
     
     # Determine status based on exit code and files copied
-    $status = if ($exitCode -lt 8) { 
-        "Success" 
-    } elseif ($exitCode -in @(8, 9) -and $copiedFiles -gt 0) { 
-        "Success" 
-    } elseif ($exitCode -in @(8, 9)) { 
-        "Skipped" 
-    } else { 
-        "Warning" 
-    }
+    $status = if ($copySucceeded) { "Success" } else { "Warning" }
     
     return @{
         ExitCode = $exitCode
@@ -1309,6 +1391,8 @@ function Copy-WithProgress {
 }
 
 function Add-ManualTask {
+    # Record work that cannot be automated safely, such as protected browser
+    # credentials or actions requiring a different security context.
     param(
         [string]$Task,
         [string]$Reason,
@@ -1328,25 +1412,126 @@ function Add-ManualTask {
 # DESTINATION SELECTION
 # ============================================================================
 
+# Destination code validates that the package does not overlap the source
+# profile, supports local/removable/network targets, and creates the final
+# archive.  It performs validation before copying so a bad target fails early
+# rather than producing a partially self-overwriting package.
+
+if (-not ('LaptopExport.NativeMethods' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace LaptopExport {
+    public static class NativeMethods {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr CreateFile(
+            string lpFileName,
+            uint dwDesiredAccess,
+            uint dwShareMode,
+            IntPtr lpSecurityAttributes,
+            uint dwCreationDisposition,
+            uint dwFlagsAndAttributes,
+            IntPtr hTemplateFile);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern uint GetFinalPathNameByHandle(
+            IntPtr hFile,
+            StringBuilder lpszFilePath,
+            uint cchFilePath,
+            uint dwFlags);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool CloseHandle(IntPtr hObject);
+    }
+}
+'@ -ErrorAction Stop
+}
+
+function Get-CanonicalTransferPath {
+    # Resolve the deepest existing path through the Win32 file handle API.
+    # Unlike lexical normalization, this follows junctions and symbolic links.
+    # Non-existent destination children are appended to the canonical parent.
+    param([string]$Path)
+
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+        $probe = $fullPath
+        $suffix = [System.Collections.Generic.List[string]]::new()
+        while (-not (Test-Path -LiteralPath $probe)) {
+            $leaf = Split-Path -Path $probe -Leaf
+            $parent = Split-Path -Path $probe -Parent
+            if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $probe) { return $null }
+            [void]$suffix.Insert(0, $leaf)
+            $probe = $parent
+        }
+
+        $handle = [LaptopExport.NativeMethods]::CreateFile(
+            $probe,
+            0,
+            7,
+            [IntPtr]::Zero,
+            3,
+            0x02000000,
+            [IntPtr]::Zero)
+        if ($handle -eq [IntPtr](-1)) { return $null }
+        try {
+            $buffer = New-Object System.Text.StringBuilder 32768
+            $length = [LaptopExport.NativeMethods]::GetFinalPathNameByHandle($handle, $buffer, [uint32]$buffer.Capacity, 0)
+            if ($length -eq 0 -or $length -ge $buffer.Capacity) { return $null }
+            $canonical = $buffer.ToString()
+        }
+        finally {
+            [void][LaptopExport.NativeMethods]::CloseHandle($handle)
+        }
+
+        if ($canonical.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $canonical = '\\' + $canonical.Substring(8)
+        }
+        elseif ($canonical.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $canonical = $canonical.Substring(4)
+        }
+        foreach ($part in $suffix) {
+            $canonical = Join-Path -Path $canonical -ChildPath $part
+        }
+        return [System.IO.Path]::GetFullPath($canonical)
+    }
+    catch {
+        return $null
+    }
+}
+
 function Test-PathIsSameOrChild {
+    # Normalize both paths and compare with an explicit directory boundary;
+    # a simple string prefix would incorrectly treat C:\Data2 as a child of
+    # C:\Data.
     param(
         [string]$Path,
         [string]$ParentPath
     )
 
     try {
-        $destination = [System.IO.Path]::GetFullPath($Path).TrimEnd([char]92)
-        $parent = [System.IO.Path]::GetFullPath($ParentPath).TrimEnd([char]92)
+        $destination = Get-CanonicalTransferPath -Path $Path
+        $parent = Get-CanonicalTransferPath -Path $ParentPath
+        if ([string]::IsNullOrWhiteSpace($destination) -or [string]::IsNullOrWhiteSpace($parent)) {
+            return $true
+        }
+        $destination = $destination.TrimEnd([char]92)
+        $parent = $parent.TrimEnd([char]92)
         $parentPrefix = $parent + [System.IO.Path]::DirectorySeparatorChar
         return $destination.Equals($parent, [System.StringComparison]::OrdinalIgnoreCase) -or
                $destination.StartsWith($parentPrefix, [System.StringComparison]::OrdinalIgnoreCase)
     }
     catch {
-        return $false
+        return $true
     }
 }
 
 function Test-DestinationIsWithinSourceProfile {
+    # Source-profile destinations are blocked except for the dedicated AppData
+    # export area, which is an intentional supported fallback location.
     param([string]$Path)
 
     if (-not (Test-PathIsSameOrChild -Path $Path -ParentPath $Script:OriginalUserProfile)) { return $false }
@@ -1354,13 +1539,19 @@ function Test-DestinationIsWithinSourceProfile {
     $exportsRoot = Join-Path $appDataRoot 'Exports'
     # The caller treats $true as blocked. AppData itself and its dedicated
     # Exports child are the only source-profile destinations allowed.
-    $normalizedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd([char]92)
-    $normalizedAppData = [System.IO.Path]::GetFullPath($appDataRoot).TrimEnd([char]92)
+    $normalizedPath = Get-CanonicalTransferPath -Path $Path
+    $normalizedAppData = Get-CanonicalTransferPath -Path $appDataRoot
+    if ([string]::IsNullOrWhiteSpace($normalizedPath) -or [string]::IsNullOrWhiteSpace($normalizedAppData)) { return $true }
+    $normalizedPath = $normalizedPath.TrimEnd([char]92)
+    $normalizedAppData = $normalizedAppData.TrimEnd([char]92)
     if ($normalizedPath -eq $normalizedAppData -or (Test-PathIsSameOrChild -Path $Path -ParentPath $exportsRoot)) { return $false }
     return $true
 }
 
 function Show-NativeWindowsFolderPicker {
+    # Use the COM Common Item Dialog so the operator receives a filesystem-only
+    # folder picker.  The interop is loaded once and the selected path is
+    # released after conversion to a managed string.
     param([string]$InitialPath = "")
 
     # Use Windows' Common Item Dialog: the modern Explorer-style picker used
@@ -1620,6 +1811,9 @@ function Test-FolderInventoryAbortRequested {
 }
 
 function Get-FolderInventory {
+    # Enumerate folders while excluding reparse points to avoid traversing
+    # junctions into unrelated data.  The inventory is used for size prompts,
+    # not as the authoritative copy operation.
     param([string]$Path)
 
     if (-not $Script:FolderInventoryCache) { $Script:FolderInventoryCache = @{} }
@@ -1653,6 +1847,8 @@ function Get-FolderInventory {
 }
 
 function Get-FolderSizeBytes {
+    # Sum file lengths defensively.  Files can disappear during enumeration,
+    # therefore inaccessible items are skipped and the estimate is advisory.
     param([string]$Path)
     return (Get-FolderInventory -Path $Path).Bytes
 }
@@ -1665,18 +1861,54 @@ function Get-TransferPayloadEstimate {
 
     if ($Script:Config.Backup.UserData) {
         foreach ($folder in $Script:Config.UserFolders) {
-            if ($folder -ne 'Downloads') { $sizes.UserData += Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder) }
+            if ($folder -ne 'Downloads') { $sizes.UserData += Get-FolderSizeBytes (Resolve-ExportUserFolderPath $folder) }
         }
     }
-    if ($Script:Config.Backup.Downloads) { $sizes.Downloads = Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile 'Downloads') }
+    if ($Script:Config.Backup.Downloads) { $sizes.Downloads = Get-FolderSizeBytes (Resolve-ExportUserFolderPath 'Downloads') }
 
     if ($Script:Config.Backup.EntireUserProfile) {
         # The full-profile stage excludes standard user folders and AppData,
         # both of which are handled by their dedicated export stages.
         $sizes.EntireUserProfile = Get-FolderSizeBytes $Script:OriginalUserProfile
-        foreach ($folder in @($Script:Config.UserFolders + 'AppData')) {
-            $sizes.EntireUserProfile -= Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder)
+        foreach ($folder in $Script:Config.UserFolders) {
+            $sizes.EntireUserProfile -= Get-FolderSizeBytes (Resolve-ExportUserFolderPath $folder)
         }
+        $sizes.EntireUserProfile -= Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile 'AppData')
+        if ($sizes.EntireUserProfile -lt 0) { $sizes.EntireUserProfile = 0 }
+    }
+
+    if (-not $Script:Config.Backup.EntireUserProfile) {
+        $excludeFolders = @(
+            'AppData', 'Application Data', 'Local Settings', 'NetHood', 'PrintHood',
+            'Recent', 'SendTo', 'Start Menu', 'Templates', 'Cookies', 'Links',
+            'Saved Games', 'Searches', 'Contacts', '3D Objects',
+            'OneDrive', 'OneDrive - STO Building Group', 'STO Building Group',
+            'Dropbox', 'Google Drive', 'iCloudDrive', 'Box', 'Box Sync'
+        ) + $Script:Config.UserFolders
+        $includeAdditional = $Script:Config.TransferMode -ne 'Online' -or $Script:Config.Online.IncludeAdditionalUserFolders
+        if ($includeAdditional) {
+            foreach ($folder in @(Get-ChildItem -LiteralPath $Script:OriginalUserProfile -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -notin $excludeFolders -and
+                -not $_.Name.StartsWith('.') -and
+                -not $_.Name.StartsWith('OneDrive') -and
+                -not $_.Attributes.HasFlag([System.IO.FileAttributes]::Hidden) -and
+                -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)
+            })) {
+                $sizes.UserData += Get-FolderSizeBytes $folder.FullName
+            }
+        }
+        $looseFiles = @(Get-ChildItem -LiteralPath $Script:OriginalUserProfile -File -Force -ErrorAction SilentlyContinue | Where-Object {
+            -not $_.Name.StartsWith('.') -and
+            -not $_.Attributes.HasFlag([System.IO.FileAttributes]::Hidden) -and
+            -not $_.Attributes.HasFlag([System.IO.FileAttributes]::System) -and
+            $_.Extension -notin @('.ini', '.dat', '.log')
+        })
+        $sizes.UserData += [long]$(if ($looseFiles.Count) { ($looseFiles | Measure-Object -Property Length -Sum).Sum } else { 0 })
+    }
+
+    $ocsPath = 'C:\OCS Documents'
+    if ((Test-Path -LiteralPath $ocsPath) -and ($Script:Config.TransferMode -ne 'Online' -or $Script:Config.Online.IncludeOcsDocuments)) {
+        $sizes.UserData += Get-FolderSizeBytes $ocsPath
     }
 
     if ($Script:Config.Backup.AdditionalAppData) {
@@ -1716,24 +1948,13 @@ function Get-TransferPayloadEstimate {
 }
 
 function Update-AdvancedPayloadEstimate {
-    # Use the startup inventory cache to update only the advanced rows. This
-    # avoids re-walking the backup tree each time a menu toggle is pressed.
+    # Recalculate all display rows from the completed inventory cache. This is
+    # still a zero-I/O refresh, but it prevents toggles such as Chrome
+    # FullProfile or Downloads from leaving the final estimate stale.
     if ($null -eq $Script:StartupPayloadEstimate) { return }
-    $items = $Script:StartupPayloadEstimate.ItemBytes
-    $items.EntireUserProfile = [long]0
-    $items.AdditionalAppData = [long]0
-    if ($Script:Config.Backup.EntireUserProfile) {
-        $items.EntireUserProfile = Get-FolderSizeBytes $Script:OriginalUserProfile
-        foreach ($folder in @($Script:Config.UserFolders + 'AppData')) {
-            $items.EntireUserProfile -= Get-FolderSizeBytes (Join-Path $Script:OriginalUserProfile $folder)
-        }
-    }
-    if ($Script:Config.Backup.AdditionalAppData) {
-        foreach ($item in @($Script:SelectedAdditionalAppData)) {
-            if ($null -ne $item -and $null -ne $item.SizeBytes) { $items.AdditionalAppData += [long]$item.SizeBytes }
-        }
-    }
-    $Script:StartupPayloadEstimate.TotalBytes = [long](($items.Values | Measure-Object -Sum).Sum)
+    $estimate = Get-TransferSizeDisplayEstimate
+    $Script:StartupPayloadEstimate = $estimate
+    $Script:TransferSizeDisplayEstimate = $estimate
 }
 
 function Get-DestinationFreeSpaceBytes {
@@ -1804,6 +2025,8 @@ function Clear-ArchiveProgress {
 }
 
 function Publish-TransferArchive {
+    # Compress the completed transfer folder into a sibling ZIP and report
+    # progress.  The original folder remains available until the ZIP succeeds.
     param(
         [string]$ArchivePath,
         [string]$DestinationFolder,
@@ -1888,12 +2111,9 @@ function Publish-TransferArchive {
 }
 
 function New-TransferArchive {
+    # Select the archive implementation and destination naming convention for
+    # the current transfer mode, then return the created archive path.
     param([string]$TransferBase)
-
-    if ($Script:Config.TransferMode -ne "Online") {
-        Write-Log "Skipping ZIP archive for Local transfer" -Level Info
-        return $null
-    }
 
     $parentFolder = Split-Path -Path $TransferBase -Parent
     $archiveName = "$(Split-Path -Path $TransferBase -Leaf).zip"
@@ -1907,7 +2127,19 @@ function New-TransferArchive {
 
     try {
         Write-Host "`n  Creating ZIP archive..." -ForegroundColor Cyan
-        $files = @(Get-ChildItem -LiteralPath $TransferBase -Recurse -File -Force -ErrorAction Stop)
+        $allFiles = @(Get-ChildItem -LiteralPath $TransferBase -Recurse -File -Force -ErrorAction Stop)
+        $sensitivePasswordFiles = @($allFiles | Where-Object {
+            $relativePath = $_.FullName.Substring($TransferBase.Length).TrimStart([char]92)
+            $relativePath -match '^BrowserData[\\/]+Chrome[\\/]+PasswordExport[\\/]+.+\.csv$'
+        })
+        $files = @($allFiles | Where-Object {
+            $relativePath = $_.FullName.Substring($TransferBase.Length).TrimStart([char]92)
+            $relativePath -notmatch '^BrowserData[\\/]+Chrome[\\/]+PasswordExport[\\/]+.+\.csv$'
+        })
+        if ($sensitivePasswordFiles.Count -gt 0) {
+            Write-Log "Excluded $($sensitivePasswordFiles.Count) plaintext Chrome password CSV file(s) from ZIP archive" -Level Warning
+            Add-ManualTask -Task "Transfer Chrome passwords securely" -Reason "Plaintext Chrome password CSV files are intentionally excluded from the ZIP archive" -Instructions "Use Chrome's native password import workflow from the uncompressed transfer folder or securely transfer the CSV separately, then delete it after verification."
+        }
         $totalBytes = [long](($files | Measure-Object -Property Length -Sum).Sum)
         $startedAt = Get-Date
         $completedBytes = [long]0
@@ -1999,7 +2231,15 @@ function Resolve-TransferMode {
     } while ($true)
 }
 
+# User-data copying is intentionally separate from AppData copying.  These
+# stages use the source profile resolved by 03-core.ps1, preserve relative
+# paths below UserData, and report each folder independently so one locked file
+# does not hide the outcome of the other folders.
+
 function Copy-UserFolders {
+    # Apply online size gates before invoking robocopy, then record the result of
+    # each folder.  Downloads has a distinct cap because it is commonly large
+    # and is often less important to restore than profile settings.
     param(
         [string]$DestinationBase
     )
@@ -2036,6 +2276,11 @@ function Copy-UserFolders {
                     $folderGB = [math]::Round($folderBytes / 1GB, 2)
 
                     if ($folder -eq 'Downloads' -and $folderGB -gt $Script:Config.Online.DownloadsCapGB -and -not $Script:Config.Online.OverrideDownloadsCap) {
+                        if ($NonInteractive) {
+                            Add-Result -Category 'User Folders' -Item 'Downloads' -Status 'Skipped' -Details "Non-interactive mode: $folderGB GB exceeds the Online Downloads cap"
+                            Add-ManualTask -Task 'Review skipped Downloads folder' -Reason 'Non-interactive mode does not approve an over-cap Online Downloads transfer' -Instructions 'Run interactively to approve the transfer or enable the Downloads cap override.'
+                            continue
+                        }
                         $answer = Read-UserInput "  Downloads is $folderGB GB (Online cap: $($Script:Config.Online.DownloadsCapGB) GB). Copy it? (Y/N)"
                         if ($answer -notmatch '^[Yy]') {
                             Add-Result -Category 'User Folders' -Item 'Downloads' -Status 'Skipped' -Details "Online cap: $folderGB GB; operator chose skip"
@@ -2051,6 +2296,13 @@ function Copy-UserFolders {
 
                     # Any other large folder: ask the tech (skip / copy anyway).
                     if ($folderGB -gt $Script:Config.Online.LargeFolderPromptGB) {
+                        if ($NonInteractive) {
+                            Write-Log "$folder skipped in non-interactive Online mode because it exceeds the prompt threshold" -Level Warning
+                            Write-Status $folder "SKIP" "$folderGB GB, non-interactive mode"
+                            Add-Result -Category "User Folders" -Item $folder -Status "Skipped" -Details "Omitted in non-interactive mode: $folderGB GB exceeds the Online prompt threshold"
+                            Add-ManualTask -Task "Review skipped $folder folder" -Reason "Non-interactive Online export cannot approve a large-folder prompt" -Instructions "Run interactively to approve the transfer if this folder is required."
+                            continue
+                        }
                         Write-Host ""
                         Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
                         Write-Host "$folder is $folderGB GB (over the $($Script:Config.Online.LargeFolderPromptGB) GB online threshold)." -ForegroundColor White
@@ -2146,6 +2398,11 @@ function Copy-UserFolders {
                 $folderBytes = Get-FolderSizeBytes -Path $folder.FullName
                 $folderGB = [math]::Round($folderBytes / 1GB, 2)
                 if ($folderGB -gt $Script:Config.Online.AdditionalFolderCapGB) {
+                    if ($NonInteractive) {
+                        Add-Result -Category "Additional Folders" -Item $folder.Name -Status "Skipped" -Details "Non-interactive mode: $folderGB GB exceeds the Online additional-folder cap"
+                        Add-ManualTask -Task "Review skipped additional folder $($folder.Name)" -Reason "Non-interactive mode does not approve an over-cap additional-folder transfer" -Instructions "Run interactively to approve the transfer if this folder is required."
+                        continue
+                    }
                     $answer = Read-UserInput "  Additional folder '$($folder.Name)' is $folderGB GB (cap: $($Script:Config.Online.AdditionalFolderCapGB) GB). Copy it? (Y/N)"
                     if ($answer -notmatch '^[Yy]') {
                         Add-Result -Category "Additional Folders" -Item $folder.Name -Status "Skipped" -Details "Online size cap: $folderGB GB; operator chose skip"
@@ -2280,6 +2537,11 @@ function Copy-UserFolders {
             $ocsBytes = Get-FolderSizeBytes -Path $ocsPath
             $ocsGB = [math]::Round($ocsBytes / 1GB, 2)
             if ($ocsGB -gt $Script:Config.Online.AdditionalFolderCapGB) {
+                if ($NonInteractive) {
+                    Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Skipped" -Details "Non-interactive mode: $ocsGB GB exceeds the Online additional-folder cap"
+                    Add-ManualTask -Task "Review skipped OCS Documents" -Reason "Non-interactive mode does not approve an over-cap OCS Documents transfer" -Instructions "Run interactively to approve the transfer if this folder is required."
+                    return
+                }
                 $answer = Read-UserInput "  OCS Documents is $ocsGB GB (cap: $($Script:Config.Online.AdditionalFolderCapGB) GB). Copy it? (Y/N)"
                 if ($answer -notmatch '^[Yy]') {
                     Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Skipped" -Details "Online size cap: $ocsGB GB; operator chose skip"
@@ -2318,6 +2580,9 @@ function Copy-UserFolders {
 }
 
 function Copy-AppData {
+    # Copy only known application payloads and the optional candidate inventory.
+    # AppData is handled by explicit mappings so caches and machine-specific
+    # state are not blindly moved into the replacement profile.
     param(
         [string]$DestinationBase
     )
@@ -2544,7 +2809,16 @@ Right-click folder > 'Pin to Quick access'
 # SETTINGS CAPTURE
 # ============================================================================
 
+# This module captures settings as portable evidence or importable artifacts.
+# Registry exports, text/JSON snapshots, shortcut metadata, application lists,
+# and printer packages have different portability and privilege rules; each
+# function keeps those rules explicit instead of treating the entire profile as
+# a raw filesystem copy.
+
 function Get-SystemSettings {
+    # Collect power, personalization, network-drive, desktop, taskbar, and
+    # default-app state into package files.  Capture failures are recorded as
+    # manual tasks because a missing setting should be visible at handoff.
     param(
         [string]$DestinationBase
     )
@@ -3153,6 +3427,8 @@ function Backup-DefaultApps {
 }
 
 function Get-InstalledPrograms {
+    # Read the machine's uninstall inventories from both registry views and
+    # normalize them into a deduplicated list for comparison during import.
     param(
         [string]$DestinationBase
     )
@@ -3423,6 +3699,9 @@ function Copy-SelectedAdditionalAppData {
 }
 
 function Backup-Printers {
+    # Capture printers using the least-privileged supported path first.  PrintBRM
+    # is an optional elevated fallback because it can include drivers and local
+    # queues that ordinary Add-Printer connections cannot recreate.
     param(
         [string]$DestinationBase
     )
@@ -3617,7 +3896,14 @@ exit $(if ($failed) { 1 } else { 0 })
 # BROWSER DATA
 # ============================================================================
 
+# Browser handling separates portable data (bookmarks and an operator-approved
+# password CSV) from protected profile state.  Windows user-protection keys are
+# tied to the original account, so the module never pretends that copying a raw
+# database is equivalent to restoring credentials on another computer.
+
 function Convert-ChromeBookmarksToHtml {
+    # Convert Chromium's JSON bookmark tree into Netscape bookmark HTML, which
+    # Chrome, Edge, and Firefox can import.  Names and URLs are HTML-escaped.
     param(
         [string]$JsonPath,
         [string]$HtmlPath
@@ -3712,6 +3998,9 @@ function Get-ChromeProfileDirectories {
 }
 
 function Request-BrowserClose {
+    # Browser databases may be locked.  Ask the operator to close the relevant
+    # process and give them a chance to retry before falling back to a manual
+    # task rather than copying an inconsistent live database.
     param(
         [string]$ProcessName,
         [string]$DisplayName
@@ -3839,6 +4128,9 @@ On the old laptop, while signed in as the original Windows user:
 }
 
 function Copy-BrowserData {
+    # Orchestrate per-browser exports and preserve independent results.  A
+    # failure in one browser must not suppress OneDrive processing or the other
+    # browser stages.
     param(
         [string]$DestinationBase
     )
@@ -4052,7 +4344,14 @@ function Copy-BrowserData {
 # ONEDRIVE
 # ============================================================================
 
+# OneDrive work is performed through filesystem state and documented shell
+# commands.  Online mode deliberately avoids force-hydrating every cloud file;
+# local mode may request hydration when the operator has chosen it.
+
 function Set-OneDriveLocalSync {
+    # Apply the selected hydration policy to the user's synchronized folders.
+    # Errors are warnings because sign-in and tenant policy can legitimately
+    # prevent a command from changing cloud-file availability.
     Write-Log "Checking OneDrive status..." -Level Info
 
     # Online mode: don't force-hydrate OneDrive. Pinning every file would
@@ -4138,7 +4437,20 @@ Files have been marked for offline availability but may still be downloading.
 # IMPORT SCRIPT GENERATOR
 # ============================================================================
 
+# This module has two execution layers.  New-ImportScript emits the normal
+# user-context importer as a here-string, while New-AdminImportScript emits a
+# separate elevated helper.  Code inside those strings executes later on the
+# replacement computer and therefore cannot depend on the export process's
+# variables or functions.
+#
+# The generated importer restores user data first, then settings and browsers,
+# updates the handoff report, and invokes the helper last.  That ordering keeps
+# privileged work narrowly limited to operations Windows requires to elevate.
+
 function New-ImportScript {
+    # Materialize the import script by expanding export-time settings into a
+    # self-contained template.  Runtime checks still verify source paths before
+    # copying because the package may be moved between computers.
     param(
         [string]$DestinationBase,
         [hashtable]$Settings
@@ -4353,6 +4665,8 @@ function Read-UserInput {
 }
 
 function Invoke-OnlineChromePasswordImport {
+    # Guide the operator through Chrome's supported CSV import flow.  The CSV is
+    # sensitive plaintext, so this code never attempts to decrypt browser data.
     $passwordExportPath = Join-Path $browserDataPath 'Chrome\PasswordExport'
     $csvs = @(Get-ChildItem -LiteralPath $passwordExportPath -Filter '*.csv' -File -Force -ErrorAction SilentlyContinue)
     if (-not $csvs.Count) { return }
@@ -4395,6 +4709,8 @@ function Add-Result {
 }
 
 function Test-RobocopySuccess {
+    # Robocopy codes below 8 represent success or acceptable differences; 8+
+    # indicates that one or more files failed to copy.
     param([int]$ExitCode, [string]$LogPath)
     
     # Robocopy exit codes: 0-7 = success levels, 8+ = errors
@@ -4448,6 +4764,8 @@ function Format-RemainingTime {
 }
 
 function Copy-WithProgress {
+    # Import-side copy wrapper that converts robocopy output into the same
+    # structured result vocabulary used by the export phase.
     param(
         [string]$Source,
         [string]$Destination,
@@ -4456,7 +4774,8 @@ function Copy-WithProgress {
     )
     
     # Get source size and file count
-    $sourceFiles = Get-ChildItem $Source -Recurse -File -Force -ErrorAction SilentlyContinue
+    $sourceFiles = Get-ChildItem -LiteralPath $Source -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) }
     $totalFiles = ($sourceFiles | Measure-Object).Count
     $totalSize = ($sourceFiles | Measure-Object -Property Length -Sum).Sum
     
@@ -4484,7 +4803,7 @@ function Copy-WithProgress {
         param($src, $dst, $log)
         $pinfo = New-Object System.Diagnostics.ProcessStartInfo
         $pinfo.FileName = "robocopy.exe"
-        $pinfo.Arguments = "`"$src`" `"$dst`" /E /Z /R:2 /W:3 /MT:8 /NP /LOG:`"$log`""
+        $pinfo.Arguments = "`"$src`" `"$dst`" /E /XJ /Z /R:2 /W:3 /MT:8 /NP /LOG:`"$log`""
         $pinfo.RedirectStandardOutput = $true
         $pinfo.RedirectStandardError = $true
         $pinfo.UseShellExecute = $false
@@ -4532,8 +4851,9 @@ function Copy-WithProgress {
     $exitCode = Receive-Job -Job $job -ErrorAction SilentlyContinue
     Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
     
-    # If exit code is null, assume success
-    if ($null -eq $exitCode) { $exitCode = 0 }
+    # A missing exit code means the worker failed or Robocopy did not start;
+    # never convert that failure into a successful import.
+    if ($null -eq $exitCode) { $exitCode = 16 }
     
     # Final stats
     $destFiles = Get-ChildItem $Destination -Recurse -File -Force -ErrorAction SilentlyContinue
@@ -4549,10 +4869,12 @@ function Copy-WithProgress {
     Write-Host $progressBar -ForegroundColor Green -NoNewline
     Write-Host " 100%  $(Format-FileSize $copiedSize)  in $([math]::Round($elapsed.TotalSeconds, 1))s" -ForegroundColor DarkGray
     
-    $status = if ($exitCode -lt 8) { "Success" } 
-              elseif ($exitCode -in @(8, 9) -and $copiedFiles -gt 0) { "Success" }
-              elseif ($exitCode -in @(8, 9)) { "Skipped" }
-              else { "Warning" }
+    $copySucceeded = $exitCode -lt 8
+    if (-not $copySucceeded) {
+        $copiedFiles = 0
+        $copiedSize = [long]0
+    }
+    $status = if ($copySucceeded) { "Success" } else { "Warning" }
     
     return @{
         ExitCode = $exitCode
@@ -4680,6 +5002,8 @@ foreach ($folder in $folders) {
 # ============================================================================
 
 function Get-OneDriveDesktopPaths {
+    # Return redirected, local, and Public Desktop roots used to find duplicate
+    # shortcuts after restoring a profile into OneDrive.
     $paths = @()
     foreach ($root in @($env:OneDriveCommercial, $env:OneDrive)) {
         if ($root) {
@@ -4693,6 +5017,8 @@ function Get-OneDriveDesktopPaths {
 function Get-ShortcutHash { param([string]$Path) try { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash } catch { return $null } }
 
 function Send-ShortcutToRecycleBin {
+    # Recycle only a confirmed duplicate shortcut, preserving a recovery path
+    # and avoiding permanent deletion of user content.
     param([string]$Path)
     Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction SilentlyContinue
     [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($Path, [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
@@ -4712,6 +5038,8 @@ function Remove-MicrosoftStoreTaskbarPin {
 }
 
 function Initialize-DesktopRestoreInterop {
+    # Load the COM interop used for shell/taskbar operations once; repeated
+    # initialization is safe when the generated script is rerun.
     # Use Explorer's supported IFolderView positioning API. Registry ItemPos
     # values are retained only as a legacy-package fallback.
     if ('StoDesktopRestoreInterop' -as [type]) { return }
@@ -5194,7 +5522,11 @@ if (Test-Path $qaSource) {
                 
                 # Close all Explorer windows (but not the shell itself)
                 $explorerWindows = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -ne "" }
-                # Note: We don't want to kill explorer.exe completely as that's the shell
+                foreach ($explorerWindow in @($explorerWindows)) {
+                    try { [void]$explorerWindow.CloseMainWindow() } catch { }
+                }
+                Start-Sleep -Milliseconds 750
+                # Do not kill explorer.exe before the copy: it owns the shell.
                 
                 # Try to copy the file
                 $copySuccess = $false
@@ -5367,6 +5699,8 @@ elseif ((Test-Path $powerScheme) -and $hasIndividualPowerSettings) {
 # intentionally attempted even without elevation.  Settings rejected by a
 # policy or unsupported by the new hardware are reported individually.
 function Set-ImportedPowerOverlay {
+    # Apply captured AC/DC values independently to the existing managed plan so
+    # a policy rejection of one setting does not hide the others.
     param([string]$OverlayGuid)
     if ([string]::IsNullOrWhiteSpace($OverlayGuid) -or $OverlayGuid -notmatch '^[0-9a-fA-F-]{36}$') { return $false }
     try {
@@ -5526,6 +5860,8 @@ if ($false -and -not $powerPlanRestored -and $settingsData -and $settingsData.Li
 
 # Mapped network drives
 function Get-CurrentNetworkDriveMappings {
+    # Snapshot current drive mappings for comparison without attempting to
+    # recreate credentials or connections that require user approval.
     $mappings = @()
     try {
         $mappings += @(Get-PSDrive -PSProvider FileSystem -ErrorAction Stop |
@@ -5545,6 +5881,7 @@ function Get-CurrentNetworkDriveMappings {
 }
 
 function Write-NetworkDriveComparison {
+    # Render the captured/current mapping difference as an import handoff item.
     param([object[]]$ExpectedDrives)
 
     $currentDrives = @(Get-CurrentNetworkDriveMappings)
@@ -5612,9 +5949,18 @@ if ($settingsData -and $settingsData.MappedDrives -and (@($settingsData.MappedDr
                 }
                 else {
                     try {
-                        net use "${driveLetter}:" $drivePath /persistent:yes 2>&1 | Out-Null
-                        Write-Log "  ${driveLetter}: -> $drivePath" -Level "Success"
-                        Add-Result -Category "Network Drives" -Item "${driveLetter}:" -Status "Success" -Details $drivePath
+                        $netUseOutput = @(net use "${driveLetter}:" $drivePath /persistent:yes 2>&1)
+                        $netUseExitCode = $LASTEXITCODE
+                        if ($netUseExitCode -eq 0) {
+                            Write-Log "  ${driveLetter}: -> $drivePath" -Level "Success"
+                            Add-Result -Category "Network Drives" -Item "${driveLetter}:" -Status "Success" -Details $drivePath
+                        }
+                        else {
+                            $netUseDetail = ($netUseOutput -join ' ').Trim()
+                            if ([string]::IsNullOrWhiteSpace($netUseDetail)) { $netUseDetail = "net use exit code $netUseExitCode" }
+                            Write-Log "  ${driveLetter}: -> $drivePath failed: $netUseDetail" -Level "Warning"
+                            Add-Result -Category "Network Drives" -Item "${driveLetter}:" -Status "Warning" -Details $netUseDetail
+                        }
                     }
                     catch {
                         Write-Log "  ${driveLetter}: -> $drivePath (failed - may need credentials)" -Level "Warning"
@@ -5951,6 +6297,8 @@ Write-Host ""
 $browserDataPath = Join-Path $scriptPath "BrowserData"
 
 function Restore-ChromiumProfileBookmarks {
+    # Restore portable bookmark HTML into the active profile discovered at
+    # runtime; usernames and profile directories may differ on the new machine.
     param(
         [string]$BrowserName,
         [string]$ProcessName,
@@ -6031,6 +6379,8 @@ function Restore-ChromiumProfileBookmarks {
 }
 
 function Restore-ChromeProfileArchive {
+    # Restore an optional raw archive for reference/recovery, separate from
+    # bookmark import because protected credentials remain account-bound.
     param([string]$PackageUserDataPath, [string]$TargetUserDataPath)
     if (-not (Test-Path -LiteralPath $PackageUserDataPath)) { return }
     if ($TestMode) {
@@ -6049,12 +6399,14 @@ function Restore-ChromeProfileArchive {
         return
     }
     $backup = Join-Path $env:LOCALAPPDATA "LaptopTransferBrowserBackups\Chrome\$(Get-Date -Format 'yyyyMMdd_HHmmss')\User Data"
+    $backupCreated = $false
     try {
         $targetParent = Split-Path -Parent $TargetUserDataPath
         New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
         if (Test-Path -LiteralPath $TargetUserDataPath) {
             New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
             Move-Item -LiteralPath $TargetUserDataPath -Destination $backup -ErrorAction Stop
+            $backupCreated = $true
         }
         $result = Copy-WithProgress -Source $PackageUserDataPath -Destination $TargetUserDataPath -FolderName 'Chrome profile (all profiles)' -LogPath (Join-Path $logsPath 'import_chrome_profile.log')
         if ($result.Status -ne 'Success') { throw "Profile copy did not complete successfully (robocopy exit $($result.ExitCode))" }
@@ -6062,8 +6414,22 @@ function Restore-ChromeProfileArchive {
         Write-Host '    Chrome extensions, settings, history, and bookmarks were restored. Passwords and cookies may require Chrome sign-in.' -ForegroundColor Gray
     }
     catch {
-        Add-Result -Category 'Browser' -Item 'Chrome Profile' -Status 'Warning' -Details $_.Exception.Message
-        Write-Log "Chrome profile restore failed: $($_.Exception.Message)" -Level Warning
+        $failureDetail = $_.Exception.Message
+        if ($backupCreated -and (Test-Path -LiteralPath $backup)) {
+            try {
+                if (Test-Path -LiteralPath $TargetUserDataPath) {
+                    $failedTarget = "$TargetUserDataPath.failed_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                    Move-Item -LiteralPath $TargetUserDataPath -Destination $failedTarget -ErrorAction Stop
+                }
+                Move-Item -LiteralPath $backup -Destination $TargetUserDataPath -ErrorAction Stop
+                $failureDetail = "$failureDetail. Original Chrome profile restored from backup."
+            }
+            catch {
+                $failureDetail = "$failureDetail. Automatic rollback failed: $($_.Exception.Message). Backup retained at $backup."
+            }
+        }
+        Add-Result -Category 'Browser' -Item 'Chrome Profile' -Status 'Warning' -Details $failureDetail
+        Write-Log "Chrome profile restore failed: $failureDetail" -Level Warning
     }
 }
 
@@ -6107,6 +6473,8 @@ if (Test-Path -LiteralPath $chromeProfileArchive) {
 # protections are intentional. Instead, guide the user through Chrome's own
 # CSV import and offer to remove the sensitive export after confirmation.
 function Invoke-ChromePasswordImport {
+    # Execute the operator-mediated password CSV workflow and record its outcome
+    # instead of silently treating a skipped import as success.
 if ($Script:ChromePasswordImportHandled) { return }
 $chromePasswordExportPath = Join-Path $browserDataPath "Chrome\PasswordExport"
 $chromePasswordCsvs = @(Get-ChildItem -LiteralPath $chromePasswordExportPath -Filter "*.csv" -File -Force -ErrorAction SilentlyContinue)
@@ -6154,6 +6522,8 @@ if ($chromePasswordCsvs.Count -gt 0) {
 # OneDrive Files On-Demand: after the user has signed in, pin every synced
 # folder so Windows keeps the content available on this replacement device.
 function Enable-OneDriveAlwaysOnDevice {
+    # Request local availability for synced files after sign-in.  Tenant policy
+    # can reject this request, so failures remain visible but non-fatal.
     $oneDriveFolders = @($env:OneDriveCommercial, $env:OneDrive) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Sort-Object -Unique
     if ($TestMode) {
         Write-Log "OneDrive - Would enable 'Always keep on this device' after sign-in" -Level "Info"
@@ -6168,7 +6538,7 @@ function Enable-OneDriveAlwaysOnDevice {
     }
     foreach ($oneDriveFolder in $oneDriveFolders) {
         try {
-            $process = Start-Process -FilePath "attrib.exe" -ArgumentList "+P", "-U", "/S", "/D", "`"$oneDriveFolder\*`"" -Wait -PassThru -NoNewWindow -ErrorAction Stop
+            $process = Start-Process -FilePath "attrib.exe" -ArgumentList "+P", "-U", "`"$oneDriveFolder\*`"", "/S", "/D" -Wait -PassThru -NoNewWindow -ErrorAction Stop
             if ($process.ExitCode -ne 0) { throw "attrib.exe exited with code $($process.ExitCode)" }
             Write-Log "OneDrive files pinned for this device: $oneDriveFolder" -Level "Success"
             Add-Result -Category "OneDrive" -Item "Always on this device" -Status "Success" -Details $oneDriveFolder
@@ -6206,6 +6576,8 @@ if (Test-Path -LiteralPath $edgeProfileArchive) {
 
 # Firefox profile data
 function Remove-FirefoxProfileLocks {
+    # Remove only transient Firefox lock files before copying a profile, after
+    # the caller has ensured Firefox is not actively changing its databases.
     param([string]$FirefoxRoot)
 
     # A lock copied from an interrupted/forced-close session can make Firefox
@@ -6279,10 +6651,12 @@ else {
 
                 $destination = Join-Path $target.Parent "Firefox"
                 $backup = Join-Path $target.Parent "Firefox_Backup_$backupStamp"
+                $backupCreated = $false
                 try {
                     if (-not (Test-Path $target.Parent)) { New-Item -ItemType Directory -Path $target.Parent -Force | Out-Null }
                     if (Test-Path $destination) {
                         Move-Item -LiteralPath $destination -Destination $backup -ErrorAction Stop
+                        $backupCreated = $true
                         Write-Log "Existing Firefox $($target.Name) data backed up to $backup" -Level "Info"
                     }
 
@@ -6291,6 +6665,7 @@ else {
                                                -Destination $destination `
                                                -FolderName "Firefox $($target.Name) data" `
                                                -LogPath $logPath
+                    if ($result.Status -ne "Success") { throw "Firefox $($target.Name) copy did not complete successfully (robocopy exit $($result.ExitCode))" }
                     if ($target.Name -eq "Roaming" -and $result.FilesCopied -gt 0) {
                         Remove-FirefoxProfileLocks -FirefoxRoot $destination
                     }
@@ -6304,8 +6679,22 @@ else {
                     }
                 }
                 catch {
-                    Write-Log "Firefox $($target.Name) data restore failed: $_" -Level "Warning"
-                    Add-Result -Category "Browser" -Item "Firefox $($target.Name) Data" -Status "Warning" -Details $_.Exception.Message
+                    $failureDetail = $_.Exception.Message
+                    if ($backupCreated -and (Test-Path -LiteralPath $backup)) {
+                        try {
+                            if (Test-Path -LiteralPath $destination) {
+                                $failedTarget = "$destination.failed_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                                Move-Item -LiteralPath $destination -Destination $failedTarget -ErrorAction Stop
+                            }
+                            Move-Item -LiteralPath $backup -Destination $destination -ErrorAction Stop
+                            $failureDetail = "$failureDetail. Original Firefox $($target.Name) data restored from backup."
+                        }
+                        catch {
+                            $failureDetail = "$failureDetail. Automatic rollback failed: $($_.Exception.Message). Backup retained at $backup."
+                        }
+                    }
+                    Write-Log "Firefox $($target.Name) data restore failed: $failureDetail" -Level "Warning"
+                    Add-Result -Category "Browser" -Item "Firefox $($target.Name) Data" -Status "Warning" -Details $failureDetail
                 }
             }
 
@@ -6390,6 +6779,8 @@ function Set-TransferReportMarkedContent {
 }
 
 function Update-TransferReportFromImport {
+    # Merge import outcomes into the export report through stable HTML markers,
+    # keeping a partial import auditable instead of overwriting its history.
     param(
         [object[]]$MissingPrograms = @(),
         [object[]]$AppDataCandidates = @(),
@@ -6408,7 +6799,7 @@ function Update-TransferReportFromImport {
                 $name = & $encode ([string]$_.DisplayName)
                 $publisher = & $encode ([string]$_.Publisher)
                 $version = & $encode ([string]$_.DisplayVersion)
-                "<li><strong>$name</strong><small>$publisher Â· old version: $version</small></li>"
+                "<li><strong>$name</strong><small>$publisher · old version: $version</small></li>"
             }) -join "`n"
             $candidateItems = @($AppDataCandidates | ForEach-Object { "<li><strong>$(& $encode ([string]$_.RelativePath))</strong><small>$(& $encode ([string]$_.Area)) - $(& $encode ([string]$_.Association))</small></li>" }) -join "`n"
             $candidatePanel = if ($candidateItems) { "<details class='section'><summary>AppData migration review<span>$($AppDataCandidates.Count) folder(s) to review; none are copied automatically</span></summary><div class='section-content'><ul class='app-list'>$candidateItems</ul></div></details>" } else { '' }
@@ -6440,21 +6831,22 @@ function Update-TransferReportFromImport {
 }
 
 function Update-TransferReportImportOutcomes {
+    # Replace pending application and AppData review sections with final
+    # comparison results collected on the replacement computer.
     # The export report remains the handoff document. Surface only import
     # outcomes that require a technician's attention, ahead of its export log.
     $reportPath = Join-Path $scriptPath 'TransferReport.html'
     if (-not (Test-Path -LiteralPath $reportPath)) { return }
     try {
         $attention = @($Script:Results.Actions | Where-Object {
-            $_.Category -in @('Settings', 'Taskbar Layout', 'Desktop Layout') -and
             $_.Status -in @('Warning', 'Error', 'Skipped', 'Manual', 'Pending')
         })
         $encode = { param($Value) [Security.SecurityElement]::Escape([string]$Value) }
         $content = if ($attention.Count) {
             $items = @($attention | ForEach-Object {
-                "<li><strong>$(& $encode ([string]$_.Item))</strong><small>$(& $encode ([string]$_.Status)) Â· $(& $encode ([string]$_.Details))</small></li>"
+                "<li><strong>$(& $encode ([string]$_.Item))</strong><small>$(& $encode ([string]$_.Status)) · $(& $encode ([string]$_.Details))</small></li>"
             }) -join "`n"
-            "<section class='section'><div class='section-header'>Import actions needing attention<span class='section-subtitle'>Settings or layout items Windows could not apply</span></div><div class='section-content'><div class='app-summary ready'><ul class='app-list'>$items</ul></div></div></section>"
+            "<section class='section'><div class='section-header'>Import actions needing attention<span class='section-subtitle'>Import items Windows could not apply automatically</span></div><div class='section-content'><div class='app-summary ready'><ul class='app-list'>$items</ul></div></div></section>"
         }
         else { '' }
         $reportHtml = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8
@@ -6501,8 +6893,10 @@ else {
         if ($reviewAppDataCandidates -and (Test-Path -LiteralPath $candidatePath)) {
             $missingWords = @($missingPrograms | ForEach-Object { ConvertTo-ProgramMatchPart $_.DisplayName })
             $candidateItems = @(Get-Content -LiteralPath $candidatePath -Raw | ConvertFrom-Json | ForEach-Object {
-                $association = if ($_.AssociationHint -and ($missingWords | Where-Object { $_ -like "*$($_.AssociationHint)*" })) { 'Potentially associated with missing app' } elseif ($_.CoveredByCuratedBackup) { 'Already covered by curated backup' } else { 'Review candidate' }
-                [PSCustomObject]@{ Area = $_.Area; RelativePath = $_.RelativePath; SizeBytes = $_.SizeBytes; Association = $association }
+                $candidate = $_
+                $associationHint = ConvertTo-ProgramMatchPart $candidate.AssociationHint
+                $association = if ($associationHint -and ($missingWords | Where-Object { $_ -like "*$associationHint*" })) { 'Potentially associated with missing app' } elseif ($candidate.CoveredByCuratedBackup) { 'Already covered by curated backup' } else { 'Review candidate' }
+                [PSCustomObject]@{ Area = $candidate.Area; RelativePath = $candidate.RelativePath; SizeBytes = $candidate.SizeBytes; Association = $association }
             })
         }
         elseif ($reviewAppDataCandidates) { Write-Log 'AppData candidate review skipped: source inventory is missing.' -Level 'Warning' }
@@ -6607,6 +7001,8 @@ function Write-AdminHelperAudit {
 }
 
 function Invoke-StandardSystemRestoreFallback {
+    # Attempt system restoration that is allowed in the signed-in context and
+    # turn policy/hardware rejections into explicit result entries.
     param([string]$HelperPath)
 
     # A complete .pow file is written only by an elevated export. A PrintBRM
@@ -6686,6 +7082,8 @@ else {
 if (-not $TestMode) { Update-TransferReportImportOutcomes }
 
 function Resolve-PostImportLaunchTarget {
+    # Resolve configured alternatives by checking desktop shortcuts first and
+    # executable lookup second, keeping launch behavior data-driven.
     param([object]$Alternative, [object]$LaunchConfig)
     foreach ($folder in @($LaunchConfig.DesktopFolders)) {
         if ([string]::IsNullOrWhiteSpace([string]$folder)) { continue }
@@ -6708,6 +7106,8 @@ function Resolve-PostImportLaunchTarget {
 }
 
 function Start-PostImportHandoff {
+    # Open the final report and configured handoff applications only after all
+    # restoration work is complete; launch failures remain non-fatal.
     $reportPath = Join-Path $scriptPath 'TransferReport.html'
     try {
         if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) { throw 'TransferReport.html is missing from this package.' }
@@ -6795,6 +7195,8 @@ if (-not $TestMode) {
 }
 
 function New-AdminImportScript {
+    # Emit the isolated administrator helper with a narrow input surface and
+    # audit log.  User-profile restoration intentionally stays outside it.
     param([string]$DestinationBase)
 
     # This helper deliberately has no user-profile, HKCU, drive-mapping, or
@@ -6916,7 +7318,13 @@ exit $(if($result.Errors.Count){1}else{0})
 # HTML REPORT GENERATOR
 # ============================================================================
 
+# Report generation is deliberately last-mile: it reads the structured result
+# ledger and substitutes escaped values into a static HTML template.  It does
+# not infer success from console text or filesystem guesses.
+
 function Get-TransferReportTemplate {
+    # Cache the template after the first read because report generation may be
+    # retried and the template is immutable for the lifetime of this process.
     if ($Script:TransferReportTemplate) { return $Script:TransferReportTemplate }
     $templatePath = Join-Path $PSScriptRoot 'TransferReport.template.html'
     if (-not (Test-Path -LiteralPath $templatePath)) { throw "Transfer report template is missing: $templatePath" }
@@ -6924,6 +7332,9 @@ function Get-TransferReportTemplate {
 }
 
 function New-TransferReport {
+    # Freeze timing, classify actions, render manual handoff tasks, and write a
+    # self-contained report.  HTML encoding is applied at every dynamic field
+    # boundary so paths and user-controlled names cannot alter the markup.
     param([string]$DestinationBase)
 
     $Script:Results.EndTime = Get-Date
@@ -6988,7 +7399,14 @@ function New-TransferReport {
     Write-Log 'Transfer report generated' -Level Success
     return $reportPath
 }
+# Main coordinates the ordered export lifecycle.  The numbered build order
+# supplies its dependencies; this file should mostly orchestrate and should
+# not duplicate copy, logging, or formatting implementations.
+
 function New-QuickImportBatch {
+    # Emit a tiny operator-facing launcher.  It intentionally invokes the
+    # user-context import first; that generated script owns any narrowly scoped
+    # administrator helper needed after user-scoped restoration.
     param(
         [string]$DestinationBase
     )
@@ -7033,6 +7451,10 @@ pause >nul
 # ============================================================================
 
 function Start-LaptopExport {
+    # Drive the complete state machine: resolve mode and settings, choose a
+    # destination, execute enabled stages, generate the import/report artifacts,
+    # and optionally create the online ZIP.  Each stage records its own result,
+    # allowing the final report to distinguish success, omission, and failure.
     Clear-StoScreen
     Write-StoLogo
     Write-Banner -Title 'Laptop Transfer  -  Export Tool' -Subtitle "v$($Script:Config.Version)"
@@ -7091,12 +7513,23 @@ function Start-LaptopExport {
 
     if (-not (Start-ElevatedExport)) { return }
 
-    # Online exports use the Windows folder picker. Local exports retain the
-    # external/secondary-drive selector and do not open the picker.
-    if ($Script:Config.TransferMode -eq "Local") {
+    # Non-interactive runs must receive an explicit destination. Never fall
+    # back to a drive selector or Windows folder picker in automation.
+    if ($NonInteractive) {
+        if ([string]::IsNullOrWhiteSpace($DestinationPath)) {
+            throw "Non-interactive export requires -DestinationPath. No files were copied."
+        }
+        $destinationFolder = $DestinationPath
+        if (Test-DestinationIsWithinSourceProfile -Path $destinationFolder) {
+            throw "Non-interactive export destination is inside the source profile. No files were copied."
+        }
+    }
+    elseif ($Script:Config.TransferMode -eq "Local") {
+        # Local interactive mode retains the external/secondary-drive selector.
         $destinationFolder = Select-TargetDrive
     }
     else {
+        # Online interactive mode uses the Windows folder picker.
         $destinationFolder = Select-TargetDestination
     }
     if (-not $destinationFolder) {
@@ -7131,18 +7564,11 @@ function Start-LaptopExport {
     # and (b) show the operator the size up front. In online mode this reflects
     # the selected transfer set.
     Write-Section "Estimating transfer size"
-    if ($null -ne $Script:StartupPayloadEstimate) {
-        $payloadEstimate = $Script:StartupPayloadEstimate
-    }
-    elseif ($Script:TransferSizeEstimateJob) {
-        # Show-BackupOverview does not allow Start until this job completes,
-        # but retain a safe wait for alternate/noninteractive callers.
-        Write-Host '  Finalizing background folder-size calculation...' -ForegroundColor Cyan
-        Wait-Job -Job $Script:TransferSizeEstimateJob | Out-Null
-        [void](Receive-TransferSizeEstimateJob)
-        $payloadEstimate = $Script:StartupPayloadEstimate
-    }
-    else { $payloadEstimate = Get-TransferPayloadEstimate }
+    # The background estimate is for responsive UI only. Recalculate the
+    # authoritative preflight estimate here so changed toggles, additional
+    # folders, loose profile files, and OCS Documents are included.
+    Write-Host '  Calculating final payload estimate...' -ForegroundColor Cyan
+    $payloadEstimate = Get-TransferPayloadEstimate
     $estBytes = $payloadEstimate.TotalBytes
     Write-KeyValue "Estimated size" (Format-FileSize $estBytes)
     if ($Script:Config.TransferMode -eq "Online") {

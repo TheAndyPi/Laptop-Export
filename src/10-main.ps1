@@ -112,12 +112,23 @@ function Start-LaptopExport {
 
     if (-not (Start-ElevatedExport)) { return }
 
-    # Online exports use the Windows folder picker. Local exports retain the
-    # external/secondary-drive selector and do not open the picker.
-    if ($Script:Config.TransferMode -eq "Local") {
+    # Non-interactive runs must receive an explicit destination. Never fall
+    # back to a drive selector or Windows folder picker in automation.
+    if ($NonInteractive) {
+        if ([string]::IsNullOrWhiteSpace($DestinationPath)) {
+            throw "Non-interactive export requires -DestinationPath. No files were copied."
+        }
+        $destinationFolder = $DestinationPath
+        if (Test-DestinationIsWithinSourceProfile -Path $destinationFolder) {
+            throw "Non-interactive export destination is inside the source profile. No files were copied."
+        }
+    }
+    elseif ($Script:Config.TransferMode -eq "Local") {
+        # Local interactive mode retains the external/secondary-drive selector.
         $destinationFolder = Select-TargetDrive
     }
     else {
+        # Online interactive mode uses the Windows folder picker.
         $destinationFolder = Select-TargetDestination
     }
     if (-not $destinationFolder) {
@@ -152,18 +163,11 @@ function Start-LaptopExport {
     # and (b) show the operator the size up front. In online mode this reflects
     # the selected transfer set.
     Write-Section "Estimating transfer size"
-    if ($null -ne $Script:StartupPayloadEstimate) {
-        $payloadEstimate = $Script:StartupPayloadEstimate
-    }
-    elseif ($Script:TransferSizeEstimateJob) {
-        # Show-BackupOverview does not allow Start until this job completes,
-        # but retain a safe wait for alternate/noninteractive callers.
-        Write-Host '  Finalizing background folder-size calculation...' -ForegroundColor Cyan
-        Wait-Job -Job $Script:TransferSizeEstimateJob | Out-Null
-        [void](Receive-TransferSizeEstimateJob)
-        $payloadEstimate = $Script:StartupPayloadEstimate
-    }
-    else { $payloadEstimate = Get-TransferPayloadEstimate }
+    # The background estimate is for responsive UI only. Recalculate the
+    # authoritative preflight estimate here so changed toggles, additional
+    # folders, loose profile files, and OCS Documents are included.
+    Write-Host '  Calculating final payload estimate...' -ForegroundColor Cyan
+    $payloadEstimate = Get-TransferPayloadEstimate
     $estBytes = $payloadEstimate.TotalBytes
     Write-KeyValue "Estimated size" (Format-FileSize $estBytes)
     if ($Script:Config.TransferMode -eq "Online") {

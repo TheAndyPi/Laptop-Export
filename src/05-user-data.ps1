@@ -43,6 +43,11 @@ function Copy-UserFolders {
                     $folderGB = [math]::Round($folderBytes / 1GB, 2)
 
                     if ($folder -eq 'Downloads' -and $folderGB -gt $Script:Config.Online.DownloadsCapGB -and -not $Script:Config.Online.OverrideDownloadsCap) {
+                        if ($NonInteractive) {
+                            Add-Result -Category 'User Folders' -Item 'Downloads' -Status 'Skipped' -Details "Non-interactive mode: $folderGB GB exceeds the Online Downloads cap"
+                            Add-ManualTask -Task 'Review skipped Downloads folder' -Reason 'Non-interactive mode does not approve an over-cap Online Downloads transfer' -Instructions 'Run interactively to approve the transfer or enable the Downloads cap override.'
+                            continue
+                        }
                         $answer = Read-UserInput "  Downloads is $folderGB GB (Online cap: $($Script:Config.Online.DownloadsCapGB) GB). Copy it? (Y/N)"
                         if ($answer -notmatch '^[Yy]') {
                             Add-Result -Category 'User Folders' -Item 'Downloads' -Status 'Skipped' -Details "Online cap: $folderGB GB; operator chose skip"
@@ -58,6 +63,13 @@ function Copy-UserFolders {
 
                     # Any other large folder: ask the tech (skip / copy anyway).
                     if ($folderGB -gt $Script:Config.Online.LargeFolderPromptGB) {
+                        if ($NonInteractive) {
+                            Write-Log "$folder skipped in non-interactive Online mode because it exceeds the prompt threshold" -Level Warning
+                            Write-Status $folder "SKIP" "$folderGB GB, non-interactive mode"
+                            Add-Result -Category "User Folders" -Item $folder -Status "Skipped" -Details "Omitted in non-interactive mode: $folderGB GB exceeds the Online prompt threshold"
+                            Add-ManualTask -Task "Review skipped $folder folder" -Reason "Non-interactive Online export cannot approve a large-folder prompt" -Instructions "Run interactively to approve the transfer if this folder is required."
+                            continue
+                        }
                         Write-Host ""
                         Write-Host "  $($Script:Theme.Glyphs.WARN) " -ForegroundColor Yellow -NoNewline
                         Write-Host "$folder is $folderGB GB (over the $($Script:Config.Online.LargeFolderPromptGB) GB online threshold)." -ForegroundColor White
@@ -153,6 +165,11 @@ function Copy-UserFolders {
                 $folderBytes = Get-FolderSizeBytes -Path $folder.FullName
                 $folderGB = [math]::Round($folderBytes / 1GB, 2)
                 if ($folderGB -gt $Script:Config.Online.AdditionalFolderCapGB) {
+                    if ($NonInteractive) {
+                        Add-Result -Category "Additional Folders" -Item $folder.Name -Status "Skipped" -Details "Non-interactive mode: $folderGB GB exceeds the Online additional-folder cap"
+                        Add-ManualTask -Task "Review skipped additional folder $($folder.Name)" -Reason "Non-interactive mode does not approve an over-cap additional-folder transfer" -Instructions "Run interactively to approve the transfer if this folder is required."
+                        continue
+                    }
                     $answer = Read-UserInput "  Additional folder '$($folder.Name)' is $folderGB GB (cap: $($Script:Config.Online.AdditionalFolderCapGB) GB). Copy it? (Y/N)"
                     if ($answer -notmatch '^[Yy]') {
                         Add-Result -Category "Additional Folders" -Item $folder.Name -Status "Skipped" -Details "Online size cap: $folderGB GB; operator chose skip"
@@ -287,6 +304,11 @@ function Copy-UserFolders {
             $ocsBytes = Get-FolderSizeBytes -Path $ocsPath
             $ocsGB = [math]::Round($ocsBytes / 1GB, 2)
             if ($ocsGB -gt $Script:Config.Online.AdditionalFolderCapGB) {
+                if ($NonInteractive) {
+                    Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Skipped" -Details "Non-interactive mode: $ocsGB GB exceeds the Online additional-folder cap"
+                    Add-ManualTask -Task "Review skipped OCS Documents" -Reason "Non-interactive mode does not approve an over-cap OCS Documents transfer" -Instructions "Run interactively to approve the transfer if this folder is required."
+                    return
+                }
                 $answer = Read-UserInput "  OCS Documents is $ocsGB GB (cap: $($Script:Config.Online.AdditionalFolderCapGB) GB). Copy it? (Y/N)"
                 if ($answer -notmatch '^[Yy]') {
                     Add-Result -Category "Special Folders" -Item "OCS Documents" -Status "Skipped" -Details "Online size cap: $ocsGB GB; operator chose skip"

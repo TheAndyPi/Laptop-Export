@@ -337,7 +337,8 @@ function Copy-WithProgress {
     )
     
     # Get source size and file count
-    $sourceFiles = Get-ChildItem $Source -Recurse -File -Force -ErrorAction SilentlyContinue
+    $sourceFiles = Get-ChildItem -LiteralPath $Source -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) }
     $totalFiles = ($sourceFiles | Measure-Object).Count
     $totalSize = ($sourceFiles | Measure-Object -Property Length -Sum).Sum
     
@@ -365,7 +366,7 @@ function Copy-WithProgress {
         param($src, $dst, $log)
         $pinfo = New-Object System.Diagnostics.ProcessStartInfo
         $pinfo.FileName = "robocopy.exe"
-        $pinfo.Arguments = "`"$src`" `"$dst`" /E /Z /R:2 /W:3 /MT:8 /NP /LOG:`"$log`""
+        $pinfo.Arguments = "`"$src`" `"$dst`" /E /XJ /Z /R:2 /W:3 /MT:8 /NP /LOG:`"$log`""
         $pinfo.RedirectStandardOutput = $true
         $pinfo.RedirectStandardError = $true
         $pinfo.UseShellExecute = $false
@@ -413,8 +414,9 @@ function Copy-WithProgress {
     $exitCode = Receive-Job -Job $job -ErrorAction SilentlyContinue
     Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
     
-    # If exit code is null, assume success
-    if ($null -eq $exitCode) { $exitCode = 0 }
+    # A missing exit code means the worker failed or Robocopy did not start;
+    # never convert that failure into a successful import.
+    if ($null -eq $exitCode) { $exitCode = 16 }
     
     # Final stats
     $destFiles = Get-ChildItem $Destination -Recurse -File -Force -ErrorAction SilentlyContinue
@@ -430,10 +432,14 @@ function Copy-WithProgress {
     Write-Host $progressBar -ForegroundColor Green -NoNewline
     Write-Host " 100%  $(Format-FileSize $copiedSize)  in $([math]::Round($elapsed.TotalSeconds, 1))s" -ForegroundColor DarkGray
     
-    $status = if ($exitCode -lt 8) { "Success" } 
-              elseif ($exitCode -in @(8, 9) -and $copiedFiles -gt 0) { "Success" }
-              elseif ($exitCode -in @(8, 9)) { "Skipped" }
-              else { "Warning" }
+    $copySucceeded = $exitCode -lt 8
+    if (-not $copySucceeded) {
+        # The destination may contain files from an earlier attempt. Do not
+        # report those pre-existing files as part of a failed copy.
+        $copiedFiles = 0
+        $copiedSize = [long]0
+    }
+    $status = if ($copySucceeded) { "Success" } else { "Warning" }
     
     return @{
         ExitCode = $exitCode
@@ -1081,7 +1087,11 @@ if (Test-Path $qaSource) {
                 
                 # Close all Explorer windows (but not the shell itself)
                 $explorerWindows = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -ne "" }
-                # Note: We don't want to kill explorer.exe completely as that's the shell
+                foreach ($explorerWindow in @($explorerWindows)) {
+                    try { [void]$explorerWindow.CloseMainWindow() } catch { }
+                }
+                Start-Sleep -Milliseconds 750
+                # Do not kill explorer.exe before the copy: it owns the shell.
                 
                 # Try to copy the file
                 $copySuccess = $false
@@ -1504,9 +1514,18 @@ if ($settingsData -and $settingsData.MappedDrives -and (@($settingsData.MappedDr
                 }
                 else {
                     try {
-                        net use "${driveLetter}:" $drivePath /persistent:yes 2>&1 | Out-Null
-                        Write-Log "  ${driveLetter}: -> $drivePath" -Level "Success"
-                        Add-Result -Category "Network Drives" -Item "${driveLetter}:" -Status "Success" -Details $drivePath
+                        $netUseOutput = @(net use "${driveLetter}:" $drivePath /persistent:yes 2>&1)
+                        $netUseExitCode = $LASTEXITCODE
+                        if ($netUseExitCode -eq 0) {
+                            Write-Log "  ${driveLetter}: -> $drivePath" -Level "Success"
+                            Add-Result -Category "Network Drives" -Item "${driveLetter}:" -Status "Success" -Details $drivePath
+                        }
+                        else {
+                            $netUseDetail = ($netUseOutput -join ' ').Trim()
+                            if ([string]::IsNullOrWhiteSpace($netUseDetail)) { $netUseDetail = "net use exit code $netUseExitCode" }
+                            Write-Log "  ${driveLetter}: -> $drivePath failed: $netUseDetail" -Level "Warning"
+                            Add-Result -Category "Network Drives" -Item "${driveLetter}:" -Status "Warning" -Details $netUseDetail
+                        }
                     }
                     catch {
                         Write-Log "  ${driveLetter}: -> $drivePath (failed - may need credentials)" -Level "Warning"
@@ -1945,12 +1964,14 @@ function Restore-ChromeProfileArchive {
         return
     }
     $backup = Join-Path $env:LOCALAPPDATA "LaptopTransferBrowserBackups\Chrome\$(Get-Date -Format 'yyyyMMdd_HHmmss')\User Data"
+    $backupCreated = $false
     try {
         $targetParent = Split-Path -Parent $TargetUserDataPath
         New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
         if (Test-Path -LiteralPath $TargetUserDataPath) {
             New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
             Move-Item -LiteralPath $TargetUserDataPath -Destination $backup -ErrorAction Stop
+            $backupCreated = $true
         }
         $result = Copy-WithProgress -Source $PackageUserDataPath -Destination $TargetUserDataPath -FolderName 'Chrome profile (all profiles)' -LogPath (Join-Path $logsPath 'import_chrome_profile.log')
         if ($result.Status -ne 'Success') { throw "Profile copy did not complete successfully (robocopy exit $($result.ExitCode))" }
@@ -1958,8 +1979,22 @@ function Restore-ChromeProfileArchive {
         Write-Host '    Chrome extensions, settings, history, and bookmarks were restored. Passwords and cookies may require Chrome sign-in.' -ForegroundColor Gray
     }
     catch {
-        Add-Result -Category 'Browser' -Item 'Chrome Profile' -Status 'Warning' -Details $_.Exception.Message
-        Write-Log "Chrome profile restore failed: $($_.Exception.Message)" -Level Warning
+        $failureDetail = $_.Exception.Message
+        if ($backupCreated -and (Test-Path -LiteralPath $backup)) {
+            try {
+                if (Test-Path -LiteralPath $TargetUserDataPath) {
+                    $failedTarget = "$TargetUserDataPath.failed_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                    Move-Item -LiteralPath $TargetUserDataPath -Destination $failedTarget -ErrorAction Stop
+                }
+                Move-Item -LiteralPath $backup -Destination $TargetUserDataPath -ErrorAction Stop
+                $failureDetail = "$failureDetail. Original Chrome profile restored from backup."
+            }
+            catch {
+                $failureDetail = "$failureDetail. Automatic rollback failed: $($_.Exception.Message). Backup retained at $backup."
+            }
+        }
+        Add-Result -Category 'Browser' -Item 'Chrome Profile' -Status 'Warning' -Details $failureDetail
+        Write-Log "Chrome profile restore failed: $failureDetail" -Level Warning
     }
 }
 
@@ -2068,7 +2103,7 @@ function Enable-OneDriveAlwaysOnDevice {
     }
     foreach ($oneDriveFolder in $oneDriveFolders) {
         try {
-            $process = Start-Process -FilePath "attrib.exe" -ArgumentList "+P", "-U", "/S", "/D", "`"$oneDriveFolder\*`"" -Wait -PassThru -NoNewWindow -ErrorAction Stop
+            $process = Start-Process -FilePath "attrib.exe" -ArgumentList "+P", "-U", "`"$oneDriveFolder\*`"", "/S", "/D" -Wait -PassThru -NoNewWindow -ErrorAction Stop
             if ($process.ExitCode -ne 0) { throw "attrib.exe exited with code $($process.ExitCode)" }
             Write-Log "OneDrive files pinned for this device: $oneDriveFolder" -Level "Success"
             Add-Result -Category "OneDrive" -Item "Always on this device" -Status "Success" -Details $oneDriveFolder
@@ -2181,10 +2216,12 @@ else {
 
                 $destination = Join-Path $target.Parent "Firefox"
                 $backup = Join-Path $target.Parent "Firefox_Backup_$backupStamp"
+                $backupCreated = $false
                 try {
                     if (-not (Test-Path $target.Parent)) { New-Item -ItemType Directory -Path $target.Parent -Force | Out-Null }
                     if (Test-Path $destination) {
                         Move-Item -LiteralPath $destination -Destination $backup -ErrorAction Stop
+                        $backupCreated = $true
                         Write-Log "Existing Firefox $($target.Name) data backed up to $backup" -Level "Info"
                     }
 
@@ -2193,6 +2230,7 @@ else {
                                                -Destination $destination `
                                                -FolderName "Firefox $($target.Name) data" `
                                                -LogPath $logPath
+                    if ($result.Status -ne "Success") { throw "Firefox $($target.Name) copy did not complete successfully (robocopy exit $($result.ExitCode))" }
                     if ($target.Name -eq "Roaming" -and $result.FilesCopied -gt 0) {
                         Remove-FirefoxProfileLocks -FirefoxRoot $destination
                     }
@@ -2206,8 +2244,22 @@ else {
                     }
                 }
                 catch {
-                    Write-Log "Firefox $($target.Name) data restore failed: $_" -Level "Warning"
-                    Add-Result -Category "Browser" -Item "Firefox $($target.Name) Data" -Status "Warning" -Details $_.Exception.Message
+                    $failureDetail = $_.Exception.Message
+                    if ($backupCreated -and (Test-Path -LiteralPath $backup)) {
+                        try {
+                            if (Test-Path -LiteralPath $destination) {
+                                $failedTarget = "$destination.failed_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                                Move-Item -LiteralPath $destination -Destination $failedTarget -ErrorAction Stop
+                            }
+                            Move-Item -LiteralPath $backup -Destination $destination -ErrorAction Stop
+                            $failureDetail = "$failureDetail. Original Firefox $($target.Name) data restored from backup."
+                        }
+                        catch {
+                            $failureDetail = "$failureDetail. Automatic rollback failed: $($_.Exception.Message). Backup retained at $backup."
+                        }
+                    }
+                    Write-Log "Firefox $($target.Name) data restore failed: $failureDetail" -Level "Warning"
+                    Add-Result -Category "Browser" -Item "Firefox $($target.Name) Data" -Status "Warning" -Details $failureDetail
                 }
             }
 
@@ -2352,7 +2404,6 @@ function Update-TransferReportImportOutcomes {
     if (-not (Test-Path -LiteralPath $reportPath)) { return }
     try {
         $attention = @($Script:Results.Actions | Where-Object {
-            $_.Category -in @('Settings', 'Taskbar Layout', 'Desktop Layout') -and
             $_.Status -in @('Warning', 'Error', 'Skipped', 'Manual', 'Pending')
         })
         $encode = { param($Value) [Security.SecurityElement]::Escape([string]$Value) }
@@ -2360,7 +2411,7 @@ function Update-TransferReportImportOutcomes {
             $items = @($attention | ForEach-Object {
                 "<li><strong>$(& $encode ([string]$_.Item))</strong><small>$(& $encode ([string]$_.Status)) · $(& $encode ([string]$_.Details))</small></li>"
             }) -join "`n"
-            "<section class='section'><div class='section-header'>Import actions needing attention<span class='section-subtitle'>Settings or layout items Windows could not apply</span></div><div class='section-content'><div class='app-summary ready'><ul class='app-list'>$items</ul></div></div></section>"
+            "<section class='section'><div class='section-header'>Import actions needing attention<span class='section-subtitle'>Import items Windows could not apply automatically</span></div><div class='section-content'><div class='app-summary ready'><ul class='app-list'>$items</ul></div></div></section>"
         }
         else { '' }
         $reportHtml = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8
@@ -2407,8 +2458,10 @@ else {
         if ($reviewAppDataCandidates -and (Test-Path -LiteralPath $candidatePath)) {
             $missingWords = @($missingPrograms | ForEach-Object { ConvertTo-ProgramMatchPart $_.DisplayName })
             $candidateItems = @(Get-Content -LiteralPath $candidatePath -Raw | ConvertFrom-Json | ForEach-Object {
-                $association = if ($_.AssociationHint -and ($missingWords | Where-Object { $_ -like "*$($_.AssociationHint)*" })) { 'Potentially associated with missing app' } elseif ($_.CoveredByCuratedBackup) { 'Already covered by curated backup' } else { 'Review candidate' }
-                [PSCustomObject]@{ Area = $_.Area; RelativePath = $_.RelativePath; SizeBytes = $_.SizeBytes; Association = $association }
+                $candidate = $_
+                $associationHint = ConvertTo-ProgramMatchPart $candidate.AssociationHint
+                $association = if ($associationHint -and ($missingWords | Where-Object { $_ -like "*$associationHint*" })) { 'Potentially associated with missing app' } elseif ($candidate.CoveredByCuratedBackup) { 'Already covered by curated backup' } else { 'Review candidate' }
+                [PSCustomObject]@{ Area = $candidate.Area; RelativePath = $candidate.RelativePath; SizeBytes = $candidate.SizeBytes; Association = $association }
             })
         }
         elseif ($reviewAppDataCandidates) { Write-Log 'AppData candidate review skipped: source inventory is missing.' -Level 'Warning' }

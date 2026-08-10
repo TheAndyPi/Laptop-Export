@@ -81,7 +81,7 @@ $Script:Config = @{
     # slower for normal local/USB copies. A failed copy can be rerun safely,
     # so favor throughput with parallel file copies. (/J remains in use for
     # the one-file ZIP upload, where unbuffered I/O is beneficial.)
-    RobocopyArgs = @("/E", "/R:2", "/W:3", "/MT:16", "/NP", "/NDL", "/NFL", "/NJH", "/NJS")
+    RobocopyArgs = @("/E", "/XJ", "/R:2", "/W:3", "/MT:16", "/NP", "/NDL", "/NFL", "/NJH", "/NJS")
 
     # ---- Transfer mode ----
     # "Local"  = full copy (USB/on-site).  "Online" = trimmed for slow/remote links.
@@ -261,6 +261,12 @@ function Apply-OnlineTransferDefaults {
 
     $Script:Config.Backup.Downloads = $Script:Config.Online.Downloads
     $Script:Config.Transfer.CreateZipArchive = $Script:Config.Online.CreateZipArchive
+    if ($Script:Config.Online.IncludeChromeProfileArchive -and $Script:Config.Backup.Chrome -ne 'Off') {
+        $Script:Config.Backup.Chrome = 'FullProfile'
+    }
+    elseif (-not $Script:Config.Online.IncludeChromeProfileArchive -and $Script:Config.Backup.Chrome -eq 'FullProfile') {
+        $Script:Config.Backup.Chrome = 'BookmarksAndPasswords'
+    }
     foreach ($switchName in $Script:Config.Online.Import.Keys) {
         $Script:Config.Import[$switchName] = $Script:Config.Online.Import[$switchName]
     }
@@ -365,7 +371,13 @@ function Get-TransferSizeDisplayEstimate {
     foreach ($key in @('UserData', 'Downloads', 'EntireUserProfile', 'AdditionalAppData', 'AppData', 'LotusNotes', 'Firefox', 'Edge')) {
         if ($Script:Config.Backup[$key]) { $sizes[$key] = $null }
     }
-    if ($Script:Config.Backup.UserData) { $sizes.UserData = Get-CachedFolderSizeSum -Paths @($Script:Config.UserFolders | ForEach-Object { Resolve-ExportUserFolderPath $_ }) }
+    if ($Script:Config.Backup.UserData) {
+        $userDataPaths = @($Script:Config.UserFolders | Where-Object { $_ -ne 'Downloads' } | ForEach-Object { Resolve-ExportUserFolderPath $_ })
+        $sizes.UserData = Get-CachedFolderSizeSum -Paths $userDataPaths
+    }
+    if ($Script:Config.Backup.Downloads) {
+        $sizes.Downloads = Get-CachedFolderSizeBytes -Path (Resolve-ExportUserFolderPath 'Downloads')
+    }
     if ($Script:Config.Backup.AppData) {
         $appDataPaths = @($Script:Config.BluebeamPaths | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ }) + @($Script:Config.AppDataRoaming.Values | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
         $sizes.AppData = Get-CachedFolderSizeSum -Paths $appDataPaths
@@ -526,6 +538,7 @@ function Show-OnlineAdvancedSettingsMenu {
             @{ Number = 1; Key = 'IncludeAdditionalUserFolders'; Label = 'Include additional user folders'; Detail = 'OFF skips unlisted profile folders in Online mode' }
             @{ Number = 2; Key = 'IncludeOcsDocuments'; Label = 'Include C:\\OCS Documents'; Detail = 'OFF skips this optional project folder in Online mode' }
             @{ Number = 3; Key = 'DetailedAppDataCandidateInventory'; Label = 'Detailed AppData candidate sizes'; Detail = 'OFF records names only and avoids recursive sizing' }
+            @{ Number = 4; Key = 'IncludeChromeProfileArchive'; Label = 'Include Chrome full profile'; Detail = 'OFF keeps the lean bookmarks/password handoff only' }
         )) {
             $state = if ($Script:Config.Online[$setting.Key]) { 'ON ' } else { 'OFF' }
             $color = if ($Script:Config.Online[$setting.Key]) { 'Green' } else { 'DarkGray' }
@@ -533,20 +546,24 @@ function Show-OnlineAdvancedSettingsMenu {
             Write-Host $setting.Label -ForegroundColor $color -NoNewline
             Write-Host "  $($setting.Detail)" -ForegroundColor DarkGray
         }
-        Write-Host "  [4] $($Script:Config.Online.AdditionalFolderCapGB) GB " -ForegroundColor Cyan -NoNewline
+        Write-Host "  [5] $($Script:Config.Online.AdditionalFolderCapGB) GB " -ForegroundColor Cyan -NoNewline
         Write-Host "Additional-folder cap" -ForegroundColor Yellow -NoNewline
         Write-Host "  folders above this require confirmation when included" -ForegroundColor DarkGray
-        $selection = (Read-UserInput "  Select 1-4, [B] Back").Trim()
+        $selection = (Read-UserInput "  Select 1-5, [B] Back").Trim()
         if ($selection -match '^[Bb]$') { return }
-        if ($selection -eq '4') {
+        if ($selection -eq '5') {
             $value = 0.0; $entered = Read-UserInput "  Enter additional-folder cap in GB (current: $($Script:Config.Online.AdditionalFolderCapGB))"
             if ([double]::TryParse($entered, [ref]$value) -and $value -gt 0) { $Script:Config.Online.AdditionalFolderCapGB = $value }
             continue
         }
         $index = 0
-        if ([int]::TryParse($selection, [ref]$index) -and $index -ge 1 -and $index -le 3) {
-            $key = @('IncludeAdditionalUserFolders', 'IncludeOcsDocuments', 'DetailedAppDataCandidateInventory')[$index - 1]
+        if ([int]::TryParse($selection, [ref]$index) -and $index -ge 1 -and $index -le 4) {
+            $key = @('IncludeAdditionalUserFolders', 'IncludeOcsDocuments', 'DetailedAppDataCandidateInventory', 'IncludeChromeProfileArchive')[$index - 1]
             $Script:Config.Online[$key] = -not [bool]$Script:Config.Online[$key]
+            if ($key -eq 'IncludeChromeProfileArchive') {
+                if ($Script:Config.Online[$key]) { $Script:Config.Backup.Chrome = 'FullProfile' }
+                elseif ($Script:Config.Backup.Chrome -eq 'FullProfile') { $Script:Config.Backup.Chrome = 'BookmarksAndPasswords' }
+            }
             $Script:SettingsPreset = 'Custom'
         }
     }
@@ -645,7 +662,8 @@ function Show-TransferSettingsMenu {
         }
 
         Write-Host ""
-        Write-Host "  Select a number to toggle it; [B] Basic; [V] Advanced; [R] Refresh; select Online payload limit to enter a GB value." -ForegroundColor Gray
+        $advancedHint = if ($Script:Config.TransferMode -eq 'Online') { '; [A] Advanced Online Controls' } else { '' }
+        Write-Host "  Select a number to toggle it; [B] Basic; [V] Advanced$advancedHint; [R] Refresh; select Online payload limit to enter a GB value." -ForegroundColor Gray
         Write-Host "  Select Chrome to cycle its three backup modes." -ForegroundColor DarkGray
         Write-Host "  Administrator mode is requested only after you choose Start transfer." -ForegroundColor DarkGray
         Write-Host "  ZIP archives are optional for Local transfers and enabled by default for Online transfers." -ForegroundColor DarkGray
@@ -669,6 +687,7 @@ function Show-TransferSettingsMenu {
         if ($selection -match "^[Qq]$") { return $false }
         if ($selection -match "^[Bb]$") { Set-SettingsPreset -Name Basic; Update-AdvancedPayloadEstimate; continue }
         if ($selection -match "^[Vv]$") { Set-SettingsPreset -Name Advanced; $Script:SelectedAdditionalAppData = Select-AdditionalAppData; $Script:SkipAdditionalAppDataSizing = $false; Update-AdvancedPayloadEstimate; continue }
+        if ($selection -match "^[Aa]$" -and $Script:Config.TransferMode -eq 'Online') { Show-OnlineAdvancedSettingsMenu; Update-AdvancedPayloadEstimate; continue }
 
         $selectedIndex = 0
         if ([int]::TryParse($selection, [ref]$selectedIndex) -and
@@ -682,7 +701,9 @@ function Show-TransferSettingsMenu {
             }
             elseif ($setting.Type -eq 'ChromeMode') {
                 $Script:Config.Backup.Chrome = switch ($Script:Config.Backup.Chrome) { 'Off' { 'BookmarksAndPasswords' } 'BookmarksAndPasswords' { 'FullProfile' } default { 'Off' } }
+                if ($Script:Config.TransferMode -eq 'Online') { $Script:Config.Online.IncludeChromeProfileArchive = $Script:Config.Backup.Chrome -eq 'FullProfile' }
                 $Script:SettingsPreset = 'Custom'
+                Update-AdvancedPayloadEstimate
             }
             else {
                 $Script:Config[$setting.Section][$setting.Key] = -not [bool]$Script:Config[$setting.Section][$setting.Key]
@@ -883,8 +904,9 @@ function Copy-WithProgress {
     $exitCode = $process.ExitCode
     
     $elapsed = (Get-Date) - $startTime
-    $copiedSize = $totalSize
-    $copiedFiles = $totalFiles
+    $copySucceeded = $exitCode -lt 8
+    $copiedSize = if ($copySucceeded) { $totalSize } else { [long]0 }
+    $copiedFiles = if ($copySucceeded) { $totalFiles } else { 0 }
     
     # Complete the progress bar (clear the line first, then draw the final state)
     if ($abortedByOperator) {
@@ -910,15 +932,7 @@ function Copy-WithProgress {
     Write-Host " 100%  $(Format-FileSize $copiedSize)  in $([math]::Round($elapsed.TotalSeconds, 1))s" -ForegroundColor DarkGray
     
     # Determine status based on exit code and files copied
-    $status = if ($exitCode -lt 8) { 
-        "Success" 
-    } elseif ($exitCode -in @(8, 9) -and $copiedFiles -gt 0) { 
-        "Success" 
-    } elseif ($exitCode -in @(8, 9)) { 
-        "Skipped" 
-    } else { 
-        "Warning" 
-    }
+    $status = if ($copySucceeded) { "Success" } else { "Warning" }
     
     return @{
         ExitCode = $exitCode

@@ -39,6 +39,18 @@ Describe 'Online payload estimation' {
         (Get-TransferPayloadEstimate).TotalBytes | Should Be 0
     }
 
+    It 'shows Downloads independently in the completed display estimate' {
+        $downloadsPath = Join-Path $script:OriginalUserProfile 'Downloads'
+        $script:FolderInventoryCache = @{
+            ($downloadsPath.TrimEnd([char]92)) = [PSCustomObject]@{ FileCount = 1; Bytes = 2048 }
+        }
+        $script:Config.Backup.UserData = $false
+        $script:Config.Backup.Downloads = $true
+        $estimate = Get-TransferSizeDisplayEstimate
+        $estimate.ItemBytes.Downloads | Should Be 2048
+        $estimate.TotalBytes | Should Be 2048
+    }
+
     It 'retains the Downloads-cap override as a runtime setting' {
         $core = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\03-core.ps1') -Raw
         $userData = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\05-user-data.ps1') -Raw
@@ -219,6 +231,23 @@ Describe 'Archive cancellation' {
         Test-Path -LiteralPath $script:TestPackage -PathType Container | Should Be $true
         Test-Path -LiteralPath "$($script:TestPackage).zip" | Should Be $false
         ($script:Results.Actions | Where-Object { $_.Item -eq 'LaptopTransfer_Test.zip' }).Status | Should Be 'Skipped'
+    }
+}
+
+Describe 'Local archive creation' {
+    BeforeEach {
+        Reset-LaptopExportResults
+        $script:Config.TransferMode = 'Local'
+        $script:TestPackage = Join-Path $TestDrive 'LaptopTransfer_LocalZip'
+        New-Item -ItemType Directory -Path $script:TestPackage -Force | Out-Null
+        [System.IO.File]::WriteAllBytes((Join-Path $script:TestPackage 'payload.bin'), (New-Object byte[] 512))
+        Mock Test-ArchiveAbortRequested { $false }
+    }
+
+    It 'creates a ZIP when Local archive creation is enabled' {
+        $archive = New-TransferArchive -TransferBase $script:TestPackage
+        Test-Path -LiteralPath $archive -PathType Leaf | Should Be $true
+        ($script:Results.Actions | Where-Object { $_.Item -eq 'LaptopTransfer_LocalZip.zip' }).Status | Should Be 'Success'
     }
 }
 

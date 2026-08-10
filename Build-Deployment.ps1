@@ -47,8 +47,8 @@ if (-not (Test-Path -LiteralPath $reportTemplatePath)) { throw "Transfer report 
 # Compile the development config into the one-file technician deployment.
 try {
 $developmentConfig = Import-PowerShellDataFile -LiteralPath $developmentConfigPath -ErrorAction Stop
-    $developmentConfigText = Get-Content -LiteralPath $developmentConfigPath -Raw
-    $reportTemplateText = Get-Content -LiteralPath $reportTemplatePath -Raw
+    $developmentConfigText = Get-Content -LiteralPath $developmentConfigPath -Raw -Encoding UTF8
+    $reportTemplateText = Get-Content -LiteralPath $reportTemplatePath -Raw -Encoding UTF8
 }
 catch {
     throw "Could not load development configuration '$developmentConfigPath': $_"
@@ -71,8 +71,8 @@ $modulePaths = foreach ($module in $moduleOrder) {
 # after that module; a PowerShell param block must be the first statement.
 $configAssignment = "`$Script:DevelopmentConfig = " + $developmentConfigText.Trim() + "`r`n`r`n"
 $templateAssignment = "`$Script:TransferReportTemplate = @'`r`n" + $reportTemplateText.Trim() + "`r`n'@`r`n`r`n"
-$bootstrapText = Get-Content -LiteralPath $modulePaths[0] -Raw
-$remainingSourceText = (($modulePaths | Select-Object -Skip 1 | ForEach-Object { Get-Content -LiteralPath $_ -Raw }) -join "")
+$bootstrapText = Get-Content -LiteralPath $modulePaths[0] -Raw -Encoding UTF8
+$remainingSourceText = (($modulePaths | Select-Object -Skip 1 | ForEach-Object { Get-Content -LiteralPath $_ -Raw -Encoding UTF8 }) -join "")
 $combinedSourceText = $bootstrapText + $configAssignment + $templateAssignment + $remainingSourceText
 $tokens = $null
 $parseErrors = $null
