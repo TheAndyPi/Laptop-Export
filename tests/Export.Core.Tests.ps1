@@ -168,7 +168,7 @@ Describe 'Start Menu migration and transfer timing' {
     It 'copies the canonical per-user Start Menu and starts the clock after settings confirmation' {
         $core = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\03-core.ps1') -Raw
         $userData = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\05-user-data.ps1') -Raw
-        $template = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\08-import-template.ps1') -Raw
+        $template = Get-LaptopExportSourceText -Group ImportTemplate
         $main = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\10-main.ps1') -Raw
         $core | Should Match '"Start Menu"'
         $core | Should Match 'function Resolve-ExportUserFolderPath'
@@ -184,7 +184,7 @@ Describe 'Start Menu migration and transfer timing' {
 
 Describe 'Advanced AppData size selection' {
     It 'draws the selection menu before background sizing so the technician can continue immediately' {
-        $settings = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\06-settings-printers.ps1') -Raw
+        $settings = Get-LaptopExportSourceText -Group Settings
         $destination = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\04-destination.ps1') -Raw
         $settings | Should Match 'Get-AdditionalAppDataCandidates -IncludeSizes \$false'
         $settings | Should Match 'Start-AdditionalAppDataSizeJob'
@@ -200,8 +200,8 @@ Describe 'Deferred administrator elevation' {
         $config = Import-PowerShellDataFile -LiteralPath (Join-Path $script:RepoRoot 'src\00-development-config.psd1')
         $core = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\03-core.ps1') -Raw
         $main = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\10-main.ps1') -Raw
-        $printers = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\06-settings-printers.ps1') -Raw
-        $template = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\08-import-template.ps1') -Raw
+        $printers = Get-LaptopExportSourceText -Group Settings
+        $template = Get-LaptopExportSourceText -Group ImportTemplate
         $config.Export.RequestAdministratorPrivileges | Should Be $false
         $config.Import.EnableAdminHelper | Should Be $true
         $core | Should Match 'Run export as administrator'
@@ -357,7 +357,7 @@ Describe 'Layout and default-app implementation' {
     }
 
     It 'uses a hash-gated, shortcut-only OneDrive cleanup and avoids protected default-app writes' {
-        $template = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\08-import-template.ps1') -Raw
+        $template = Get-LaptopExportSourceText -Group ImportTemplate
         $template | Should Match "\.Extension -in @\('\.lnk', '\.url'\)"
         $template | Should Match 'Get-ShortcutHash \$cloudShortcut\.FullName'
         $template | Should Match 'SendToRecycleBin'
@@ -366,8 +366,8 @@ Describe 'Layout and default-app implementation' {
     }
 
     It 'captures and restores source taskbar order while always excluding Microsoft Store' {
-        $settings = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\06-settings-printers.ps1') -Raw
-        $template = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\08-import-template.ps1') -Raw
+        $settings = Get-LaptopExportSourceText -Group Settings
+        $template = Get-LaptopExportSourceText -Group ImportTemplate
         $settings | Should Match 'DesktopLayout\.json'
         $settings | Should Match 'TaskbarLayout\.json'
         $settings | Should Match 'DefaultApps\.json'
@@ -398,8 +398,8 @@ Describe 'Application migration review implementation' {
     }
 
     It 'generates the app review implementation with safe source artifacts and TestMode support' {
-        $settings = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\06-settings-printers.ps1') -Raw
-        $template = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\08-import-template.ps1') -Raw
+        $settings = Get-LaptopExportSourceText -Group Settings
+        $template = Get-LaptopExportSourceText -Group ImportTemplate
         $settings | Should Match 'AppDataCandidates\.json'
         $settings | Should Match 'Get-ProgramMatchKey'
         $template | Should Match 'AppMigrationComparison\.json'
@@ -420,8 +420,8 @@ Describe 'Application migration review implementation' {
 
 Describe 'Power replication implementation' {
     It 'captures overlay power mode and attempts lid restore without automatic elevation' {
-        $settings = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\06-settings-printers.ps1') -Raw
-        $template = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\08-import-template.ps1') -Raw
+        $settings = Get-LaptopExportSourceText -Group Settings
+        $template = Get-LaptopExportSourceText -Group ImportTemplate
         $settings | Should Match 'ActiveOverlayAcPowerScheme'
         $settings | Should Match 'ActiveOverlayDcPowerScheme'
         $template | Should Match 'PowerSetActiveOverlayScheme'
@@ -437,7 +437,7 @@ Describe 'Power replication implementation' {
 Describe 'Post-import handoff launcher' {
     It 'keeps the report-first launcher and handoff apps configurable' {
         $config = Import-PowerShellDataFile -LiteralPath (Join-Path $script:RepoRoot 'src\00-development-config.psd1')
-        $template = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\08-import-template.ps1') -Raw
+        $template = Get-LaptopExportSourceText -Group ImportTemplate
         $config.Import.PostImportLaunch.Enabled | Should Be $true
         ($config.Import.PostImportLaunch.Targets.Name -contains 'Classic Outlook') | Should Be $true
         ($config.Import.PostImportLaunch.Targets.Name -contains 'Microsoft Teams') | Should Be $true
@@ -452,8 +452,8 @@ Describe 'Post-import handoff launcher' {
 
 Describe 'Network drive and OneDrive implementation' {
     It 'writes an old-device mapped-drive snapshot and includes import comparison safeguards' {
-        $settingsModule = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\06-settings-printers.ps1') -Raw
-        $importTemplate = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\08-import-template.ps1') -Raw
+        $settingsModule = Get-LaptopExportSourceText -Group Settings
+        $importTemplate = Get-LaptopExportSourceText -Group ImportTemplate
 
         $settingsModule | Should Match 'MappedDrivesSnapshot\.json'
         $settingsModule | Should Match 'Sort-Object -Property Letter, Path -Unique'

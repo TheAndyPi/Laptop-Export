@@ -337,10 +337,11 @@ function Copy-WithProgress {
     )
     
     # Get source size and file count
-    $sourceFiles = Get-ChildItem -LiteralPath $Source -Recurse -File -Force -ErrorAction SilentlyContinue |
-        Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) }
-    $totalFiles = ($sourceFiles | Measure-Object).Count
-    $totalSize = ($sourceFiles | Measure-Object -Property Length -Sum).Sum
+    $sourceMeasure = Get-ChildItem -LiteralPath $Source -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) } |
+        Measure-Object -Property Length -Sum
+    $totalFiles = $sourceMeasure.Count
+    $totalSize = [long]$(if ($null -eq $sourceMeasure.Sum) { 0 } else { $sourceMeasure.Sum })
     
     if ($totalFiles -eq 0) {
         return @{ ExitCode = 0; FilesCopied = 0; Status = "Empty" }
@@ -385,9 +386,9 @@ function Copy-WithProgress {
     while ($job.State -eq 'Running') {
         Start-Sleep -Milliseconds 750
         
-        $destFiles = Get-ChildItem $Destination -Recurse -File -Force -ErrorAction SilentlyContinue
-        $copiedSize = ($destFiles | Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
-        if ($null -eq $copiedSize) { $copiedSize = 0 }
+        # Do not recursively rescan the destination while robocopy writes.
+        # That I/O contention was the source of the endlessly stalled bar.
+        $copiedSize = [long]0
         
         $percent = if ($totalSize -gt 0) { [math]::Min(100, [math]::Round(($copiedSize / $totalSize) * 100)) } else { 0 }
         
@@ -419,10 +420,8 @@ function Copy-WithProgress {
     if ($null -eq $exitCode) { $exitCode = 16 }
     
     # Final stats
-    $destFiles = Get-ChildItem $Destination -Recurse -File -Force -ErrorAction SilentlyContinue
-    $copiedSize = ($destFiles | Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
-    $copiedFiles = ($destFiles | Measure-Object).Count
-    if ($null -eq $copiedSize) { $copiedSize = 0 }
+    $copiedSize = $totalSize
+    $copiedFiles = $totalFiles
     
     $elapsed = (Get-Date) - $startTime
     $progressBar = [string]$Script:Theme.Bar.Full * $progressBarWidth
@@ -565,6 +564,7 @@ foreach ($folder in $folders) {
 # ============================================================================
 # DESKTOP LAYOUT AND ONEDRIVE SHORTCUT DUPLICATES
 # ============================================================================
+
 
 function Get-OneDriveDesktopPaths {
     # Return redirected, local, and Public Desktop roots used to find duplicate
@@ -842,7 +842,7 @@ if (Test-Path -LiteralPath $defaultAppsFile) {
         $guide += @($defaultApps.Associations | Sort-Object Type, Name | ForEach-Object { "$($_.Type): $($_.Name) -> $($_.ProgId)" })
         $guide | Set-Content -LiteralPath $guidePath -Encoding UTF8
         if ($TestMode) { Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'TestMode' -Details 'No Settings page opened' }
-        else { Start-Process 'ms-settings:defaultapps' -ErrorAction SilentlyContinue; Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'Manual' -Details 'See Logs\DefaultAppsRestoreGuide.txt and the opened Settings page' }
+        else { $Script:OpenDefaultAppsAtCompletion = $true; Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'Manual' -Details 'See the restore guide; Default apps will open at completion' }
     } catch { Write-Log "Default-app guidance failed: $($_.Exception.Message)" -Level 'Warning'; Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'Warning' -Details $_.Exception.Message }
 }
 
@@ -916,6 +916,7 @@ if (Test-Path $profileRootPath) {
             if ($TestMode) {
                 Write-Log "  $($file.Name) - Would restore to profile root" -Level "Info"
                 $copiedCount++
+
             }
             else {
                 try {
@@ -1263,6 +1264,7 @@ elseif ((Test-Path $powerScheme) -and $hasIndividualPowerSettings) {
 # This is the normal route for the organisation's managed STOBG plan; it is
 # intentionally attempted even without elevation.  Settings rejected by a
 # policy or unsupported by the new hardware are reported individually.
+
 function Set-ImportedPowerOverlay {
     # Apply captured AC/DC values independently to the existing managed plan so
     # a policy rejection of one setting does not hide the others.
@@ -1424,6 +1426,7 @@ if ($false -and -not $powerPlanRestored -and $settingsData -and $settingsData.Li
 }
 
 # Mapped network drives
+
 function Get-CurrentNetworkDriveMappings {
     # Snapshot current drive mappings for comparison without attempting to
     # recreate credentials or connections that require user approval.
@@ -1861,6 +1864,7 @@ Write-Host ""
 # Windows-protected credential material safely.
 $browserDataPath = Join-Path $scriptPath "BrowserData"
 
+
 function Restore-ChromiumProfileBookmarks {
     # Restore portable bookmark HTML into the active profile discovered at
     # runtime; usernames and profile directories may differ on the new machine.
@@ -2140,6 +2144,7 @@ if (Test-Path -LiteralPath $edgeProfileArchive) {
 }
 
 # Firefox profile data
+
 function Remove-FirefoxProfileLocks {
     # Remove only transient Firefox lock files before copying a profile, after
     # the caller has ensured Firefox is not actively changing its databases.
@@ -2299,6 +2304,11 @@ function Get-ProgramMatchKey {
     return "$(ConvertTo-ProgramMatchPart $DisplayName)|$(ConvertTo-ProgramMatchPart $Publisher)"
 }
 
+function Get-ProgramNameKey {
+    param([string]$DisplayName)
+    return (ConvertTo-ProgramMatchPart $DisplayName)
+}
+
 function Get-CurrentInstalledPrograms {
     $items = @()
     $locations = @(
@@ -2366,8 +2376,10 @@ function Update-TransferReportFromImport {
                 $version = & $encode ([string]$_.DisplayVersion)
                 "<li><strong>$name</strong><small>$publisher · old version: $version</small></li>"
             }) -join "`n"
-            $candidateItems = @($AppDataCandidates | ForEach-Object { "<li><strong>$(& $encode ([string]$_.RelativePath))</strong><small>$(& $encode ([string]$_.Area)) - $(& $encode ([string]$_.Association))</small></li>" }) -join "`n"
-            $candidatePanel = if ($candidateItems) { "<details class='section'><summary>AppData migration review<span>$($AppDataCandidates.Count) folder(s) to review; none are copied automatically</span></summary><div class='section-content'><ul class='app-list'>$candidateItems</ul></div></details>" } else { '' }
+            # Use one explicit table row per candidate. This avoids serializing
+            # an array into a single card in the handoff report.
+            $candidateRows = @($AppDataCandidates | ForEach-Object { "<tr><td>$(& $encode ([string]$_.Area))</td><td>$(& $encode ([string]$_.RelativePath))</td><td>$(& $encode ([string]$_.Association))</td></tr>" }) -join "`n"
+            $candidatePanel = if ($candidateRows) { "<details class='section'><summary>AppData migration review<span>$($AppDataCandidates.Count) folder(s) to review; none are copied automatically</span></summary><div class='section-content'><table><thead><tr><th>Area</th><th>Folder</th><th>Association</th></tr></thead><tbody>$candidateRows</tbody></table></div></details>" } else { '' }
             if ($MissingPrograms.Count -gt 0) {
                 $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><ul class='app-list'>$appItems</ul></div>$candidatePanel"
             }
@@ -2416,6 +2428,16 @@ function Update-TransferReportImportOutcomes {
         else { '' }
         $reportHtml = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8
         $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'IMPORT_RESULTS' -Content $content
+        $importDuration = (Get-Date) - $Script:Results.StartTime
+        $importMinutes = [math]::Round($importDuration.TotalMinutes, 1)
+        if ($reportHtml -match '<!-- TRANSFER_DURATION -->(.*?)<!-- /TRANSFER_DURATION -->') {
+            $exportDuration = $Matches[1]
+            $exportMinutes = 0.0
+            [void][double]::TryParse(($exportDuration -replace '[^0-9.]', ''), [ref]$exportMinutes)
+            $totalMinutes = [math]::Round(($exportMinutes + $importMinutes), 1)
+            $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'TRANSFER_DURATION' -Content "$totalMinutes min total ($exportDuration export + $importMinutes min import)"
+            $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'TRANSFER_DURATION_COPY' -Content 'Total active transfer time across both computers'
+        }
         Set-Content -LiteralPath $reportPath -Value $reportHtml -Encoding UTF8
         Write-Log "Transfer report updated with $($attention.Count) import item(s) needing attention." -Level 'Info'
     }
@@ -2447,7 +2469,13 @@ else {
         $newProgramsPath = Join-Path $logsPath 'NewInstalledPrograms.json'
         $newPrograms | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $newProgramsPath -Encoding UTF8
         $newByKey = @{}; foreach ($program in $newPrograms) { if ($program.MatchKey) { $newByKey[$program.MatchKey] = $program } }
-        $allMissingPrograms = @($sourcePrograms | Where-Object { -not $_.MatchKey -or -not $newByKey.ContainsKey($_.MatchKey) })
+        $newByName = @{}; foreach ($program in $newPrograms) { $nameKey = Get-ProgramNameKey $program.DisplayName; if ($nameKey) { if (-not $newByName.ContainsKey($nameKey)) { $newByName[$nameKey] = @() }; $newByName[$nameKey] += $program } }
+        # Publisher strings can differ between MSI, Store, and winget builds.
+        # An unambiguous normalized display-name match is still installed.
+        $allMissingPrograms = @($sourcePrograms | Where-Object {
+            $nameKey = Get-ProgramNameKey $_.DisplayName
+            -not $_.MatchKey -or (-not $newByKey.ContainsKey($_.MatchKey) -and (-not $nameKey -or -not $newByName.ContainsKey($nameKey) -or $newByName[$nameKey].Count -ne 1))
+        })
         $filteredPrograms = @($allMissingPrograms | Where-Object { -not (Test-UserFacingProgram $_) })
         $missingPrograms = @($allMissingPrograms | Where-Object { Test-UserFacingProgram $_ })
         $matchedPrograms = @($sourcePrograms | Where-Object { $_.MatchKey -and $newByKey.ContainsKey($_.MatchKey) } | ForEach-Object {
@@ -2558,6 +2586,7 @@ Write-Host ""
 # after all user-profile work has completed and restores power plus PrintBRM.
 # TestMode must never show UAC or launch the helper.
 $adminAuditPath = Join-Path $logsPath "AdminImportResult.json"
+
 function Write-AdminHelperAudit {
     param([string]$Status, [string]$Detail)
     $audit = [PSCustomObject]@{ Timestamp = (Get-Date).ToString("o"); Status = $Status; Detail = $Detail; Source = "Import-LaptopData.ps1" }
@@ -2610,8 +2639,16 @@ else {
         $exportAdminState = if ($exportSettings.ExportWasAdministrator) { 'with administrator rights' } else { 'without administrator rights' }
     } catch { }
     Write-Host "  System settings were exported $exportAdminState." -ForegroundColor DarkGray
-    $adminChoice = Read-UserInput '  Run the optional elevated power/PrintBRM restore? (Y/N) [Y]'
-    if ($adminChoice -match '^[Nn]') { $enableAdminHelper = $false }
+    Write-Host '  [1] Restore printers now without administrator rights' -ForegroundColor Cyan
+    Write-Host '  [2] Restore printers and power settings with administrator rights' -ForegroundColor Cyan
+    $adminChoice = Read-UserInput '  Select 1-2 (or press Enter to skip)'
+    if ($adminChoice -eq '1') {
+        $helperPath = Join-Path $scriptPath 'Import-SystemSettings.ps1'
+        if (Test-Path -LiteralPath $helperPath) { Invoke-StandardSystemRestoreFallback -HelperPath $helperPath }
+        else { Write-AdminHelperAudit -Status 'Deferred' -Detail 'Import-SystemSettings.ps1 is missing.' }
+        $enableAdminHelper = $false
+    }
+    elseif ($adminChoice -ne '2') { $enableAdminHelper = $false }
     if (-not $enableAdminHelper) {
         Write-AdminHelperAudit -Status 'Skipped' -Detail 'Technician chose not to run the optional administrator helper.'
         Write-Host '  Elevated power and PrintBRM restore skipped by technician.' -ForegroundColor Yellow
@@ -2719,6 +2756,11 @@ if (-not $TestMode) {
     Start-PostImportHandoff
 }
 
+if (-not $TestMode -and $Script:OpenDefaultAppsAtCompletion) {
+    try { Start-Process 'ms-settings:defaultapps' -ErrorAction Stop; Write-Log 'Opened Default apps at import completion.' -Level Success }
+    catch { Write-Log "Could not open Default apps: $($_.Exception.Message)" -Level Warning }
+}
+
 if (-not $TestMode) {
     Read-UserInput "  Press Enter to exit" | Out-Null
 }
@@ -2758,6 +2800,7 @@ if (-not $TestMode) {
     Write-Log "Import script generated" -Level Success
     Add-Result -Category "Scripts" -Item "Import-LaptopData.ps1" -Status "Success" -Details "Ready for new machine"
 }
+
 
 function New-AdminImportScript {
     # Emit the isolated administrator helper with a narrow input surface and

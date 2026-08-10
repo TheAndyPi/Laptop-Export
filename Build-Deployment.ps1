@@ -28,7 +28,10 @@ $moduleOrder = @(
     "03-core.ps1",
     "04-destination.ps1",
     "05-user-data.ps1",
-    "06-settings-printers.ps1",
+    "06-settings.ps1",
+    "06-layout.ps1",
+    "06-appdata-review.ps1",
+    "06-printers.ps1",
     "07-browsers-onedrive.ps1",
     "08-import-template.ps1",
     "09-report.ps1",
@@ -90,7 +93,7 @@ if (-not (Test-Path -LiteralPath $outputDirectory)) {
 $preamble = @"
 # ---------------------------------------------------------------------------
 # GENERATED FILE - DO NOT EDIT DIRECTLY
-# Source modules: src\\01-bootstrap.ps1 through src\\10-main.ps1
+# Source modules: ordered explicitly in Build-Deployment.ps1
 # Build command: powershell -ExecutionPolicy Bypass -File .\\Build-Deployment.ps1
 # ---------------------------------------------------------------------------
 

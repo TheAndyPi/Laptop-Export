@@ -38,7 +38,10 @@ The module order is intentional:
 | `03-core.ps1` | Runtime settings, presets, logging, result tracking, copy runner, elevation request | `Show-TransferSettingsMenu`, `Copy-WithProgress`, `Start-ElevatedExport` |
 | `04-destination.ps1` | Folder/drive selection, path safety, inventory, capacity checks, ZIP and network publication | `Select-TargetDrive`, `Select-TargetDestination`, `New-TransferArchive` |
 | `05-user-data.ps1` | Standard folders, extra folders, full-profile remainder, AppData | `Copy-UserFolders`, `Copy-AppData` |
-| `06-settings-printers.ps1` | Power, registry, drives, layouts, installed apps, printer capture | `Get-SystemSettings`, `Backup-Printers` |
+| `06-settings.ps1` | Power, registry, drives, and system settings | `Get-SystemSettings` |
+| `06-layout.ps1` | Desktop layout and default application inventory | Desktop layout helpers |
+| `06-appdata-review.ps1` | Installed programs and AppData review | `Get-InstalledPrograms`, AppData helpers |
+| `06-printers.ps1` | Printer connection and PrintBRM capture | `Backup-Printers` |
 | `07-browsers-onedrive.ps1` | Chrome, Firefox, Edge, and OneDrive handling | `Copy-BrowserData`, `Set-OneDriveLocalSync` |
 | `08-import-template.ps1` | Generates the user importer and scoped admin helper | `New-ImportScript`, `New-AdminImportScript` |
 | `09-report.ps1` | Builds the HTML handoff report | `New-TransferReport` |
@@ -322,10 +325,12 @@ When adding a capability:
 - [src/03-core.ps1](src/03-core.ps1) — runtime settings, logging, copy runner, elevation request.
 - [src/04-destination.ps1](src/04-destination.ps1) — destination safety, size checks, ZIP, network upload.
 - [src/05-user-data.ps1](src/05-user-data.ps1) — user folders and AppData.
-- [src/06-settings-printers.ps1](src/06-settings-printers.ps1) — Windows settings, layouts, apps, printers.
+- [src/06-settings.ps1](src/06-settings.ps1) — Windows power, registry, drive, and system settings.
+- [src/06-layout.ps1](src/06-layout.ps1) — desktop layout and default application inventory.
+- [src/06-appdata-review.ps1](src/06-appdata-review.ps1) — installed programs and AppData review.
+- [src/06-printers.ps1](src/06-printers.ps1) — printer connection and PrintBRM capture.
 - [src/07-browsers-onedrive.ps1](src/07-browsers-onedrive.ps1) — browser and OneDrive behavior.
 - [src/08-import-template.ps1](src/08-import-template.ps1) — generated user importer and admin helper.
 - [src/09-report.ps1](src/09-report.ps1) — report composition.
 - [src/10-main.ps1](src/10-main.ps1) — top-level export pipeline.
 - [tests/Export.Core.Tests.ps1](tests/Export.Core.Tests.ps1) — behavior and contract tests.
-

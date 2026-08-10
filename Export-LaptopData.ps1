@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # GENERATED FILE - DO NOT EDIT DIRECTLY
-# Source modules: src\\01-bootstrap.ps1 through src\\10-main.ps1
+# Source modules: ordered explicitly in Build-Deployment.ps1
 # Build command: powershell -ExecutionPolicy Bypass -File .\\Build-Deployment.ps1
 # ---------------------------------------------------------------------------
 <#
@@ -254,7 +254,7 @@ $Script:TransferReportTemplate = @'
   <title>Laptop Transfer Report - {{USER}}</title>
   <style>
     :root{color-scheme:dark;--ink:#f5f9ff;--muted:#9daec6;--panel:#111d33;--panel2:#172744;--line:rgba(173,204,255,.17);--blue:#29b8ff;--violet:#9d7bff;--green:#44dda4;--amber:#ffc45d;--red:#ff7185}
-    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% -10%,#235e91 0,transparent 38%),radial-gradient(circle at 90% 5%,#4d327b 0,transparent 31%),#08111f;color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif}.container{max-width:1160px;margin:auto;padding:32px 20px 48px}.hero,.section,.stat,.route-card,.duration-card{border:1px solid var(--line);background:linear-gradient(145deg,rgba(27,45,76,.93),rgba(12,23,41,.94));box-shadow:0 18px 50px rgba(0,0,0,.19)}.hero{border-radius:24px;padding:30px;margin-bottom:18px;overflow:hidden;position:relative}.hero:after{content:"";position:absolute;width:280px;height:280px;border-radius:50%;right:-100px;top:-165px;background:radial-gradient(circle,rgba(41,184,255,.22),transparent 70%);pointer-events:none}.eyebrow,.label{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}h1{margin:5px 0 4px;font-size:clamp(28px,4vw,42px);line-height:1.1;letter-spacing:-.035em}.accent{color:var(--blue)}.meta{color:var(--muted);margin:0}.route{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:stretch;margin-top:25px}.route-card{min-width:0;border-radius:16px;padding:16px;background:rgba(7,17,31,.55)}.route-name{overflow-wrap:anywhere;font-size:20px;font-weight:700;color:#fff;margin-top:4px}.route-arrow{align-self:center;color:var(--blue);font-size:28px;text-align:center}.duration-card{border-radius:16px;margin-top:16px;padding:18px 20px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(100deg,rgba(41,184,255,.14),rgba(157,123,255,.14))}.duration{font-size:clamp(34px,5vw,56px);line-height:1;font-weight:800;letter-spacing:-.06em;color:#fff}.duration-copy{text-align:right;color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.stat{border-radius:16px;padding:18px}.number{font-size:30px;font-weight:800;line-height:1.1}.success .number,.success-text{color:var(--green)}.warning .number{color:var(--amber)}.error .number{color:var(--red)}.skipped .number{color:#c8d2e3}.section{border-radius:18px;margin:18px 0;overflow:hidden}.section-header{padding:17px 20px;background:rgba(255,255,255,.035);font-size:17px;font-weight:700}.section-subtitle{display:block;margin-top:2px;color:var(--muted);font-size:12px;font-weight:400}.section-content{padding:20px}.app-summary{border:1px solid rgba(41,184,255,.35);border-radius:14px;padding:18px;background:linear-gradient(110deg,rgba(41,184,255,.1),rgba(157,123,255,.08))}.app-summary h3{margin:0 0 6px;font-size:19px}.app-summary p{margin:0;color:var(--muted)}.app-summary.ready{border-color:rgba(255,196,93,.55)}.app-summary.ok{border-color:rgba(68,221,164,.55)}.app-list{margin:16px 0 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:9px}.app-list li{padding:11px 12px;border-radius:10px;background:rgba(6,15,28,.55);border:1px solid var(--line)}.app-list small{display:block;color:var(--muted);margin-top:2px}table{width:100%;border-collapse:collapse}th,td{padding:12px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}.status{display:inline-block;border-radius:999px;padding:4px 9px;font-size:12px;white-space:nowrap}.status-success{background:rgba(68,221,164,.15);color:#84f2c6}.status-warning{background:rgba(255,196,93,.14);color:#ffda91}.status-error{background:rgba(255,113,133,.16);color:#ffb3be}.status-skipped{background:rgba(187,202,224,.13);color:#d9e2f0}.critical-warning{border:1px solid rgba(255,113,133,.7);background:rgba(127,29,29,.28);border-radius:18px;padding:20px;margin:18px 0}.critical-warning h2{margin:0 0 4px;color:#ffbac4}.critical-warning p{margin:0;color:#ffd1d8}.admin-success{border-radius:16px;padding:15px 20px;margin:18px 0;color:#a1f6d1}.manual-task{border-left:3px solid var(--violet);border-radius:0 10px 10px 0;background:rgba(157,123,255,.1);padding:14px 16px;margin-bottom:10px}.manual-task.critical{border-color:var(--red);background:rgba(255,113,133,.1)}.manual-task h4{margin:0 0 4px}.manual-task p{margin:0;color:var(--muted)}.manual-task pre{white-space:pre-wrap;margin:10px 0 0;color:#dfeaff;font:12px/1.45 Consolas,monospace}details.section{padding:0}details summary{cursor:pointer;list-style:none;padding:18px 20px;font-size:17px;font-weight:700;background:rgba(255,255,255,.035)}details summary::-webkit-details-marker{display:none}details summary:after{content:'+';float:right;color:var(--blue);font-size:22px;line-height:.8}details[open] summary:after{content:'−'}details summary span{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:2px}details ul{margin:0;padding-left:22px}details li{margin:9px 0;color:#dce8fa}footer{text-align:center;color:#7f91ac;font-size:12px;padding:10px}@media(max-width:700px){.container{padding:18px 14px 35px}.hero{padding:22px}.route{grid-template-columns:1fr}.route-arrow{transform:rotate(90deg);padding:0}.duration-card{align-items:flex-start;gap:12px;flex-direction:column}.duration-copy{text-align:left}.stats{grid-template-columns:repeat(2,1fr)}.section-content{overflow:auto;padding:14px}table{min-width:680px}}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% -10%,#235e91 0,transparent 38%),radial-gradient(circle at 90% 5%,#4d327b 0,transparent 31%),#08111f;color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif}.container{max-width:1160px;margin:auto;padding:32px 20px 48px}.hero,.section,.stat,.route-card,.duration-card{border:1px solid var(--line);background:linear-gradient(145deg,rgba(27,45,76,.93),rgba(12,23,41,.94));box-shadow:0 18px 50px rgba(0,0,0,.19)}.hero{border-radius:24px;padding:30px;margin-bottom:18px;overflow:hidden;position:relative}.hero:after{content:"";position:absolute;width:280px;height:280px;border-radius:50%;right:-100px;top:-165px;background:radial-gradient(circle,rgba(41,184,255,.22),transparent 70%);pointer-events:none}.eyebrow,.label{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}h1{margin:5px 0 4px;font-size:clamp(28px,4vw,42px);line-height:1.1;letter-spacing:-.035em}.accent{color:var(--blue)}.meta{color:var(--muted);margin:0}.route{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:stretch;margin-top:25px}.route-card{min-width:0;border-radius:16px;padding:16px;background:rgba(7,17,31,.55)}.route-name{overflow-wrap:anywhere;font-size:20px;font-weight:700;color:#fff;margin-top:4px}.route-arrow{align-self:center;color:var(--blue);font-size:28px;text-align:center}.duration-card{border-radius:16px;margin-top:16px;padding:18px 20px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(100deg,rgba(41,184,255,.14),rgba(157,123,255,.14))}.duration{font-size:clamp(34px,5vw,56px);line-height:1;font-weight:800;letter-spacing:-.06em;color:#fff}.duration-copy{text-align:right;color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.stat{border-radius:16px;padding:18px}.number{font-size:30px;font-weight:800;line-height:1.1}.success .number,.success-text{color:var(--green)}.warning .number{color:var(--amber)}.error .number{color:var(--red)}.skipped .number{color:#c8d2e3}.section{border-radius:18px;margin:18px 0;overflow:hidden}.section-header{padding:17px 20px;background:rgba(255,255,255,.035);font-size:17px;font-weight:700}.section-subtitle{display:block;margin-top:2px;color:var(--muted);font-size:12px;font-weight:400}.section-content{padding:20px}.app-summary{border:1px solid rgba(41,184,255,.35);border-radius:14px;padding:18px;background:linear-gradient(110deg,rgba(41,184,255,.1),rgba(157,123,255,.08))}.app-summary h3{margin:0 0 6px;font-size:19px}.app-summary p{margin:0;color:var(--muted)}.app-summary.ready{border-color:rgba(255,196,93,.55)}.app-summary.ok{border-color:rgba(68,221,164,.55)}.app-list{margin:16px 0 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:9px}.app-list li{min-width:0;padding:11px 12px;border-radius:10px;background:rgba(6,15,28,.55);border:1px solid var(--line);overflow-wrap:anywhere}.app-list small,.manual-task p,.manual-task pre{display:block;max-width:100%;overflow-wrap:anywhere;word-break:break-word}.app-list small{color:var(--muted);margin-top:2px}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{padding:12px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere;word-break:break-word}th{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}.status{display:inline-block;border-radius:999px;padding:4px 9px;font-size:12px;white-space:nowrap}.status-success{background:rgba(68,221,164,.15);color:#84f2c6}.status-warning{background:rgba(255,196,93,.14);color:#ffda91}.status-error{background:rgba(255,113,133,.16);color:#ffb3be}.status-skipped{background:rgba(187,202,224,.13);color:#d9e2f0}.critical-warning{border:1px solid rgba(255,113,133,.7);background:rgba(127,29,29,.28);border-radius:18px;padding:20px;margin:18px 0}.critical-warning h2{margin:0 0 4px;color:#ffbac4}.critical-warning p{margin:0;color:#ffd1d8}.admin-success{border-radius:16px;padding:15px 20px;margin:18px 0;color:#a1f6d1}.manual-task{border-left:3px solid var(--violet);border-radius:0 10px 10px 0;background:rgba(157,123,255,.1);padding:14px 16px;margin-bottom:10px}.manual-task.critical{border-color:var(--red);background:rgba(255,113,133,.1)}.manual-task h4{margin:0 0 4px}.manual-task p{margin:0;color:var(--muted)}.manual-task pre{white-space:pre-wrap;margin:10px 0 0;color:#dfeaff;font:12px/1.45 Consolas,monospace}details.section{padding:0}details summary{cursor:pointer;list-style:none;padding:18px 20px;font-size:17px;font-weight:700;background:rgba(255,255,255,.035)}details summary::-webkit-details-marker{display:none}details summary:after{content:'+';float:right;color:var(--blue);font-size:22px;line-height:.8}details[open] summary:after{content:'−'}details summary span{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:2px}details ul{margin:0;padding-left:22px}details li{margin:9px 0;color:#dce8fa}footer{text-align:center;color:#7f91ac;font-size:12px;padding:10px}@media(max-width:700px){.container{padding:18px 14px 35px}.hero{padding:22px}.route{grid-template-columns:1fr}.route-arrow{transform:rotate(90deg);padding:0}.duration-card{align-items:flex-start;gap:12px;flex-direction:column}.duration-copy{text-align:left}.stats{grid-template-columns:repeat(2,1fr)}.section-content{overflow:auto;padding:14px}table{table-layout:auto}}
   </style>
 </head>
 <body>
@@ -268,7 +268,7 @@ $Script:TransferReportTemplate = @'
       <div class="route-arrow" aria-hidden="true">→</div>
       <div class="route-card"><div class="label">New computer · import destination</div><div class="route-name"><!-- DESTINATION_COMPUTER -->{{DESTINATION_COMPUTER}}<!-- /DESTINATION_COMPUTER --></div></div>
     </div>
-    <div class="duration-card"><div><div class="label">Total export time</div><div class="duration">{{DURATION}}</div></div><div class="duration-copy">Time from transfer start<br>to completed export report</div></div>
+    <div class="duration-card"><div><div class="label">Transfer time</div><div class="duration"><!-- TRANSFER_DURATION -->{{DURATION}}<!-- /TRANSFER_DURATION --></div></div><div class="duration-copy"><!-- TRANSFER_DURATION_COPY -->Export time; import time is added after import completes<!-- /TRANSFER_DURATION_COPY --></div></div>
   </header>
   {{ADMIN_BANNER}}
   <section class="stats"><div class="stat success"><div class="number">{{SUCCESS_COUNT}}</div><div class="label">Successful</div></div><div class="stat warning"><div class="number">{{WARNING_COUNT}}</div><div class="label">Warnings</div></div><div class="stat error"><div class="number">{{ERROR_COUNT}}</div><div class="label">Errors</div></div><div class="stat skipped"><div class="number">{{SKIPPED_COUNT}}</div><div class="label">Skipped</div></div></section>
@@ -754,8 +754,12 @@ function Start-TransferSizeEstimateJob {
     # Keep large profile-related payloads near the end and normal user folders
     # last. This avoids Documents/Desktop/Downloads competing with the more
     # useful early estimates while the background job is still running.
-    $normalPaths = @((Join-Path $Script:OriginalAppDataLocal 'Microsoft\Edge\User Data'))
-    $heavyPaths = @($Script:OriginalUserProfile)
+    # Edge transfers only its small Bookmarks files; scanning its entire cache
+    # tree for an estimate was both inaccurate and exceptionally slow.
+    $normalPaths = @()
+    # A complete profile walk is intentionally deferred. It can take hours on
+    # redirected/OneDrive profiles and estimates must never delay the menu.
+    $heavyPaths = @()
     $heavyPaths += @($Script:Config.BluebeamPaths | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
     $heavyPaths += @($Script:Config.AppDataRoaming.Values | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
     $heavyPaths += @(
@@ -815,9 +819,10 @@ function Get-TransferSizeDisplayEstimate {
     # interactive menu perform a competing foreground recursive scan.
     $sizes = @{}
     foreach ($key in @($Script:Config.Backup.Keys)) { $sizes[$key] = [long]0 }
-    foreach ($key in @('UserData', 'Downloads', 'EntireUserProfile', 'AdditionalAppData', 'AppData', 'LotusNotes', 'Firefox', 'Edge')) {
+    foreach ($key in @('UserData', 'Downloads', 'EntireUserProfile', 'AdditionalAppData', 'AppData', 'LotusNotes', 'Firefox')) {
         if ($Script:Config.Backup[$key]) { $sizes[$key] = $null }
     }
+    if ($Script:Config.Backup.Edge) { $sizes.Edge = [long]0 }
     if ($Script:Config.Backup.UserData) {
         $userDataPaths = @($Script:Config.UserFolders | Where-Object { $_ -ne 'Downloads' } | ForEach-Object { Resolve-ExportUserFolderPath $_ })
         $sizes.UserData = Get-CachedFolderSizeSum -Paths $userDataPaths
@@ -884,26 +889,12 @@ function Receive-TransferSizeEstimateJob {
 }
 
 function Read-MenuInputWithBackgroundRefresh {
-    # Read-Host blocks the foreground thread, so refresh the estimate job before
-    # and after input.  This gives the operator current numbers at each menu
-    # transition without attempting unsafe concurrent console writes.
+    # Read-Host is deliberately used for menus. Some console hosts report that
+    # RawUI is available but never surface KeyAvailable, which left the custom
+    # reader waiting forever and made every selection bar appear broken.
     param([string]$Prompt, [scriptblock]$Poll)
-    try {
-        $rawUi = $Host.UI.RawUI
-        [void]$rawUi.KeyAvailable
-    }
-    catch { return (Read-UserInput $Prompt).Trim() }
-    $buffer = ''
-    while ($true) {
-        if (& $Poll) { Write-Host ''; return '__MENU_AUTO_REFRESH__' }
-        if ($rawUi.KeyAvailable) {
-            $key = $rawUi.ReadKey('NoEcho,IncludeKeyDown')
-            if ($key.VirtualKeyCode -eq 13) { Write-Host ''; return $buffer.Trim() }
-            if ($key.VirtualKeyCode -eq 8) { if ($buffer.Length) { $buffer = $buffer.Substring(0, $buffer.Length - 1); Write-Host "`b `b" -NoNewline }; continue }
-            if ($key.Character -and -not [char]::IsControl($key.Character)) { $buffer += $key.Character; Write-Host $key.Character -NoNewline }
-        }
-        Start-Sleep -Milliseconds 120
-    }
+    if ($Poll) { [void](& $Poll) }
+    return (Read-UserInput $Prompt).Trim()
 }
 
 function Show-BackupOverview {
@@ -923,11 +914,6 @@ function Show-BackupOverview {
         }
         if ($selection -eq '__MENU_AUTO_REFRESH__') { continue }
         if ($selection -eq '1') {
-            if ($Script:TransferSizeEstimateJob) {
-                Write-Host '  Size calculation is still running. Please wait for the completed estimate before starting.' -ForegroundColor Yellow
-                Start-Sleep -Milliseconds 900
-                continue
-            }
             return $true
         }
         if ($selection -eq '3') { return $false }
@@ -1116,7 +1102,7 @@ function Show-TransferSettingsMenu {
         Write-Host "  ZIP archives are optional for Local transfers and enabled by default for Online transfers." -ForegroundColor DarkGray
         Write-Host "  Import settings are written into the transfer package's generated import script." -ForegroundColor DarkGray
 
-        if ($Script:TransferSizeEstimateJob) { Write-Host '  Calculating folder sizes in the background. Press R to refresh; the menu refreshes automatically when finished.' -ForegroundColor Cyan }
+        if ($Script:TransferSizeEstimateJob) { Write-Host '  Calculating folder sizes in the background. Estimates are optional; you can start now.' -ForegroundColor Cyan }
         $selection = Read-MenuInputWithBackgroundRefresh -Prompt '  [S] Start transfer  [Q] Cancel  [R] Refresh' -Poll {
             $wasRunning = [bool]$Script:TransferSizeEstimateJob
             [void](Receive-TransferSizeEstimateJob)
@@ -1125,11 +1111,7 @@ function Show-TransferSettingsMenu {
 
         if ($selection -eq '__MENU_AUTO_REFRESH__' -or $selection -match '^[Rr]$') { continue }
         if ($selection -match "^[Ss]$") {
-            $confirmStart = Read-UserInput '  Type START to begin the transfer (or press Enter to return)'
-            if ($confirmStart -ceq 'START') { return $true }
-            Write-Host '  Transfer not started.' -ForegroundColor Yellow
-            Start-Sleep -Milliseconds 700
-            continue
+            return $true
         }
         if ($selection -match "^[Qq]$") { return $false }
         if ($selection -match "^[Bb]$") { Set-SettingsPreset -Name Basic; Update-AdvancedPayloadEstimate; continue }
@@ -1516,6 +1498,7 @@ function Test-PathIsSameOrChild {
         $destination = Get-CanonicalTransferPath -Path $Path
         $parent = Get-CanonicalTransferPath -Path $ParentPath
         if ([string]::IsNullOrWhiteSpace($destination) -or [string]::IsNullOrWhiteSpace($parent)) {
+            # Fail closed if canonicalization is unavailable.
             return $true
         }
         $destination = $destination.TrimEnd([char]92)
@@ -4774,10 +4757,11 @@ function Copy-WithProgress {
     )
     
     # Get source size and file count
-    $sourceFiles = Get-ChildItem -LiteralPath $Source -Recurse -File -Force -ErrorAction SilentlyContinue |
-        Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) }
-    $totalFiles = ($sourceFiles | Measure-Object).Count
-    $totalSize = ($sourceFiles | Measure-Object -Property Length -Sum).Sum
+    $sourceMeasure = Get-ChildItem -LiteralPath $Source -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { -not $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) } |
+        Measure-Object -Property Length -Sum
+    $totalFiles = $sourceMeasure.Count
+    $totalSize = [long]$(if ($null -eq $sourceMeasure.Sum) { 0 } else { $sourceMeasure.Sum })
     
     if ($totalFiles -eq 0) {
         return @{ ExitCode = 0; FilesCopied = 0; Status = "Empty" }
@@ -4822,9 +4806,9 @@ function Copy-WithProgress {
     while ($job.State -eq 'Running') {
         Start-Sleep -Milliseconds 750
         
-        $destFiles = Get-ChildItem $Destination -Recurse -File -Force -ErrorAction SilentlyContinue
-        $copiedSize = ($destFiles | Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
-        if ($null -eq $copiedSize) { $copiedSize = 0 }
+        # Do not recursively rescan the destination while robocopy writes.
+        # That I/O contention was the source of the endlessly stalled bar.
+        $copiedSize = [long]0
         
         $percent = if ($totalSize -gt 0) { [math]::Min(100, [math]::Round(($copiedSize / $totalSize) * 100)) } else { 0 }
         
@@ -4856,10 +4840,8 @@ function Copy-WithProgress {
     if ($null -eq $exitCode) { $exitCode = 16 }
     
     # Final stats
-    $destFiles = Get-ChildItem $Destination -Recurse -File -Force -ErrorAction SilentlyContinue
-    $copiedSize = ($destFiles | Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
-    $copiedFiles = ($destFiles | Measure-Object).Count
-    if ($null -eq $copiedSize) { $copiedSize = 0 }
+    $copiedSize = $totalSize
+    $copiedFiles = $totalFiles
     
     $elapsed = (Get-Date) - $startTime
     $progressBar = [string]$Script:Theme.Bar.Full * $progressBarWidth
@@ -4871,6 +4853,8 @@ function Copy-WithProgress {
     
     $copySucceeded = $exitCode -lt 8
     if (-not $copySucceeded) {
+        # The destination may contain files from an earlier attempt. Do not
+        # report those pre-existing files as part of a failed copy.
         $copiedFiles = 0
         $copiedSize = [long]0
     }
@@ -5000,6 +4984,7 @@ foreach ($folder in $folders) {
 # ============================================================================
 # DESKTOP LAYOUT AND ONEDRIVE SHORTCUT DUPLICATES
 # ============================================================================
+
 
 function Get-OneDriveDesktopPaths {
     # Return redirected, local, and Public Desktop roots used to find duplicate
@@ -5277,7 +5262,7 @@ if (Test-Path -LiteralPath $defaultAppsFile) {
         $guide += @($defaultApps.Associations | Sort-Object Type, Name | ForEach-Object { "$($_.Type): $($_.Name) -> $($_.ProgId)" })
         $guide | Set-Content -LiteralPath $guidePath -Encoding UTF8
         if ($TestMode) { Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'TestMode' -Details 'No Settings page opened' }
-        else { Start-Process 'ms-settings:defaultapps' -ErrorAction SilentlyContinue; Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'Manual' -Details 'See Logs\DefaultAppsRestoreGuide.txt and the opened Settings page' }
+        else { $Script:OpenDefaultAppsAtCompletion = $true; Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'Manual' -Details 'See the restore guide; Default apps will open at completion' }
     } catch { Write-Log "Default-app guidance failed: $($_.Exception.Message)" -Level 'Warning'; Add-Result -Category 'Default Apps' -Item 'Restore guide' -Status 'Warning' -Details $_.Exception.Message }
 }
 
@@ -5351,6 +5336,7 @@ if (Test-Path $profileRootPath) {
             if ($TestMode) {
                 Write-Log "  $($file.Name) - Would restore to profile root" -Level "Info"
                 $copiedCount++
+
             }
             else {
                 try {
@@ -5698,6 +5684,7 @@ elseif ((Test-Path $powerScheme) -and $hasIndividualPowerSettings) {
 # This is the normal route for the organisation's managed STOBG plan; it is
 # intentionally attempted even without elevation.  Settings rejected by a
 # policy or unsupported by the new hardware are reported individually.
+
 function Set-ImportedPowerOverlay {
     # Apply captured AC/DC values independently to the existing managed plan so
     # a policy rejection of one setting does not hide the others.
@@ -5859,6 +5846,7 @@ if ($false -and -not $powerPlanRestored -and $settingsData -and $settingsData.Li
 }
 
 # Mapped network drives
+
 function Get-CurrentNetworkDriveMappings {
     # Snapshot current drive mappings for comparison without attempting to
     # recreate credentials or connections that require user approval.
@@ -6296,6 +6284,7 @@ Write-Host ""
 # Windows-protected credential material safely.
 $browserDataPath = Join-Path $scriptPath "BrowserData"
 
+
 function Restore-ChromiumProfileBookmarks {
     # Restore portable bookmark HTML into the active profile discovered at
     # runtime; usernames and profile directories may differ on the new machine.
@@ -6575,6 +6564,7 @@ if (Test-Path -LiteralPath $edgeProfileArchive) {
 }
 
 # Firefox profile data
+
 function Remove-FirefoxProfileLocks {
     # Remove only transient Firefox lock files before copying a profile, after
     # the caller has ensured Firefox is not actively changing its databases.
@@ -6734,6 +6724,11 @@ function Get-ProgramMatchKey {
     return "$(ConvertTo-ProgramMatchPart $DisplayName)|$(ConvertTo-ProgramMatchPart $Publisher)"
 }
 
+function Get-ProgramNameKey {
+    param([string]$DisplayName)
+    return (ConvertTo-ProgramMatchPart $DisplayName)
+}
+
 function Get-CurrentInstalledPrograms {
     $items = @()
     $locations = @(
@@ -6801,8 +6796,10 @@ function Update-TransferReportFromImport {
                 $version = & $encode ([string]$_.DisplayVersion)
                 "<li><strong>$name</strong><small>$publisher · old version: $version</small></li>"
             }) -join "`n"
-            $candidateItems = @($AppDataCandidates | ForEach-Object { "<li><strong>$(& $encode ([string]$_.RelativePath))</strong><small>$(& $encode ([string]$_.Area)) - $(& $encode ([string]$_.Association))</small></li>" }) -join "`n"
-            $candidatePanel = if ($candidateItems) { "<details class='section'><summary>AppData migration review<span>$($AppDataCandidates.Count) folder(s) to review; none are copied automatically</span></summary><div class='section-content'><ul class='app-list'>$candidateItems</ul></div></details>" } else { '' }
+            # Use one explicit table row per candidate. This avoids serializing
+            # an array into a single card in the handoff report.
+            $candidateRows = @($AppDataCandidates | ForEach-Object { "<tr><td>$(& $encode ([string]$_.Area))</td><td>$(& $encode ([string]$_.RelativePath))</td><td>$(& $encode ([string]$_.Association))</td></tr>" }) -join "`n"
+            $candidatePanel = if ($candidateRows) { "<details class='section'><summary>AppData migration review<span>$($AppDataCandidates.Count) folder(s) to review; none are copied automatically</span></summary><div class='section-content'><table><thead><tr><th>Area</th><th>Folder</th><th>Association</th></tr></thead><tbody>$candidateRows</tbody></table></div></details>" } else { '' }
             if ($MissingPrograms.Count -gt 0) {
                 $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><ul class='app-list'>$appItems</ul></div>$candidatePanel"
             }
@@ -6851,6 +6848,16 @@ function Update-TransferReportImportOutcomes {
         else { '' }
         $reportHtml = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8
         $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'IMPORT_RESULTS' -Content $content
+        $importDuration = (Get-Date) - $Script:Results.StartTime
+        $importMinutes = [math]::Round($importDuration.TotalMinutes, 1)
+        if ($reportHtml -match '<!-- TRANSFER_DURATION -->(.*?)<!-- /TRANSFER_DURATION -->') {
+            $exportDuration = $Matches[1]
+            $exportMinutes = 0.0
+            [void][double]::TryParse(($exportDuration -replace '[^0-9.]', ''), [ref]$exportMinutes)
+            $totalMinutes = [math]::Round(($exportMinutes + $importMinutes), 1)
+            $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'TRANSFER_DURATION' -Content "$totalMinutes min total ($exportDuration export + $importMinutes min import)"
+            $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'TRANSFER_DURATION_COPY' -Content 'Total active transfer time across both computers'
+        }
         Set-Content -LiteralPath $reportPath -Value $reportHtml -Encoding UTF8
         Write-Log "Transfer report updated with $($attention.Count) import item(s) needing attention." -Level 'Info'
     }
@@ -6882,7 +6889,13 @@ else {
         $newProgramsPath = Join-Path $logsPath 'NewInstalledPrograms.json'
         $newPrograms | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $newProgramsPath -Encoding UTF8
         $newByKey = @{}; foreach ($program in $newPrograms) { if ($program.MatchKey) { $newByKey[$program.MatchKey] = $program } }
-        $allMissingPrograms = @($sourcePrograms | Where-Object { -not $_.MatchKey -or -not $newByKey.ContainsKey($_.MatchKey) })
+        $newByName = @{}; foreach ($program in $newPrograms) { $nameKey = Get-ProgramNameKey $program.DisplayName; if ($nameKey) { if (-not $newByName.ContainsKey($nameKey)) { $newByName[$nameKey] = @() }; $newByName[$nameKey] += $program } }
+        # Publisher strings can differ between MSI, Store, and winget builds.
+        # An unambiguous normalized display-name match is still installed.
+        $allMissingPrograms = @($sourcePrograms | Where-Object {
+            $nameKey = Get-ProgramNameKey $_.DisplayName
+            -not $_.MatchKey -or (-not $newByKey.ContainsKey($_.MatchKey) -and (-not $nameKey -or -not $newByName.ContainsKey($nameKey) -or $newByName[$nameKey].Count -ne 1))
+        })
         $filteredPrograms = @($allMissingPrograms | Where-Object { -not (Test-UserFacingProgram $_) })
         $missingPrograms = @($allMissingPrograms | Where-Object { Test-UserFacingProgram $_ })
         $matchedPrograms = @($sourcePrograms | Where-Object { $_.MatchKey -and $newByKey.ContainsKey($_.MatchKey) } | ForEach-Object {
@@ -6993,6 +7006,7 @@ Write-Host ""
 # after all user-profile work has completed and restores power plus PrintBRM.
 # TestMode must never show UAC or launch the helper.
 $adminAuditPath = Join-Path $logsPath "AdminImportResult.json"
+
 function Write-AdminHelperAudit {
     param([string]$Status, [string]$Detail)
     $audit = [PSCustomObject]@{ Timestamp = (Get-Date).ToString("o"); Status = $Status; Detail = $Detail; Source = "Import-LaptopData.ps1" }
@@ -7045,8 +7059,16 @@ else {
         $exportAdminState = if ($exportSettings.ExportWasAdministrator) { 'with administrator rights' } else { 'without administrator rights' }
     } catch { }
     Write-Host "  System settings were exported $exportAdminState." -ForegroundColor DarkGray
-    $adminChoice = Read-UserInput '  Run the optional elevated power/PrintBRM restore? (Y/N) [Y]'
-    if ($adminChoice -match '^[Nn]') { $enableAdminHelper = $false }
+    Write-Host '  [1] Restore printers now without administrator rights' -ForegroundColor Cyan
+    Write-Host '  [2] Restore printers and power settings with administrator rights' -ForegroundColor Cyan
+    $adminChoice = Read-UserInput '  Select 1-2 (or press Enter to skip)'
+    if ($adminChoice -eq '1') {
+        $helperPath = Join-Path $scriptPath 'Import-SystemSettings.ps1'
+        if (Test-Path -LiteralPath $helperPath) { Invoke-StandardSystemRestoreFallback -HelperPath $helperPath }
+        else { Write-AdminHelperAudit -Status 'Deferred' -Detail 'Import-SystemSettings.ps1 is missing.' }
+        $enableAdminHelper = $false
+    }
+    elseif ($adminChoice -ne '2') { $enableAdminHelper = $false }
     if (-not $enableAdminHelper) {
         Write-AdminHelperAudit -Status 'Skipped' -Detail 'Technician chose not to run the optional administrator helper.'
         Write-Host '  Elevated power and PrintBRM restore skipped by technician.' -ForegroundColor Yellow
@@ -7154,6 +7176,11 @@ if (-not $TestMode) {
     Start-PostImportHandoff
 }
 
+if (-not $TestMode -and $Script:OpenDefaultAppsAtCompletion) {
+    try { Start-Process 'ms-settings:defaultapps' -ErrorAction Stop; Write-Log 'Opened Default apps at import completion.' -Level Success }
+    catch { Write-Log "Could not open Default apps: $($_.Exception.Message)" -Level Warning }
+}
+
 if (-not $TestMode) {
     Read-UserInput "  Press Enter to exit" | Out-Null
 }
@@ -7193,6 +7220,7 @@ if (-not $TestMode) {
     Write-Log "Import script generated" -Level Success
     Add-Result -Category "Scripts" -Item "Import-LaptopData.ps1" -Status "Success" -Details "Ready for new machine"
 }
+
 
 function New-AdminImportScript {
     # Emit the isolated administrator helper with a narrow input surface and
@@ -7436,8 +7464,6 @@ if %IMPORT_EXIT% neq 0 (
 ) else (
     echo Import complete.
 )
-echo Press any key to exit...
-pause >nul
 "@
 
     $batContent | Out-File $batPath -Encoding ASCII

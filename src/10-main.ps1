@@ -35,8 +35,6 @@ if %IMPORT_EXIT% neq 0 (
 ) else (
     echo Import complete.
 )
-echo Press any key to exit...
-pause >nul
 "@
 
     $batContent | Out-File $batPath -Encoding ASCII

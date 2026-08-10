@@ -307,8 +307,12 @@ function Start-TransferSizeEstimateJob {
     # Keep large profile-related payloads near the end and normal user folders
     # last. This avoids Documents/Desktop/Downloads competing with the more
     # useful early estimates while the background job is still running.
-    $normalPaths = @((Join-Path $Script:OriginalAppDataLocal 'Microsoft\Edge\User Data'))
-    $heavyPaths = @($Script:OriginalUserProfile)
+    # Edge transfers only its small Bookmarks files; scanning its entire cache
+    # tree for an estimate was both inaccurate and exceptionally slow.
+    $normalPaths = @()
+    # A complete profile walk is intentionally deferred. It can take hours on
+    # redirected/OneDrive profiles and estimates must never delay the menu.
+    $heavyPaths = @()
     $heavyPaths += @($Script:Config.BluebeamPaths | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
     $heavyPaths += @($Script:Config.AppDataRoaming.Values | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
     $heavyPaths += @(
@@ -368,9 +372,10 @@ function Get-TransferSizeDisplayEstimate {
     # interactive menu perform a competing foreground recursive scan.
     $sizes = @{}
     foreach ($key in @($Script:Config.Backup.Keys)) { $sizes[$key] = [long]0 }
-    foreach ($key in @('UserData', 'Downloads', 'EntireUserProfile', 'AdditionalAppData', 'AppData', 'LotusNotes', 'Firefox', 'Edge')) {
+    foreach ($key in @('UserData', 'Downloads', 'EntireUserProfile', 'AdditionalAppData', 'AppData', 'LotusNotes', 'Firefox')) {
         if ($Script:Config.Backup[$key]) { $sizes[$key] = $null }
     }
+    if ($Script:Config.Backup.Edge) { $sizes.Edge = [long]0 }
     if ($Script:Config.Backup.UserData) {
         $userDataPaths = @($Script:Config.UserFolders | Where-Object { $_ -ne 'Downloads' } | ForEach-Object { Resolve-ExportUserFolderPath $_ })
         $sizes.UserData = Get-CachedFolderSizeSum -Paths $userDataPaths
@@ -437,26 +442,12 @@ function Receive-TransferSizeEstimateJob {
 }
 
 function Read-MenuInputWithBackgroundRefresh {
-    # Read-Host blocks the foreground thread, so refresh the estimate job before
-    # and after input.  This gives the operator current numbers at each menu
-    # transition without attempting unsafe concurrent console writes.
+    # Read-Host is deliberately used for menus. Some console hosts report that
+    # RawUI is available but never surface KeyAvailable, which left the custom
+    # reader waiting forever and made every selection bar appear broken.
     param([string]$Prompt, [scriptblock]$Poll)
-    try {
-        $rawUi = $Host.UI.RawUI
-        [void]$rawUi.KeyAvailable
-    }
-    catch { return (Read-UserInput $Prompt).Trim() }
-    $buffer = ''
-    while ($true) {
-        if (& $Poll) { Write-Host ''; return '__MENU_AUTO_REFRESH__' }
-        if ($rawUi.KeyAvailable) {
-            $key = $rawUi.ReadKey('NoEcho,IncludeKeyDown')
-            if ($key.VirtualKeyCode -eq 13) { Write-Host ''; return $buffer.Trim() }
-            if ($key.VirtualKeyCode -eq 8) { if ($buffer.Length) { $buffer = $buffer.Substring(0, $buffer.Length - 1); Write-Host "`b `b" -NoNewline }; continue }
-            if ($key.Character -and -not [char]::IsControl($key.Character)) { $buffer += $key.Character; Write-Host $key.Character -NoNewline }
-        }
-        Start-Sleep -Milliseconds 120
-    }
+    if ($Poll) { [void](& $Poll) }
+    return (Read-UserInput $Prompt).Trim()
 }
 
 function Show-BackupOverview {
@@ -476,11 +467,6 @@ function Show-BackupOverview {
         }
         if ($selection -eq '__MENU_AUTO_REFRESH__') { continue }
         if ($selection -eq '1') {
-            if ($Script:TransferSizeEstimateJob) {
-                Write-Host '  Size calculation is still running. Please wait for the completed estimate before starting.' -ForegroundColor Yellow
-                Start-Sleep -Milliseconds 900
-                continue
-            }
             return $true
         }
         if ($selection -eq '3') { return $false }
@@ -669,7 +655,7 @@ function Show-TransferSettingsMenu {
         Write-Host "  ZIP archives are optional for Local transfers and enabled by default for Online transfers." -ForegroundColor DarkGray
         Write-Host "  Import settings are written into the transfer package's generated import script." -ForegroundColor DarkGray
 
-        if ($Script:TransferSizeEstimateJob) { Write-Host '  Calculating folder sizes in the background. Press R to refresh; the menu refreshes automatically when finished.' -ForegroundColor Cyan }
+        if ($Script:TransferSizeEstimateJob) { Write-Host '  Calculating folder sizes in the background. Estimates are optional; you can start now.' -ForegroundColor Cyan }
         $selection = Read-MenuInputWithBackgroundRefresh -Prompt '  [S] Start transfer  [Q] Cancel  [R] Refresh' -Poll {
             $wasRunning = [bool]$Script:TransferSizeEstimateJob
             [void](Receive-TransferSizeEstimateJob)
@@ -678,11 +664,7 @@ function Show-TransferSettingsMenu {
 
         if ($selection -eq '__MENU_AUTO_REFRESH__' -or $selection -match '^[Rr]$') { continue }
         if ($selection -match "^[Ss]$") {
-            $confirmStart = Read-UserInput '  Type START to begin the transfer (or press Enter to return)'
-            if ($confirmStart -ceq 'START') { return $true }
-            Write-Host '  Transfer not started.' -ForegroundColor Yellow
-            Start-Sleep -Milliseconds 700
-            continue
+            return $true
         }
         if ($selection -match "^[Qq]$") { return $false }
         if ($selection -match "^[Bb]$") { Set-SettingsPreset -Name Basic; Update-AdvancedPayloadEstimate; continue }
