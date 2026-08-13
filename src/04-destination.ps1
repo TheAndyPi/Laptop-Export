@@ -242,8 +242,8 @@ function Select-TargetDestination {
     Write-Host "  Recommended: use an approved network share that the new laptop can reach." -ForegroundColor Cyan
     Write-Host "  The export is staged and zipped locally, then uploaded as one ZIP when a network share is selected." -ForegroundColor DarkGray
     Write-Host "  If no share is available, use a temporary folder on C: with ample free space (for example C:\LaptopTransfers)." -ForegroundColor Gray
-    Write-Host "  AppData itself is allowed; avoid Desktop, Downloads, OneDrive, and folders outside AppData\Local, AppData\Roaming, and AppData\LocalLow inside the profile." -ForegroundColor Yellow
-
+    Write-Host "  AppData itself is allowed, but only the root AppData folder itself. This means that AppData\Local, AppData\Roaming, and AppData\LocalLow are not permissible, but AppData\ is allowed." -ForegroundColor Yellow
+    Write-Host "  Avoid Desktop, Downloads, OneDrive, and other folders inside of the profile." 
     $selectedPath = $DestinationPath
     if (-not $selectedPath) {
         try {
