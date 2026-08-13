@@ -313,15 +313,17 @@ function Start-TransferSizeEstimateJob {
     # A complete profile walk is intentionally deferred. It can take hours on
     # redirected/OneDrive profiles and estimates must never delay the menu.
     $heavyPaths = @()
-    $heavyPaths += @($Script:Config.BluebeamPaths | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
-    $heavyPaths += @($Script:Config.AppDataRoaming.Values | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
-    $heavyPaths += @(
-        (Join-Path $Script:OriginalAppDataLocal 'Lotus'),
-        (Join-Path $Script:OriginalAppDataLocal 'Google\Chrome\User Data'),
-        (Join-Path $Script:OriginalAppDataRoaming 'Mozilla\Firefox'),
-        (Join-Path $Script:OriginalAppDataLocal 'Mozilla\Firefox')
-    )
+    if ($Script:Config.Backup.AppData) {
+        $heavyPaths += @($Script:Config.BluebeamPaths | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
+        $heavyPaths += @($Script:Config.AppDataRoaming.Values | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
+    }
+    if ($Script:Config.Backup.LotusNotes) { $heavyPaths += Join-Path $Script:OriginalAppDataLocal 'Lotus' }
+    if ($Script:Config.Backup.Chrome -eq 'FullProfile') { $heavyPaths += Join-Path $Script:OriginalAppDataLocal 'Google\Chrome\User Data' }
+    if ($Script:Config.Backup.Firefox) {
+        $heavyPaths += @((Join-Path $Script:OriginalAppDataRoaming 'Mozilla\Firefox'), (Join-Path $Script:OriginalAppDataLocal 'Mozilla\Firefox'))
+    }
     $userDataPaths = @($Script:Config.UserFolders | ForEach-Object { Resolve-ExportUserFolderPath $_ })
+    if ($Script:Config.Backup.EntireUserProfile) { $heavyPaths += $Script:OriginalUserProfile }
     $seenPaths = @{}; $inventoryPaths = [System.Collections.Generic.List[string]]::new()
     foreach ($path in @($normalPaths + $heavyPaths + $userDataPaths)) {
         if ($path -and -not $seenPaths.ContainsKey($path)) { $seenPaths[$path] = $true; [void]$inventoryPaths.Add($path) }
@@ -442,12 +444,31 @@ function Receive-TransferSizeEstimateJob {
 }
 
 function Read-MenuInputWithBackgroundRefresh {
-    # Read-Host is deliberately used for menus. Some console hosts report that
-    # RawUI is available but never surface KeyAvailable, which left the custom
-    # reader waiting forever and made every selection bar appear broken.
+    # A normal Read-Host blocks the foreground runspace, so completed jobs could
+    # not update the overview until after the next keypress. Use Console input
+    # when available and retain Read-Host only for redirected hosts.
     param([string]$Prompt, [scriptblock]$Poll)
+    Write-Host $Prompt
+    try {
+        if (-not [Console]::IsInputRedirected) {
+            Write-Host '  > ' -NoNewline
+            $buffer = [Text.StringBuilder]::new()
+            while ($true) {
+                if ($Poll -and (& $Poll)) { Write-Host ''; return '__MENU_AUTO_REFRESH__' }
+                if (-not [Console]::KeyAvailable) { Start-Sleep -Milliseconds 175; continue }
+                $key = [Console]::ReadKey($true)
+                if ($key.Key -eq [ConsoleKey]::Enter) { Write-Host ''; return $buffer.ToString().Trim() }
+                if ($key.Key -eq [ConsoleKey]::Backspace) {
+                    if ($buffer.Length) { [void]$buffer.Remove($buffer.Length - 1, 1); Write-Host "`b `b" -NoNewline }
+                    continue
+                }
+                if (-not [char]::IsControl($key.KeyChar)) { [void]$buffer.Append($key.KeyChar); Write-Host $key.KeyChar -NoNewline }
+            }
+        }
+    }
+    catch { }
     if ($Poll) { [void](& $Poll) }
-    return (Read-UserInput $Prompt).Trim()
+    return (Read-Host '  > ').Trim()
 }
 
 function Show-BackupOverview {
@@ -598,7 +619,8 @@ function Show-TransferSettingsMenu {
     if ($null -eq $estimate -and -not $Script:TransferSizeEstimateJob) { $Script:TransferSizeEstimateJob = Start-TransferSizeEstimateJob }
 
     while ($true) {
-        if (Receive-TransferSizeEstimateJob) { $estimate = if ($Script:StartupPayloadEstimate) { $Script:StartupPayloadEstimate } else { $Script:TransferSizeDisplayEstimate } }
+        [void](Receive-TransferSizeEstimateJob)
+        $estimate = if ($Script:StartupPayloadEstimate) { $Script:StartupPayloadEstimate } else { $Script:TransferSizeDisplayEstimate }
         Clear-StoScreen
         Write-Banner -Title "Transfer Settings" -Subtitle "$($Script:Config.TransferMode) transfer - changes apply to this transfer only"
         Write-Section "Backup settings"
@@ -695,9 +717,7 @@ function Show-TransferSettingsMenu {
                     else { $Script:SelectedAdditionalAppData = @() }
                     Update-AdvancedPayloadEstimate
                 }
-                elseif ($setting.Section -eq 'Backup' -and $setting.Key -eq 'EntireUserProfile') {
-                    Update-AdvancedPayloadEstimate
-                }
+                else { Update-AdvancedPayloadEstimate }
             }
         }
         else {
@@ -720,6 +740,9 @@ $Script:Results = @{
     Actions = [System.Collections.ArrayList]::new()
     Errors = [System.Collections.ArrayList]::new()
     Warnings = [System.Collections.ArrayList]::new()
+    # Console warnings are not always action outcomes (for example, an archive
+    # security exclusion). Keep them separately so none disappear from handoff.
+    RuntimeAlerts = [System.Collections.ArrayList]::new()
     ManualTasks = [System.Collections.ArrayList]::new()
 }
 
@@ -735,6 +758,10 @@ function Write-Log {
     $timestamp = Get-Date -Format "HH:mm:ss"
     $logEntry = "[$timestamp][$Level] $Message"
     [void]$Script:Log.Add($logEntry)
+    if ($Level -in @('Warning', 'Error')) {
+        if (-not $Script:Results.RuntimeAlerts) { $Script:Results.RuntimeAlerts = [System.Collections.ArrayList]::new() }
+        [void]$Script:Results.RuntimeAlerts.Add([PSCustomObject]@{ Timestamp = $timestamp; Level = $Level; Message = $Message })
+    }
     
     $color = switch ($Level) {
         "Info"    { "White" }

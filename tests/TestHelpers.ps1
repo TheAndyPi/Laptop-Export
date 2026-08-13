@@ -52,6 +52,7 @@ function Reset-LaptopExportResults {
         Actions = [System.Collections.ArrayList]::new()
         Errors = [System.Collections.ArrayList]::new()
         Warnings = [System.Collections.ArrayList]::new()
+        RuntimeAlerts = [System.Collections.ArrayList]::new()
         ManualTasks = [System.Collections.ArrayList]::new()
     }
 }

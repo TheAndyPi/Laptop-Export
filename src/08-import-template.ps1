@@ -747,16 +747,27 @@ if (Test-Path -LiteralPath $desktopLayoutFile) {
             $layoutDetail = if ($positionRestored -and $usedShellCoordinates) { "$positionRestored desktop item(s) positioned through Explorer with destination-display scaling" } elseif ($positionRestored) { "$count desktop shortcut(s) restored; $positionRestored legacy shell position value(s) applied" } else { "$count shortcut(s) restored; source package has no usable desktop position state" }
             Add-Result -Category 'Desktop Layout' -Item 'Shortcut layout' -Status $layoutStatus -Details $layoutDetail
             if ($missingDesktopItems.Count) { Add-Result -Category 'Desktop Layout' -Item 'Unmatched desktop items' -Status 'Skipped' -Details "$($missingDesktopItems.Count) source item(s) were not present after restore: $(@($missingDesktopItems | Select-Object -First 5) -join ', ')" }
-            $localDesktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+            # DesktopDirectory can itself be the OneDrive Desktop. Compare only
+            # distinct roots; otherwise a shortcut compares equal to itself and
+            # is incorrectly offered for recycling as a "duplicate".
+            $localDesktops = @(
+                [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory),
+                (Join-Path $env:USERPROFILE 'Desktop')
+            ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Sort-Object -Unique
             $candidates = @()
             foreach ($cloudDesktop in @(Get-OneDriveDesktopPaths)) {
+                $cloudRoot = [IO.Path]::GetFullPath($cloudDesktop).TrimEnd([char]92)
+                foreach ($localDesktop in $localDesktops) {
+                    if ($cloudRoot -eq [IO.Path]::GetFullPath($localDesktop).TrimEnd([char]92)) { continue }
                 foreach ($cloudShortcut in @(Get-ChildItem -LiteralPath $cloudDesktop -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.lnk', '.url') })) {
                     $localShortcut = Join-Path $localDesktop $cloudShortcut.Name
                     if (-not (Test-Path -LiteralPath $localShortcut)) { continue }
                     $cloudHash = Get-ShortcutHash $cloudShortcut.FullName; $localHash = Get-ShortcutHash $localShortcut
                     if ($cloudHash -and $cloudHash -eq $localHash) { $candidates += $cloudShortcut }
                 }
+                }
             }
+            $candidates = @($candidates | Sort-Object FullName -Unique)
             if ($candidates.Count) {
                 Write-Host '  Exact duplicate OneDrive Desktop shortcuts:' -ForegroundColor Yellow
                 $candidates | ForEach-Object { Write-Host "    $($_.FullName)" -ForegroundColor Gray }
@@ -2925,4 +2936,3 @@ exit $(if($result.Errors.Count){1}else{0})
 # ============================================================================
 # HTML REPORT GENERATOR
 # ============================================================================
-

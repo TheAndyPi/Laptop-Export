@@ -1,4 +1,4 @@
-# ---------------------------------------------------------------------------
+﻿# ---------------------------------------------------------------------------
 # GENERATED FILE - DO NOT EDIT DIRECTLY
 # Source modules: ordered explicitly in Build-Deployment.ps1
 # Build command: powershell -ExecutionPolicy Bypass -File .\\Build-Deployment.ps1
@@ -255,6 +255,8 @@ $Script:TransferReportTemplate = @'
   <style>
     :root{color-scheme:dark;--ink:#f5f9ff;--muted:#9daec6;--panel:#111d33;--panel2:#172744;--line:rgba(173,204,255,.17);--blue:#29b8ff;--violet:#9d7bff;--green:#44dda4;--amber:#ffc45d;--red:#ff7185}
     *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% -10%,#235e91 0,transparent 38%),radial-gradient(circle at 90% 5%,#4d327b 0,transparent 31%),#08111f;color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif}.container{max-width:1160px;margin:auto;padding:32px 20px 48px}.hero,.section,.stat,.route-card,.duration-card{border:1px solid var(--line);background:linear-gradient(145deg,rgba(27,45,76,.93),rgba(12,23,41,.94));box-shadow:0 18px 50px rgba(0,0,0,.19)}.hero{border-radius:24px;padding:30px;margin-bottom:18px;overflow:hidden;position:relative}.hero:after{content:"";position:absolute;width:280px;height:280px;border-radius:50%;right:-100px;top:-165px;background:radial-gradient(circle,rgba(41,184,255,.22),transparent 70%);pointer-events:none}.eyebrow,.label{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}h1{margin:5px 0 4px;font-size:clamp(28px,4vw,42px);line-height:1.1;letter-spacing:-.035em}.accent{color:var(--blue)}.meta{color:var(--muted);margin:0}.route{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:stretch;margin-top:25px}.route-card{min-width:0;border-radius:16px;padding:16px;background:rgba(7,17,31,.55)}.route-name{overflow-wrap:anywhere;font-size:20px;font-weight:700;color:#fff;margin-top:4px}.route-arrow{align-self:center;color:var(--blue);font-size:28px;text-align:center}.duration-card{border-radius:16px;margin-top:16px;padding:18px 20px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(100deg,rgba(41,184,255,.14),rgba(157,123,255,.14))}.duration{font-size:clamp(34px,5vw,56px);line-height:1;font-weight:800;letter-spacing:-.06em;color:#fff}.duration-copy{text-align:right;color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.stat{border-radius:16px;padding:18px}.number{font-size:30px;font-weight:800;line-height:1.1}.success .number,.success-text{color:var(--green)}.warning .number{color:var(--amber)}.error .number{color:var(--red)}.skipped .number{color:#c8d2e3}.section{border-radius:18px;margin:18px 0;overflow:hidden}.section-header{padding:17px 20px;background:rgba(255,255,255,.035);font-size:17px;font-weight:700}.section-subtitle{display:block;margin-top:2px;color:var(--muted);font-size:12px;font-weight:400}.section-content{padding:20px}.app-summary{border:1px solid rgba(41,184,255,.35);border-radius:14px;padding:18px;background:linear-gradient(110deg,rgba(41,184,255,.1),rgba(157,123,255,.08))}.app-summary h3{margin:0 0 6px;font-size:19px}.app-summary p{margin:0;color:var(--muted)}.app-summary.ready{border-color:rgba(255,196,93,.55)}.app-summary.ok{border-color:rgba(68,221,164,.55)}.app-list{margin:16px 0 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:9px}.app-list li{min-width:0;padding:11px 12px;border-radius:10px;background:rgba(6,15,28,.55);border:1px solid var(--line);overflow-wrap:anywhere}.app-list small,.manual-task p,.manual-task pre{display:block;max-width:100%;overflow-wrap:anywhere;word-break:break-word}.app-list small{color:var(--muted);margin-top:2px}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{padding:12px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere;word-break:break-word}th{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}.status{display:inline-block;border-radius:999px;padding:4px 9px;font-size:12px;white-space:nowrap}.status-success{background:rgba(68,221,164,.15);color:#84f2c6}.status-warning{background:rgba(255,196,93,.14);color:#ffda91}.status-error{background:rgba(255,113,133,.16);color:#ffb3be}.status-skipped{background:rgba(187,202,224,.13);color:#d9e2f0}.critical-warning{border:1px solid rgba(255,113,133,.7);background:rgba(127,29,29,.28);border-radius:18px;padding:20px;margin:18px 0}.critical-warning h2{margin:0 0 4px;color:#ffbac4}.critical-warning p{margin:0;color:#ffd1d8}.admin-success{border-radius:16px;padding:15px 20px;margin:18px 0;color:#a1f6d1}.manual-task{border-left:3px solid var(--violet);border-radius:0 10px 10px 0;background:rgba(157,123,255,.1);padding:14px 16px;margin-bottom:10px}.manual-task.critical{border-color:var(--red);background:rgba(255,113,133,.1)}.manual-task h4{margin:0 0 4px}.manual-task p{margin:0;color:var(--muted)}.manual-task pre{white-space:pre-wrap;margin:10px 0 0;color:#dfeaff;font:12px/1.45 Consolas,monospace}details.section{padding:0}details summary{cursor:pointer;list-style:none;padding:18px 20px;font-size:17px;font-weight:700;background:rgba(255,255,255,.035)}details summary::-webkit-details-marker{display:none}details summary:after{content:'+';float:right;color:var(--blue);font-size:22px;line-height:.8}details[open] summary:after{content:'−'}details summary span{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:2px}details ul{margin:0;padding-left:22px}details li{margin:9px 0;color:#dce8fa}footer{text-align:center;color:#7f91ac;font-size:12px;padding:10px}@media(max-width:700px){.container{padding:18px 14px 35px}.hero{padding:22px}.route{grid-template-columns:1fr}.route-arrow{transform:rotate(90deg);padding:0}.duration-card{align-items:flex-start;gap:12px;flex-direction:column}.duration-copy{text-align:left}.stats{grid-template-columns:repeat(2,1fr)}.section-content{overflow:auto;padding:14px}table{table-layout:auto}}
+    /* Compact handoff view: keep long action ledgers scannable at 100% zoom. */
+    body{font-size:14px;line-height:1.45}.container{padding:24px 18px 38px}.hero{padding:24px;margin-bottom:14px;border-radius:20px}h1{font-size:clamp(24px,3.4vw,36px)}.route{gap:12px;margin-top:20px}.route-card{padding:13px;border-radius:14px}.route-name{font-size:17px}.duration-card{margin-top:14px;padding:15px 17px;border-radius:14px}.duration{font-size:clamp(28px,4vw,44px)}.stats{gap:10px;margin:14px 0}.stat{padding:14px;border-radius:14px}.number{font-size:25px}.section-header,details summary{font-size:16px;padding:14px 17px}.section-content{padding:16px}th,td{padding:10px 8px}
   </style>
 </head>
 <body>
@@ -275,6 +277,7 @@ $Script:TransferReportTemplate = @'
   <section class="section"><div class="section-header">Application readiness<span class="section-subtitle">Apps present on the old computer but absent from the new one</span></div><div class="section-content"><!-- APP_MIGRATION_SECTION -->{{APP_MIGRATION_SECTION}}<!-- /APP_MIGRATION_SECTION --></div></section>
   <!-- IMPORT_RESULTS --><!-- /IMPORT_RESULTS -->
   <section class="section"><div class="section-header">Export actions<span class="section-subtitle">Items needing attention are listed first</span></div><div class="section-content"><table><thead><tr><th>Category</th><th>Item</th><th>Status</th><th>Details</th></tr></thead><tbody>{{ACTION_ROWS}}</tbody></table></div></section>
+  {{RUNTIME_ALERTS}}
   <section class="section"><div class="section-header">Other manual tasks</div><div class="section-content">{{MANUAL_TASKS}}</div></section>
   <details class="section"><summary>New machine checklist<span>Collapsed by default — expand while completing the handoff</span></summary><div class="section-content"><ul><li>Run Import-LaptopData.ps1</li><li>Verify Windows Updates and BitLocker</li><li>Sign in to OneDrive and Teams</li><li>Configure Office 365 and Outlook signatures</li><li>Review Logs/AppMigrationReview.html</li><li>Verify printers, drives, power settings, and default browser</li></ul></div></details>
   <footer>Generated by STO Laptop Transfer Tool v{{VERSION}} · {{YEAR}}</footer>
@@ -760,15 +763,17 @@ function Start-TransferSizeEstimateJob {
     # A complete profile walk is intentionally deferred. It can take hours on
     # redirected/OneDrive profiles and estimates must never delay the menu.
     $heavyPaths = @()
-    $heavyPaths += @($Script:Config.BluebeamPaths | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
-    $heavyPaths += @($Script:Config.AppDataRoaming.Values | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
-    $heavyPaths += @(
-        (Join-Path $Script:OriginalAppDataLocal 'Lotus'),
-        (Join-Path $Script:OriginalAppDataLocal 'Google\Chrome\User Data'),
-        (Join-Path $Script:OriginalAppDataRoaming 'Mozilla\Firefox'),
-        (Join-Path $Script:OriginalAppDataLocal 'Mozilla\Firefox')
-    )
+    if ($Script:Config.Backup.AppData) {
+        $heavyPaths += @($Script:Config.BluebeamPaths | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
+        $heavyPaths += @($Script:Config.AppDataRoaming.Values | ForEach-Object { Join-Path $Script:OriginalAppDataRoaming $_ })
+    }
+    if ($Script:Config.Backup.LotusNotes) { $heavyPaths += Join-Path $Script:OriginalAppDataLocal 'Lotus' }
+    if ($Script:Config.Backup.Chrome -eq 'FullProfile') { $heavyPaths += Join-Path $Script:OriginalAppDataLocal 'Google\Chrome\User Data' }
+    if ($Script:Config.Backup.Firefox) {
+        $heavyPaths += @((Join-Path $Script:OriginalAppDataRoaming 'Mozilla\Firefox'), (Join-Path $Script:OriginalAppDataLocal 'Mozilla\Firefox'))
+    }
     $userDataPaths = @($Script:Config.UserFolders | ForEach-Object { Resolve-ExportUserFolderPath $_ })
+    if ($Script:Config.Backup.EntireUserProfile) { $heavyPaths += $Script:OriginalUserProfile }
     $seenPaths = @{}; $inventoryPaths = [System.Collections.Generic.List[string]]::new()
     foreach ($path in @($normalPaths + $heavyPaths + $userDataPaths)) {
         if ($path -and -not $seenPaths.ContainsKey($path)) { $seenPaths[$path] = $true; [void]$inventoryPaths.Add($path) }
@@ -889,12 +894,31 @@ function Receive-TransferSizeEstimateJob {
 }
 
 function Read-MenuInputWithBackgroundRefresh {
-    # Read-Host is deliberately used for menus. Some console hosts report that
-    # RawUI is available but never surface KeyAvailable, which left the custom
-    # reader waiting forever and made every selection bar appear broken.
+    # A normal Read-Host blocks the foreground runspace, so completed jobs could
+    # not update the overview until after the next keypress. Use Console input
+    # when available and retain Read-Host only for redirected hosts.
     param([string]$Prompt, [scriptblock]$Poll)
+    Write-Host $Prompt
+    try {
+        if (-not [Console]::IsInputRedirected) {
+            Write-Host '  > ' -NoNewline
+            $buffer = [Text.StringBuilder]::new()
+            while ($true) {
+                if ($Poll -and (& $Poll)) { Write-Host ''; return '__MENU_AUTO_REFRESH__' }
+                if (-not [Console]::KeyAvailable) { Start-Sleep -Milliseconds 175; continue }
+                $key = [Console]::ReadKey($true)
+                if ($key.Key -eq [ConsoleKey]::Enter) { Write-Host ''; return $buffer.ToString().Trim() }
+                if ($key.Key -eq [ConsoleKey]::Backspace) {
+                    if ($buffer.Length) { [void]$buffer.Remove($buffer.Length - 1, 1); Write-Host "`b `b" -NoNewline }
+                    continue
+                }
+                if (-not [char]::IsControl($key.KeyChar)) { [void]$buffer.Append($key.KeyChar); Write-Host $key.KeyChar -NoNewline }
+            }
+        }
+    }
+    catch { }
     if ($Poll) { [void](& $Poll) }
-    return (Read-UserInput $Prompt).Trim()
+    return (Read-Host '  > ').Trim()
 }
 
 function Show-BackupOverview {
@@ -1045,7 +1069,8 @@ function Show-TransferSettingsMenu {
     if ($null -eq $estimate -and -not $Script:TransferSizeEstimateJob) { $Script:TransferSizeEstimateJob = Start-TransferSizeEstimateJob }
 
     while ($true) {
-        if (Receive-TransferSizeEstimateJob) { $estimate = if ($Script:StartupPayloadEstimate) { $Script:StartupPayloadEstimate } else { $Script:TransferSizeDisplayEstimate } }
+        [void](Receive-TransferSizeEstimateJob)
+        $estimate = if ($Script:StartupPayloadEstimate) { $Script:StartupPayloadEstimate } else { $Script:TransferSizeDisplayEstimate }
         Clear-StoScreen
         Write-Banner -Title "Transfer Settings" -Subtitle "$($Script:Config.TransferMode) transfer - changes apply to this transfer only"
         Write-Section "Backup settings"
@@ -1142,9 +1167,7 @@ function Show-TransferSettingsMenu {
                     else { $Script:SelectedAdditionalAppData = @() }
                     Update-AdvancedPayloadEstimate
                 }
-                elseif ($setting.Section -eq 'Backup' -and $setting.Key -eq 'EntireUserProfile') {
-                    Update-AdvancedPayloadEstimate
-                }
+                else { Update-AdvancedPayloadEstimate }
             }
         }
         else {
@@ -1167,6 +1190,9 @@ $Script:Results = @{
     Actions = [System.Collections.ArrayList]::new()
     Errors = [System.Collections.ArrayList]::new()
     Warnings = [System.Collections.ArrayList]::new()
+    # Console warnings are not always action outcomes (for example, an archive
+    # security exclusion). Keep them separately so none disappear from handoff.
+    RuntimeAlerts = [System.Collections.ArrayList]::new()
     ManualTasks = [System.Collections.ArrayList]::new()
 }
 
@@ -1182,6 +1208,10 @@ function Write-Log {
     $timestamp = Get-Date -Format "HH:mm:ss"
     $logEntry = "[$timestamp][$Level] $Message"
     [void]$Script:Log.Add($logEntry)
+    if ($Level -in @('Warning', 'Error')) {
+        if (-not $Script:Results.RuntimeAlerts) { $Script:Results.RuntimeAlerts = [System.Collections.ArrayList]::new() }
+        [void]$Script:Results.RuntimeAlerts.Add([PSCustomObject]@{ Timestamp = $timestamp; Level = $Level; Message = $Message })
+    }
     
     $color = switch ($Level) {
         "Info"    { "White" }
@@ -3993,8 +4023,8 @@ function Request-BrowserClose {
     if ($processes.Count -eq 0) { return $true }
 
     Write-Host ""
-    Write-Host "  $DisplayName is open. Waiting up to 30 seconds for it to close; copying will continue afterward." -ForegroundColor Yellow
-    $deadline = (Get-Date).AddSeconds(30)
+    Write-Host "  $DisplayName is open. Waiting up to 10 seconds for it to close; copying will continue afterward." -ForegroundColor Yellow
+    $deadline = (Get-Date).AddSeconds(10)
     do {
         Start-Sleep -Milliseconds 750
         $processes = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
@@ -5167,16 +5197,27 @@ if (Test-Path -LiteralPath $desktopLayoutFile) {
             $layoutDetail = if ($positionRestored -and $usedShellCoordinates) { "$positionRestored desktop item(s) positioned through Explorer with destination-display scaling" } elseif ($positionRestored) { "$count desktop shortcut(s) restored; $positionRestored legacy shell position value(s) applied" } else { "$count shortcut(s) restored; source package has no usable desktop position state" }
             Add-Result -Category 'Desktop Layout' -Item 'Shortcut layout' -Status $layoutStatus -Details $layoutDetail
             if ($missingDesktopItems.Count) { Add-Result -Category 'Desktop Layout' -Item 'Unmatched desktop items' -Status 'Skipped' -Details "$($missingDesktopItems.Count) source item(s) were not present after restore: $(@($missingDesktopItems | Select-Object -First 5) -join ', ')" }
-            $localDesktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+            # DesktopDirectory can itself be the OneDrive Desktop. Compare only
+            # distinct roots; otherwise a shortcut compares equal to itself and
+            # is incorrectly offered for recycling as a "duplicate".
+            $localDesktops = @(
+                [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory),
+                (Join-Path $env:USERPROFILE 'Desktop')
+            ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Sort-Object -Unique
             $candidates = @()
             foreach ($cloudDesktop in @(Get-OneDriveDesktopPaths)) {
+                $cloudRoot = [IO.Path]::GetFullPath($cloudDesktop).TrimEnd([char]92)
+                foreach ($localDesktop in $localDesktops) {
+                    if ($cloudRoot -eq [IO.Path]::GetFullPath($localDesktop).TrimEnd([char]92)) { continue }
                 foreach ($cloudShortcut in @(Get-ChildItem -LiteralPath $cloudDesktop -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.lnk', '.url') })) {
                     $localShortcut = Join-Path $localDesktop $cloudShortcut.Name
                     if (-not (Test-Path -LiteralPath $localShortcut)) { continue }
                     $cloudHash = Get-ShortcutHash $cloudShortcut.FullName; $localHash = Get-ShortcutHash $localShortcut
                     if ($cloudHash -and $cloudHash -eq $localHash) { $candidates += $cloudShortcut }
                 }
+                }
             }
+            $candidates = @($candidates | Sort-Object FullName -Unique)
             if ($candidates.Count) {
                 Write-Host '  Exact duplicate OneDrive Desktop shortcuts:' -ForegroundColor Yellow
                 $candidates | ForEach-Object { Write-Host "    $($_.FullName)" -ForegroundColor Gray }
@@ -7345,7 +7386,6 @@ exit $(if($result.Errors.Count){1}else{0})
 # ============================================================================
 # HTML REPORT GENERATOR
 # ============================================================================
-
 # Report generation is deliberately last-mile: it reads the structured result
 # ledger and substitutes escaped values into a static HTML template.  It does
 # not infer success from console text or filesystem guesses.
@@ -7395,6 +7435,19 @@ function New-TransferReport {
     }
     if (-not $actionRows) { $actionRows = '<tr><td colspan="4">No export actions were recorded.</td></tr>' }
 
+    # Warnings emitted to the console are frequently contextual rather than a
+    # single copy-stage result. Preserve them in the handoff report even when
+    # the originating code did not also call Add-Result.
+    $runtimeAlerts = @($Script:Results.RuntimeAlerts | Where-Object { $_.Level -in @('Warning', 'Error') })
+    $runtimeAlertSection = if ($runtimeAlerts.Count) {
+        $alertRows = foreach ($alert in $runtimeAlerts) {
+            $class = if ($alert.Level -eq 'Error') { 'status-error' } else { 'status-warning' }
+            "<tr><td>$(Out-HtmlEncoded $alert.Timestamp)</td><td><span class='status $class'>$(Out-HtmlEncoded $alert.Level)</span></td><td>$(Out-HtmlEncoded $alert.Message)</td></tr>"
+        }
+        "<details class='section'><summary>Console warnings and errors<span>$($runtimeAlerts.Count) message(s), including warnings without an export-action row</span></summary><div class='section-content'><table><thead><tr><th>Time</th><th>Level</th><th>Message</th></tr></thead><tbody>$($alertRows -join "`n")</tbody></table></div></details>"
+    }
+    else { '' }
+
     $adminTasks = @($Script:Results.ManualTasks | Where-Object { $_.Reason -match 'admin|Administrator|privileges' })
     $adminBanner = ''
     if (-not $Script:IsAdmin -and $adminTasks.Count) {
@@ -7417,13 +7470,16 @@ function New-TransferReport {
         '{{MODE}}' = Out-HtmlEncoded $Script:Config.TransferMode; '{{DATE}}' = (Get-Date -Format "MMMM dd, yyyy 'at' h:mm tt")
         '{{DURATION}}' = "$([math]::Round($duration.TotalMinutes, 1)) minutes"; '{{SUCCESS_COUNT}}' = $successCount
         '{{WARNING_COUNT}}' = $warningCount; '{{ERROR_COUNT}}' = $errorCount; '{{SKIPPED_COUNT}}' = $skippedCount
-        '{{ADMIN_BANNER}}' = $adminBanner; '{{ACTION_ROWS}}' = ($actionRows -join "`n"); '{{MANUAL_TASKS}}' = $manualTasks
+        '{{ADMIN_BANNER}}' = $adminBanner; '{{ACTION_ROWS}}' = ($actionRows -join "`n"); '{{RUNTIME_ALERTS}}' = $runtimeAlertSection; '{{MANUAL_TASKS}}' = $manualTasks
         '{{APP_MIGRATION_SECTION}}' = '<div class="app-summary"><h3>Comparison pending</h3><p>Run the import on the new computer to identify applications that still need installation.</p></div>'
         '{{VERSION}}' = $Script:Config.Version; '{{YEAR}}' = (Get-Date -Format 'yyyy')
     }
     foreach ($token in $replacements.Keys) { $html = $html.Replace($token, [string]$replacements[$token]) }
     $reportPath = Join-Path $DestinationBase 'TransferReport.html'
-    Set-Content -LiteralPath $reportPath -Value $html -Encoding UTF8
+    # Use an explicit UTF-8 BOM. Windows PowerShell and PowerShell 7 otherwise
+    # differ here, and some file associations decode a BOM-less local report as
+    # the ANSI code page (shown as "Â·" / "âˆ’" in the supplied report).
+    [System.IO.File]::WriteAllText($reportPath, $html, [System.Text.UTF8Encoding]::new($true))
     Write-Log 'Transfer report generated' -Level Success
     return $reportPath
 }
@@ -7737,12 +7793,14 @@ function Start-LaptopExport {
 
     # 9. Generate import script
     New-ImportScript -DestinationBase $transferBase -Settings $settings
-    New-AdminImportScript -DestinationBase $transferBase
+    # Do not ship an elevated power/printer helper when neither stage was
+    # selected. This keeps an intentionally settings-free package from trying
+    # to process PowerShell/power artifacts that do not exist.
+    if ($Script:Config.Backup.SystemSettings -or $Script:Config.Backup.Printers) {
+        New-AdminImportScript -DestinationBase $transferBase
+    }
 
-    # 9. Generate HTML report
-    $reportPath = New-TransferReport -DestinationBase $transferBase
-    
-    # 10. Generate quick import batch file
+    # 9. Generate quick import batch file
     New-QuickImportBatch -DestinationBase $transferBase
 
     if (-not $Script:Config.Transfer.CreateZipArchive) {
@@ -7760,6 +7818,10 @@ function Start-LaptopExport {
             $publishedArchivePath = Publish-TransferArchive -ArchivePath $archivePath -DestinationFolder $destinationFolder -LogPath $uploadLog
         }
     }
+
+    # Generate the report only after every package action has been recorded so
+    # its four counters exactly match the terminal summary.
+    $reportPath = New-TransferReport -DestinationBase $transferBase
     
     # Summary
     $Script:Results.EndTime = Get-Date

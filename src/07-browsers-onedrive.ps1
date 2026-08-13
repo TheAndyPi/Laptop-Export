@@ -116,8 +116,8 @@ function Request-BrowserClose {
     if ($processes.Count -eq 0) { return $true }
 
     Write-Host ""
-    Write-Host "  $DisplayName is open. Waiting up to 30 seconds for it to close; copying will continue afterward." -ForegroundColor Yellow
-    $deadline = (Get-Date).AddSeconds(30)
+    Write-Host "  $DisplayName is open. Waiting up to 10 seconds for it to close; copying will continue afterward." -ForegroundColor Yellow
+    $deadline = (Get-Date).AddSeconds(10)
     do {
         Start-Sleep -Milliseconds 750
         $processes = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)

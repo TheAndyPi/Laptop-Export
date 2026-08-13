@@ -273,12 +273,17 @@ Describe 'Generated package artifacts' {
         Add-Result -Category 'Test' -Item 'Completed first' -Status 'Success' -Details 'Completed'
         Add-Result -Category 'Test' -Item 'Skipped second' -Status 'Skipped' -Details 'Needs review'
         Add-Result -Category 'Test <Category>' -Item 'Test & Item' -Status 'Error' -Details '<script>alert(1)</script>'
+        [void]$script:Results.RuntimeAlerts.Add([PSCustomObject]@{ Timestamp = '10:34:30'; Level = 'Warning'; Message = 'Plaintext <CSV> excluded from ZIP' })
         $reportPath = New-TransferReport -DestinationBase $script:Package
         $report = Get-Content -LiteralPath $reportPath -Raw
         $report | Should Match '&lt;script&gt;alert\(1\)&lt;/script&gt;'
         $report | Should Match '>1<\/div>\s*<div class="label">Errors'
         $report.IndexOf('Test &lt;Category&gt;') | Should BeLessThan $report.IndexOf('Completed first')
         $report | Should Match 'Pending import on new computer'
+        $report | Should Match 'Console warnings and errors'
+        $report | Should Match 'Plaintext &lt;CSV&gt; excluded from ZIP'
+        $reportBytes = [System.IO.File]::ReadAllBytes($reportPath)
+        @($reportBytes[0..2]) | Should Be @(0xEF, 0xBB, 0xBF)
     }
 
     It 'loads the standalone report template during development' {

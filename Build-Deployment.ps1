@@ -100,5 +100,5 @@ $preamble = @"
 "@
 
 $deploymentText = $preamble + $combinedSourceText.TrimEnd("`r", "`n")
-Set-Content -LiteralPath $OutputPath -Value $deploymentText -Encoding UTF8
+[System.IO.File]::WriteAllText($OutputPath, $deploymentText, [System.Text.UTF8Encoding]::new($true))
 Write-Host "Built single-file deployment script: $OutputPath" -ForegroundColor Green

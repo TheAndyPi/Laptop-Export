@@ -47,6 +47,19 @@ function New-TransferReport {
     }
     if (-not $actionRows) { $actionRows = '<tr><td colspan="4">No export actions were recorded.</td></tr>' }
 
+    # Warnings emitted to the console are frequently contextual rather than a
+    # single copy-stage result. Preserve them in the handoff report even when
+    # the originating code did not also call Add-Result.
+    $runtimeAlerts = @($Script:Results.RuntimeAlerts | Where-Object { $_.Level -in @('Warning', 'Error') })
+    $runtimeAlertSection = if ($runtimeAlerts.Count) {
+        $alertRows = foreach ($alert in $runtimeAlerts) {
+            $class = if ($alert.Level -eq 'Error') { 'status-error' } else { 'status-warning' }
+            "<tr><td>$(Out-HtmlEncoded $alert.Timestamp)</td><td><span class='status $class'>$(Out-HtmlEncoded $alert.Level)</span></td><td>$(Out-HtmlEncoded $alert.Message)</td></tr>"
+        }
+        "<details class='section'><summary>Console warnings and errors<span>$($runtimeAlerts.Count) message(s), including warnings without an export-action row</span></summary><div class='section-content'><table><thead><tr><th>Time</th><th>Level</th><th>Message</th></tr></thead><tbody>$($alertRows -join "`n")</tbody></table></div></details>"
+    }
+    else { '' }
+
     $adminTasks = @($Script:Results.ManualTasks | Where-Object { $_.Reason -match 'admin|Administrator|privileges' })
     $adminBanner = ''
     if (-not $Script:IsAdmin -and $adminTasks.Count) {
@@ -69,13 +82,16 @@ function New-TransferReport {
         '{{MODE}}' = Out-HtmlEncoded $Script:Config.TransferMode; '{{DATE}}' = (Get-Date -Format "MMMM dd, yyyy 'at' h:mm tt")
         '{{DURATION}}' = "$([math]::Round($duration.TotalMinutes, 1)) minutes"; '{{SUCCESS_COUNT}}' = $successCount
         '{{WARNING_COUNT}}' = $warningCount; '{{ERROR_COUNT}}' = $errorCount; '{{SKIPPED_COUNT}}' = $skippedCount
-        '{{ADMIN_BANNER}}' = $adminBanner; '{{ACTION_ROWS}}' = ($actionRows -join "`n"); '{{MANUAL_TASKS}}' = $manualTasks
+        '{{ADMIN_BANNER}}' = $adminBanner; '{{ACTION_ROWS}}' = ($actionRows -join "`n"); '{{RUNTIME_ALERTS}}' = $runtimeAlertSection; '{{MANUAL_TASKS}}' = $manualTasks
         '{{APP_MIGRATION_SECTION}}' = '<div class="app-summary"><h3>Comparison pending</h3><p>Run the import on the new computer to identify applications that still need installation.</p></div>'
         '{{VERSION}}' = $Script:Config.Version; '{{YEAR}}' = (Get-Date -Format 'yyyy')
     }
     foreach ($token in $replacements.Keys) { $html = $html.Replace($token, [string]$replacements[$token]) }
     $reportPath = Join-Path $DestinationBase 'TransferReport.html'
-    Set-Content -LiteralPath $reportPath -Value $html -Encoding UTF8
+    # Use an explicit UTF-8 BOM. Windows PowerShell and PowerShell 7 otherwise
+    # differ here, and some file associations decode a BOM-less local report as
+    # the ANSI code page (shown as "Â·" / "âˆ’" in the supplied report).
+    [System.IO.File]::WriteAllText($reportPath, $html, [System.Text.UTF8Encoding]::new($true))
     Write-Log 'Transfer report generated' -Level Success
     return $reportPath
 }

@@ -308,12 +308,14 @@ function Start-LaptopExport {
 
     # 9. Generate import script
     New-ImportScript -DestinationBase $transferBase -Settings $settings
-    New-AdminImportScript -DestinationBase $transferBase
+    # Do not ship an elevated power/printer helper when neither stage was
+    # selected. This keeps an intentionally settings-free package from trying
+    # to process PowerShell/power artifacts that do not exist.
+    if ($Script:Config.Backup.SystemSettings -or $Script:Config.Backup.Printers) {
+        New-AdminImportScript -DestinationBase $transferBase
+    }
 
-    # 9. Generate HTML report
-    $reportPath = New-TransferReport -DestinationBase $transferBase
-    
-    # 10. Generate quick import batch file
+    # 9. Generate quick import batch file
     New-QuickImportBatch -DestinationBase $transferBase
 
     if (-not $Script:Config.Transfer.CreateZipArchive) {
@@ -331,6 +333,10 @@ function Start-LaptopExport {
             $publishedArchivePath = Publish-TransferArchive -ArchivePath $archivePath -DestinationFolder $destinationFolder -LogPath $uploadLog
         }
     }
+
+    # Generate the report only after every package action has been recorded so
+    # its four counters exactly match the terminal summary.
+    $reportPath = New-TransferReport -DestinationBase $transferBase
     
     # Summary
     $Script:Results.EndTime = Get-Date
