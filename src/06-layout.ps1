@@ -24,6 +24,7 @@ function Initialize-DesktopLayoutInterop {
     Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Runtime.InteropServices;
 
 public sealed class StoDesktopPosition {
@@ -38,10 +39,12 @@ public sealed class StoDesktopRestoreResult {
 public static class StoDesktopLayoutInterop {
     const int SWC_DESKTOP = 8, SWFO_NEEDDISPATCH = 1;
     static object GetView() {
-        dynamic app = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
-        dynamic windows = app.Windows;
-        int hwnd = 0;
-        object disp = windows.FindWindowSW(Type.Missing, Type.Missing, SWC_DESKTOP, ref hwnd, SWFO_NEEDDISPATCH);
+        // Do not use C# dynamic here. Older Windows PowerShell installations
+        // may not ship Microsoft.CSharp.RuntimeBinder, preventing compilation.
+        object app = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
+        object windows = app.GetType().InvokeMember("Windows", BindingFlags.GetProperty, null, app, null);
+        object[] findArguments = { Type.Missing, Type.Missing, SWC_DESKTOP, 0, SWFO_NEEDDISPATCH };
+        object disp = windows.GetType().InvokeMember("FindWindowSW", BindingFlags.InvokeMethod, null, windows, findArguments);
         var provider = (IServiceProvider)disp;
         var service = new Guid("4c96be40-915c-11cf-99d3-00aa004ae837");
         var browser = (IShellBrowser)provider.QueryService(service, typeof(IShellBrowser).GUID);
@@ -202,4 +205,3 @@ function Backup-DefaultApps {
         Add-Result -Category 'Settings' -Item 'Default Apps' -Status 'Warning' -Details $_.Exception.Message
     }
 }
-

@@ -341,12 +341,11 @@ function Start-LaptopExport {
     # Summary
     $Script:Results.EndTime = Get-Date
     $dur = $Script:Results.EndTime - $Script:Results.StartTime
-    $sc = ($Script:Results.Actions | Where-Object { $_.Status -eq "Success" }).Count
-    $wc = ($Script:Results.Actions | Where-Object { $_.Status -in @('Warning', 'Manual', 'Pending') }).Count
-    $ec = @($Script:Results.Actions | Where-Object {
-        $_.Status -eq "Error" -or $_.Status -like "NOT EXPORTED*"
-    }).Count
-    $kc = ($Script:Results.Actions | Where-Object { $_.Status -eq "Skipped" }).Count
+    $resultCounts = Get-TransferResultCounts
+    $sc = $resultCounts.Success
+    $wc = $resultCounts.Warning
+    $ec = $resultCounts.Errors
+    $kc = $resultCounts.Skipped
 
     Write-Banner -Title "Export Complete"
     Write-SummaryCard -Success $sc -Warning $wc -Errors $ec -Skipped $kc -Duration "$([math]::Round($dur.TotalMinutes, 1)) min"

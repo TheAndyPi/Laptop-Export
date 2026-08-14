@@ -1232,6 +1232,11 @@ function Add-Result {
         [string]$Status,
         [string]$Details = ""
     )
+
+    # Empty source folders are intentional omissions, not a fifth status that
+    # the summary cards cannot classify. Normalize them at the ledger boundary
+    # so terminal and HTML summaries always count the same categories.
+    if ($Status -eq 'Empty') { $Status = 'Skipped' }
     
     $result = @{
         Category = $Category
@@ -1242,6 +1247,18 @@ function Add-Result {
     }
     
     [void]$Script:Results.Actions.Add($result)
+}
+
+function Get-TransferResultCounts {
+    # Both the terminal receipt and handoff report call this exact classifier.
+    # Keep presentation colors and totals aligned with the action ledger.
+    $actions = @($Script:Results.Actions)
+    return [PSCustomObject]@{
+        Success = @($actions | Where-Object { $_.Status -eq 'Success' }).Count
+        Warning = @($actions | Where-Object { $_.Status -in @('Warning', 'Manual', 'Pending') }).Count
+        Errors = @($actions | Where-Object { $_.Status -eq 'Error' -or $_.Status -like 'NOT EXPORTED*' -or $_.Status -eq 'Admin Required' }).Count
+        Skipped = @($actions | Where-Object { $_.Status -in @('Skipped', 'Empty') }).Count
+    }
 }
 
 function Format-FileSize {
@@ -3260,6 +3277,7 @@ function Initialize-DesktopLayoutInterop {
     Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Runtime.InteropServices;
 
 public sealed class StoDesktopPosition {
@@ -3274,10 +3292,12 @@ public sealed class StoDesktopRestoreResult {
 public static class StoDesktopLayoutInterop {
     const int SWC_DESKTOP = 8, SWFO_NEEDDISPATCH = 1;
     static object GetView() {
-        dynamic app = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
-        dynamic windows = app.Windows;
-        int hwnd = 0;
-        object disp = windows.FindWindowSW(Type.Missing, Type.Missing, SWC_DESKTOP, ref hwnd, SWFO_NEEDDISPATCH);
+        // Do not use C# dynamic here. Older Windows PowerShell installations
+        // may not ship Microsoft.CSharp.RuntimeBinder, preventing compilation.
+        object app = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
+        object windows = app.GetType().InvokeMember("Windows", BindingFlags.GetProperty, null, app, null);
+        object[] findArguments = { Type.Missing, Type.Missing, SWC_DESKTOP, 0, SWFO_NEEDDISPATCH };
+        object disp = windows.GetType().InvokeMember("FindWindowSW", BindingFlags.InvokeMethod, null, windows, findArguments);
         var provider = (IServiceProvider)disp;
         var service = new Guid("4c96be40-915c-11cf-99d3-00aa004ae837");
         var browser = (IShellBrowser)provider.QueryService(service, typeof(IShellBrowser).GUID);
@@ -3438,7 +3458,6 @@ function Backup-DefaultApps {
         Add-Result -Category 'Settings' -Item 'Default Apps' -Status 'Warning' -Details $_.Exception.Message
     }
 }
-
 function Get-InstalledPrograms {
     # Read the machine's uninstall inventories from both registry views and
     # normalize them into a deduplicated list for comparison during import.
@@ -4531,7 +4550,11 @@ catch {
 }
 $appComparisonExcludePatterns = @()
 try {
-    $appComparisonExcludePatterns = @([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{APP_COMPARISON_EXCLUDE_PATTERNS_BASE64}')) | ConvertFrom-Json)
+    # Materialize before wrapping so Windows PowerShell does not retain the
+    # JSON array as one System.Object[] "pattern". Casting that aggregate to a
+    # regex matches ordinary app names and suppresses every missing-app warning.
+    $appComparisonExcludePatternInventory = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{APP_COMPARISON_EXCLUDE_PATTERNS_BASE64}')) | ConvertFrom-Json
+    $appComparisonExcludePatterns = @($appComparisonExcludePatternInventory)
 }
 catch { }
 
@@ -6755,7 +6778,13 @@ function Test-UserFacingProgram {
     $name = [string]$Program.DisplayName
     if ([string]::IsNullOrWhiteSpace($name)) { return $false }
     foreach ($pattern in @($appComparisonExcludePatterns)) {
-        if ($name -match [string]$pattern) { return $false }
+        # A legacy Windows PowerShell JSON import can leave the configured
+        # patterns nested in an Object[] value. Never cast that aggregate to a
+        # regex: "System.Object[]" is a character class that matches most app
+        # names and would hide every missing-application warning.
+        foreach ($individualPattern in @($pattern)) {
+            if ($individualPattern -is [string] -and $individualPattern -and $name -match $individualPattern) { return $false }
+        }
     }
     return $true
 }
@@ -6918,12 +6947,17 @@ elseif (-not (Test-Path -LiteralPath $sourceProgramsPath)) {
 }
 else {
     try {
+        # ConvertFrom-Json in Windows PowerShell can emit a JSON array as one
+        # pipeline object.  Materialize it first, then enumerate it explicitly:
+        # otherwise every source program is collapsed into one pseudo-record and
+        # a leading excluded name can hide all missing applications.
         # Accept inventories from earlier package versions that predate MatchKey.
-        $sourcePrograms = @(Get-Content -LiteralPath $sourceProgramsPath -Raw | ConvertFrom-Json | ForEach-Object {
+        $sourceProgramInventory = Get-Content -LiteralPath $sourceProgramsPath -Raw | ConvertFrom-Json
+        $sourcePrograms = @(foreach ($sourceProgram in @($sourceProgramInventory)) {
             [PSCustomObject]@{
-                DisplayName = $_.DisplayName; DisplayVersion = $_.DisplayVersion; Publisher = $_.Publisher
-                InstallDate = $_.InstallDate; SourceScope = $_.SourceScope
-                MatchKey = if ($_.MatchKey) { $_.MatchKey } else { Get-ProgramMatchKey $_.DisplayName $_.Publisher }
+                DisplayName = $sourceProgram.DisplayName; DisplayVersion = $sourceProgram.DisplayVersion; Publisher = $sourceProgram.Publisher
+                InstallDate = $sourceProgram.InstallDate; SourceScope = $sourceProgram.SourceScope
+                MatchKey = if ($sourceProgram.MatchKey) { $sourceProgram.MatchKey } else { Get-ProgramMatchKey $sourceProgram.DisplayName $sourceProgram.Publisher }
             }
         })
         $newPrograms = @(Get-CurrentInstalledPrograms)
@@ -6946,8 +6980,10 @@ else {
         $candidatePath = Join-Path $scriptPath 'Settings\AppDataCandidates.json'
         if ($reviewAppDataCandidates -and (Test-Path -LiteralPath $candidatePath)) {
             $missingWords = @($missingPrograms | ForEach-Object { ConvertTo-ProgramMatchPart $_.DisplayName })
-            $candidateItems = @(Get-Content -LiteralPath $candidatePath -Raw | ConvertFrom-Json | ForEach-Object {
-                $candidate = $_
+            # Apply the same explicit enumeration for Windows PowerShell 5.1.
+            # It also ensures one row is rendered for each AppData candidate.
+            $candidateInventory = Get-Content -LiteralPath $candidatePath -Raw | ConvertFrom-Json
+            $candidateItems = @(foreach ($candidate in @($candidateInventory)) {
                 $associationHint = ConvertTo-ProgramMatchPart $candidate.AssociationHint
                 $association = if ($associationHint -and ($missingWords | Where-Object { $_ -like "*$associationHint*" })) { 'Potentially associated with missing app' } elseif ($candidate.CoveredByCuratedBackup) { 'Already covered by curated backup' } else { 'Review candidate' }
                 [PSCustomObject]@{ Area = $candidate.Area; RelativePath = $candidate.RelativePath; SizeBytes = $candidate.SizeBytes; Association = $association }
@@ -7056,29 +7092,26 @@ function Write-AdminHelperAudit {
 }
 
 function Invoke-StandardSystemRestoreFallback {
-    # Attempt system restoration that is allowed in the signed-in context and
-    # turn policy/hardware rejections into explicit result entries.
+    # PrintBRM is the only standard-user fallback. Power settings must remain
+    # deferred until the administrator helper is explicitly approved.
     param([string]$HelperPath)
 
-    # A complete .pow file is written only by an elevated export. A PrintBRM
-    # package may also be present from that export. If UAC is unavailable on
-    # the destination, give those artifacts one explicit standard-user try.
-    # The helper records each result and retains the package on failure.
+    # If UAC is unavailable, attempt only the printer migration package. Do
+    # not let a declined elevation attempt modify any power configuration.
     if ($isAdmin) { return }
-    $hasAdminExportArtifacts = (Test-Path -LiteralPath (Join-Path $scriptPath 'Settings\PowerScheme.pow')) -or
-        (Test-Path -LiteralPath (Join-Path $scriptPath 'Printers\Printers.printerExport'))
-    if (-not $hasAdminExportArtifacts) { return }
+    $printerExport = Join-Path $scriptPath 'Printers\Printers.printerExport'
+    if (-not (Test-Path -LiteralPath $printerExport)) { return }
 
     try {
-        Write-Host '  Trying non-administrator fallback for power settings and PrintBRM...' -ForegroundColor Cyan
-        $fallbackProcess = Start-Process -FilePath 'powershell.exe' -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$HelperPath`" -AllowStandardUser"
+        Write-Host '  Trying non-administrator fallback for PrintBRM only; power settings remain deferred...' -ForegroundColor Cyan
+        $fallbackProcess = Start-Process -FilePath 'powershell.exe' -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$HelperPath`" -AllowStandardUser -PrintBrmOnly"
         if ($fallbackProcess.ExitCode -eq 0) {
             Write-Host '  Non-administrator fallback completed. See Logs\AdminImportLog.txt.' -ForegroundColor Green
-            Write-AdminHelperAudit -Status 'FallbackCompleted' -Detail 'UAC was unavailable; standard-user power and PrintBRM fallback completed.'
+            Write-AdminHelperAudit -Status 'FallbackCompleted' -Detail 'UAC was unavailable; standard-user PrintBRM-only fallback completed. Power settings remain deferred.'
         }
         else {
-            Write-Host '  Non-administrator fallback could not complete all system tasks; packages were retained.' -ForegroundColor Yellow
-            Write-AdminHelperAudit -Status 'FallbackPartial' -Detail "UAC was unavailable; standard-user fallback exited with code $($fallbackProcess.ExitCode). See AdminImportLog.txt."
+            Write-Host '  Non-administrator PrintBRM fallback could not complete; printer package was retained and power settings remain deferred.' -ForegroundColor Yellow
+            Write-AdminHelperAudit -Status 'FallbackPartial' -Detail "UAC was unavailable; PrintBRM-only fallback exited with code $($fallbackProcess.ExitCode). Power settings remain deferred. See AdminImportLog.txt."
         }
     }
     catch {
@@ -7280,7 +7313,7 @@ function New-AdminImportScript {
     only as a logged fallback when destination UAC is unavailable.
 #>
 #Requires -Version 5.1
-param([switch]$AllowStandardUser)
+param([switch]$AllowStandardUser, [switch]$PrintBrmOnly)
 $ErrorActionPreference = 'Continue'
 $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logsPath = Join-Path $scriptPath 'Logs'
@@ -7310,7 +7343,7 @@ if (-not $result.Elevated -and -not $AllowStandardUser) {
     exit 1
 }
 if (-not $result.Elevated -and $AllowStandardUser) {
-    Write-Audit 'Running explicit non-administrator fallback; Windows may reject protected power or printer changes.' 'Warning'
+    Write-Audit 'Running explicit non-administrator PrintBRM-only fallback; power settings will not be attempted.' 'Warning'
 }
 
 $settingsFile = Join-Path $scriptPath 'Settings\SystemSettings.json'
@@ -7322,7 +7355,11 @@ if (Test-Path -LiteralPath $settingsFile) {
 
 # Legacy packages have only a .pow file. New packages keep the managed plan
 # and receive their captured AC/DC values one by one.
-if ((Test-Path -LiteralPath $powerScheme) -and -not ($settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count)) {
+if ($PrintBrmOnly) {
+    $result.Power += [PSCustomObject]@{ Item = 'Power settings'; Status = 'Skipped'; Detail = 'Deferred: non-administrator fallback is PrintBRM-only' }
+    Write-Audit 'Power settings deferred because this is a PrintBRM-only fallback.' 'Info'
+}
+elseif ((Test-Path -LiteralPath $powerScheme) -and -not ($settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count)) {
     try {
         $guid = [guid]::NewGuid().ToString()
         $output = & powercfg /import $powerScheme $guid 2>&1
@@ -7333,7 +7370,7 @@ if ((Test-Path -LiteralPath $powerScheme) -and -not ($settingsData.PowerSettingV
         Write-Audit 'Legacy power scheme imported and activated.' 'Success'
     } catch { $result.Power += [PSCustomObject]@{ Item = 'Legacy power scheme'; Status = 'Failed'; Detail = $_.Exception.Message }; $result.Errors += $_.Exception.Message; Write-Audit "Power scheme failed: $_" 'Error' }
 }
-if ($settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count) {
+if (-not $PrintBrmOnly -and $settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count) {
     foreach ($setting in @($settingsData.PowerSettingValues)) {
         foreach ($kind in @(@{ Name='AC'; Command='/setacvalueindex'; Value=[string]$setting.ACValue }, @{ Name='DC'; Command='/setdcvalueindex'; Value=[string]$setting.DCValue })) {
             if (-not $kind.Value) { continue }
@@ -7346,7 +7383,7 @@ if ($settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Co
     }
     & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
 }
-if ($settingsData.LidClose -and $settingsData.LidClose.OnAC) {
+if (-not $PrintBrmOnly -and $settingsData.LidClose -and $settingsData.LidClose.OnAC) {
     $map = @{ 'Do Nothing'=0; Sleep=1; Hibernate=2; 'Shut Down'=3 }
     foreach ($kind in @(@{ Command='/setacvalueindex'; Value=$map[$settingsData.LidClose.OnAC] }, @{ Command='/setdcvalueindex'; Value=$map[$settingsData.LidClose.OnBattery] })) {
         if ($null -ne $kind.Value) { & powercfg $kind.Command SCHEME_CURRENT SUB_BUTTONS LIDACTION $kind.Value 2>&1 | Out-Null }
@@ -7407,10 +7444,11 @@ function New-TransferReport {
 
     $Script:Results.EndTime = Get-Date
     $duration = $Script:Results.EndTime - $Script:Results.StartTime
-    $successCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Success' }).Count
-    $warningCount = @($Script:Results.Actions | Where-Object { $_.Status -in @('Warning', 'Manual', 'Pending') }).Count
-    $errorCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Error' -or $_.Status -like 'NOT EXPORTED*' }).Count
-    $skippedCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Skipped' }).Count
+    $resultCounts = Get-TransferResultCounts
+    $successCount = $resultCounts.Success
+    $warningCount = $resultCounts.Warning
+    $errorCount = $resultCounts.Errors
+    $skippedCount = $resultCounts.Skipped
 
     # Keep the handoff blockers visible: an otherwise successful item must not
     # bury a skipped, manual, warning, or failed action lower in the report.
@@ -7826,12 +7864,11 @@ function Start-LaptopExport {
     # Summary
     $Script:Results.EndTime = Get-Date
     $dur = $Script:Results.EndTime - $Script:Results.StartTime
-    $sc = ($Script:Results.Actions | Where-Object { $_.Status -eq "Success" }).Count
-    $wc = ($Script:Results.Actions | Where-Object { $_.Status -in @('Warning', 'Manual', 'Pending') }).Count
-    $ec = @($Script:Results.Actions | Where-Object {
-        $_.Status -eq "Error" -or $_.Status -like "NOT EXPORTED*"
-    }).Count
-    $kc = ($Script:Results.Actions | Where-Object { $_.Status -eq "Skipped" }).Count
+    $resultCounts = Get-TransferResultCounts
+    $sc = $resultCounts.Success
+    $wc = $resultCounts.Warning
+    $ec = $resultCounts.Errors
+    $kc = $resultCounts.Skipped
 
     Write-Banner -Title "Export Complete"
     Write-SummaryCard -Success $sc -Warning $wc -Errors $ec -Skipped $kc -Duration "$([math]::Round($dur.TotalMinutes, 1)) min"

@@ -81,7 +81,11 @@ catch {
 }
 $appComparisonExcludePatterns = @()
 try {
-    $appComparisonExcludePatterns = @([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{APP_COMPARISON_EXCLUDE_PATTERNS_BASE64}')) | ConvertFrom-Json)
+    # Materialize before wrapping so Windows PowerShell does not retain the
+    # JSON array as one System.Object[] "pattern". Casting that aggregate to a
+    # regex matches ordinary app names and suppresses every missing-app warning.
+    $appComparisonExcludePatternInventory = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{APP_COMPARISON_EXCLUDE_PATTERNS_BASE64}')) | ConvertFrom-Json
+    $appComparisonExcludePatterns = @($appComparisonExcludePatternInventory)
 }
 catch { }
 
@@ -2305,7 +2309,13 @@ function Test-UserFacingProgram {
     $name = [string]$Program.DisplayName
     if ([string]::IsNullOrWhiteSpace($name)) { return $false }
     foreach ($pattern in @($appComparisonExcludePatterns)) {
-        if ($name -match [string]$pattern) { return $false }
+        # A legacy Windows PowerShell JSON import can leave the configured
+        # patterns nested in an Object[] value. Never cast that aggregate to a
+        # regex: "System.Object[]" is a character class that matches most app
+        # names and would hide every missing-application warning.
+        foreach ($individualPattern in @($pattern)) {
+            if ($individualPattern -is [string] -and $individualPattern -and $name -match $individualPattern) { return $false }
+        }
     }
     return $true
 }
@@ -2468,12 +2478,17 @@ elseif (-not (Test-Path -LiteralPath $sourceProgramsPath)) {
 }
 else {
     try {
+        # ConvertFrom-Json in Windows PowerShell can emit a JSON array as one
+        # pipeline object.  Materialize it first, then enumerate it explicitly:
+        # otherwise every source program is collapsed into one pseudo-record and
+        # a leading excluded name can hide all missing applications.
         # Accept inventories from earlier package versions that predate MatchKey.
-        $sourcePrograms = @(Get-Content -LiteralPath $sourceProgramsPath -Raw | ConvertFrom-Json | ForEach-Object {
+        $sourceProgramInventory = Get-Content -LiteralPath $sourceProgramsPath -Raw | ConvertFrom-Json
+        $sourcePrograms = @(foreach ($sourceProgram in @($sourceProgramInventory)) {
             [PSCustomObject]@{
-                DisplayName = $_.DisplayName; DisplayVersion = $_.DisplayVersion; Publisher = $_.Publisher
-                InstallDate = $_.InstallDate; SourceScope = $_.SourceScope
-                MatchKey = if ($_.MatchKey) { $_.MatchKey } else { Get-ProgramMatchKey $_.DisplayName $_.Publisher }
+                DisplayName = $sourceProgram.DisplayName; DisplayVersion = $sourceProgram.DisplayVersion; Publisher = $sourceProgram.Publisher
+                InstallDate = $sourceProgram.InstallDate; SourceScope = $sourceProgram.SourceScope
+                MatchKey = if ($sourceProgram.MatchKey) { $sourceProgram.MatchKey } else { Get-ProgramMatchKey $sourceProgram.DisplayName $sourceProgram.Publisher }
             }
         })
         $newPrograms = @(Get-CurrentInstalledPrograms)
@@ -2496,8 +2511,10 @@ else {
         $candidatePath = Join-Path $scriptPath 'Settings\AppDataCandidates.json'
         if ($reviewAppDataCandidates -and (Test-Path -LiteralPath $candidatePath)) {
             $missingWords = @($missingPrograms | ForEach-Object { ConvertTo-ProgramMatchPart $_.DisplayName })
-            $candidateItems = @(Get-Content -LiteralPath $candidatePath -Raw | ConvertFrom-Json | ForEach-Object {
-                $candidate = $_
+            # Apply the same explicit enumeration for Windows PowerShell 5.1.
+            # It also ensures one row is rendered for each AppData candidate.
+            $candidateInventory = Get-Content -LiteralPath $candidatePath -Raw | ConvertFrom-Json
+            $candidateItems = @(foreach ($candidate in @($candidateInventory)) {
                 $associationHint = ConvertTo-ProgramMatchPart $candidate.AssociationHint
                 $association = if ($associationHint -and ($missingWords | Where-Object { $_ -like "*$associationHint*" })) { 'Potentially associated with missing app' } elseif ($candidate.CoveredByCuratedBackup) { 'Already covered by curated backup' } else { 'Review candidate' }
                 [PSCustomObject]@{ Area = $candidate.Area; RelativePath = $candidate.RelativePath; SizeBytes = $candidate.SizeBytes; Association = $association }
@@ -2606,29 +2623,26 @@ function Write-AdminHelperAudit {
 }
 
 function Invoke-StandardSystemRestoreFallback {
-    # Attempt system restoration that is allowed in the signed-in context and
-    # turn policy/hardware rejections into explicit result entries.
+    # PrintBRM is the only standard-user fallback. Power settings must remain
+    # deferred until the administrator helper is explicitly approved.
     param([string]$HelperPath)
 
-    # A complete .pow file is written only by an elevated export. A PrintBRM
-    # package may also be present from that export. If UAC is unavailable on
-    # the destination, give those artifacts one explicit standard-user try.
-    # The helper records each result and retains the package on failure.
+    # If UAC is unavailable, attempt only the printer migration package. Do
+    # not let a declined elevation attempt modify any power configuration.
     if ($isAdmin) { return }
-    $hasAdminExportArtifacts = (Test-Path -LiteralPath (Join-Path $scriptPath 'Settings\PowerScheme.pow')) -or
-        (Test-Path -LiteralPath (Join-Path $scriptPath 'Printers\Printers.printerExport'))
-    if (-not $hasAdminExportArtifacts) { return }
+    $printerExport = Join-Path $scriptPath 'Printers\Printers.printerExport'
+    if (-not (Test-Path -LiteralPath $printerExport)) { return }
 
     try {
-        Write-Host '  Trying non-administrator fallback for power settings and PrintBRM...' -ForegroundColor Cyan
-        $fallbackProcess = Start-Process -FilePath 'powershell.exe' -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$HelperPath`" -AllowStandardUser"
+        Write-Host '  Trying non-administrator fallback for PrintBRM only; power settings remain deferred...' -ForegroundColor Cyan
+        $fallbackProcess = Start-Process -FilePath 'powershell.exe' -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$HelperPath`" -AllowStandardUser -PrintBrmOnly"
         if ($fallbackProcess.ExitCode -eq 0) {
             Write-Host '  Non-administrator fallback completed. See Logs\AdminImportLog.txt.' -ForegroundColor Green
-            Write-AdminHelperAudit -Status 'FallbackCompleted' -Detail 'UAC was unavailable; standard-user power and PrintBRM fallback completed.'
+            Write-AdminHelperAudit -Status 'FallbackCompleted' -Detail 'UAC was unavailable; standard-user PrintBRM-only fallback completed. Power settings remain deferred.'
         }
         else {
-            Write-Host '  Non-administrator fallback could not complete all system tasks; packages were retained.' -ForegroundColor Yellow
-            Write-AdminHelperAudit -Status 'FallbackPartial' -Detail "UAC was unavailable; standard-user fallback exited with code $($fallbackProcess.ExitCode). See AdminImportLog.txt."
+            Write-Host '  Non-administrator PrintBRM fallback could not complete; printer package was retained and power settings remain deferred.' -ForegroundColor Yellow
+            Write-AdminHelperAudit -Status 'FallbackPartial' -Detail "UAC was unavailable; PrintBRM-only fallback exited with code $($fallbackProcess.ExitCode). Power settings remain deferred. See AdminImportLog.txt."
         }
     }
     catch {
@@ -2830,7 +2844,7 @@ function New-AdminImportScript {
     only as a logged fallback when destination UAC is unavailable.
 #>
 #Requires -Version 5.1
-param([switch]$AllowStandardUser)
+param([switch]$AllowStandardUser, [switch]$PrintBrmOnly)
 $ErrorActionPreference = 'Continue'
 $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logsPath = Join-Path $scriptPath 'Logs'
@@ -2860,7 +2874,7 @@ if (-not $result.Elevated -and -not $AllowStandardUser) {
     exit 1
 }
 if (-not $result.Elevated -and $AllowStandardUser) {
-    Write-Audit 'Running explicit non-administrator fallback; Windows may reject protected power or printer changes.' 'Warning'
+    Write-Audit 'Running explicit non-administrator PrintBRM-only fallback; power settings will not be attempted.' 'Warning'
 }
 
 $settingsFile = Join-Path $scriptPath 'Settings\SystemSettings.json'
@@ -2872,7 +2886,11 @@ if (Test-Path -LiteralPath $settingsFile) {
 
 # Legacy packages have only a .pow file. New packages keep the managed plan
 # and receive their captured AC/DC values one by one.
-if ((Test-Path -LiteralPath $powerScheme) -and -not ($settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count)) {
+if ($PrintBrmOnly) {
+    $result.Power += [PSCustomObject]@{ Item = 'Power settings'; Status = 'Skipped'; Detail = 'Deferred: non-administrator fallback is PrintBRM-only' }
+    Write-Audit 'Power settings deferred because this is a PrintBRM-only fallback.' 'Info'
+}
+elseif ((Test-Path -LiteralPath $powerScheme) -and -not ($settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count)) {
     try {
         $guid = [guid]::NewGuid().ToString()
         $output = & powercfg /import $powerScheme $guid 2>&1
@@ -2883,7 +2901,7 @@ if ((Test-Path -LiteralPath $powerScheme) -and -not ($settingsData.PowerSettingV
         Write-Audit 'Legacy power scheme imported and activated.' 'Success'
     } catch { $result.Power += [PSCustomObject]@{ Item = 'Legacy power scheme'; Status = 'Failed'; Detail = $_.Exception.Message }; $result.Errors += $_.Exception.Message; Write-Audit "Power scheme failed: $_" 'Error' }
 }
-if ($settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count) {
+if (-not $PrintBrmOnly -and $settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count) {
     foreach ($setting in @($settingsData.PowerSettingValues)) {
         foreach ($kind in @(@{ Name='AC'; Command='/setacvalueindex'; Value=[string]$setting.ACValue }, @{ Name='DC'; Command='/setdcvalueindex'; Value=[string]$setting.DCValue })) {
             if (-not $kind.Value) { continue }
@@ -2896,7 +2914,7 @@ if ($settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Co
     }
     & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
 }
-if ($settingsData.LidClose -and $settingsData.LidClose.OnAC) {
+if (-not $PrintBrmOnly -and $settingsData.LidClose -and $settingsData.LidClose.OnAC) {
     $map = @{ 'Do Nothing'=0; Sleep=1; Hibernate=2; 'Shut Down'=3 }
     foreach ($kind in @(@{ Command='/setacvalueindex'; Value=$map[$settingsData.LidClose.OnAC] }, @{ Command='/setdcvalueindex'; Value=$map[$settingsData.LidClose.OnBattery] })) {
         if ($null -ne $kind.Value) { & powercfg $kind.Command SCHEME_CURRENT SUB_BUTTONS LIDACTION $kind.Value 2>&1 | Out-Null }

@@ -212,6 +212,8 @@ Describe 'Deferred administrator elevation' {
         $template | Should Match 'Requesting administrator approval for power settings and PrintBRM'
         $template | Should Match 'function Invoke-StandardSystemRestoreFallback'
         $template | Should Match 'AllowStandardUser'
+        $template | Should Match 'PrintBrmOnly'
+        $template | Should Match 'power settings remain deferred'
     }
 }
 
@@ -286,6 +288,17 @@ Describe 'Generated package artifacts' {
         @($reportBytes[0..2]) | Should Be @(0xEF, 0xBB, 0xBF)
     }
 
+    It 'uses the same status classification for terminal and HTML summaries' {
+        Add-Result -Category 'Test' -Item 'Empty payload' -Status 'Empty'
+        Add-Result -Category 'Test' -Item 'Elevation' -Status 'Admin Required'
+        $counts = Get-TransferResultCounts
+        $counts.Skipped | Should Be 1
+        $counts.Errors | Should Be 1
+        $report = Get-Content -LiteralPath (New-TransferReport -DestinationBase $script:Package) -Raw
+        $report | Should Match '>1<\/div>\s*<div class="label">Errors'
+        $report | Should Match '>1<\/div>\s*<div class="label">Skipped'
+    }
+
     It 'loads the standalone report template during development' {
         $template = Join-Path $script:RepoRoot 'src\TransferReport.template.html'
         Test-Path -LiteralPath $template -PathType Leaf | Should Be $true
@@ -319,7 +332,10 @@ Describe 'Generated importer TestMode' {
         @{ Associations = @(@{ Type = 'Protocol'; Name = 'https'; ProgId = 'SyntheticHTML' }) } |
             ConvertTo-Json -Depth 3 |
             Set-Content -LiteralPath (Join-Path $script:Package 'Settings\DefaultApps.json') -Encoding UTF8
-        @(@{ DisplayName = 'Synthetic Required App'; DisplayVersion = '1.0'; Publisher = 'Test Publisher'; MatchKey = 'synthetic required app|test publisher' }) |
+        @(
+            @{ DisplayName = 'Synthetic Required App'; DisplayVersion = '1.0'; Publisher = 'Test Publisher'; MatchKey = 'synthetic required app|test publisher' },
+            @{ DisplayName = 'Synthetic Required App Two'; DisplayVersion = '2.0'; Publisher = 'Test Publisher'; MatchKey = 'synthetic required app two|test publisher' }
+        ) |
             ConvertTo-Json -Depth 3 |
             Set-Content -LiteralPath (Join-Path $script:Package 'Settings\InstalledPrograms.json') -Encoding UTF8
         @(@{ Area = 'Roaming'; RelativePath = 'SyntheticApp'; SizeBytes = 123; CoveredByCuratedBackup = $false; AssociationHint = 'syntheticapp' }) |
@@ -350,6 +366,8 @@ Describe 'Generated importer TestMode' {
         Test-Path -LiteralPath (Join-Path $script:Package 'Logs\DefaultAppsRestoreGuide.txt') | Should Be $true
         Test-Path -LiteralPath (Join-Path $script:Package 'Logs\AppMigrationComparison.json') | Should Be $true
         Test-Path -LiteralPath (Join-Path $script:Package 'Logs\AppMigrationReview.html') | Should Be $true
+        $appComparison = Get-Content -LiteralPath (Join-Path $script:Package 'Logs\AppMigrationComparison.json') -Raw | ConvertFrom-Json
+        @($appComparison.Missing | Where-Object { $_.DisplayName -like 'Synthetic Required App*' }).Count | Should Be 2
     }
 }
 

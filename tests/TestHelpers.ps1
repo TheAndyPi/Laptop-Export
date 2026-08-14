@@ -39,6 +39,7 @@ function Format-FileSize { param([long]$Bytes) return "$Bytes B" }
 function Format-RemainingTime { param([double]$Seconds) return 'calculating...' }
 function Add-Result {
     param([string]$Category, [string]$Item, [string]$Status, [string]$Details = '')
+    if ($Status -eq 'Empty') { $Status = 'Skipped' }
     [void]$script:Results.Actions.Add(@{ Category = $Category; Item = $Item; Status = $Status; Details = $Details })
 }
 

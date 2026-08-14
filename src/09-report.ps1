@@ -19,10 +19,11 @@ function New-TransferReport {
 
     $Script:Results.EndTime = Get-Date
     $duration = $Script:Results.EndTime - $Script:Results.StartTime
-    $successCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Success' }).Count
-    $warningCount = @($Script:Results.Actions | Where-Object { $_.Status -in @('Warning', 'Manual', 'Pending') }).Count
-    $errorCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Error' -or $_.Status -like 'NOT EXPORTED*' }).Count
-    $skippedCount = @($Script:Results.Actions | Where-Object { $_.Status -eq 'Skipped' }).Count
+    $resultCounts = Get-TransferResultCounts
+    $successCount = $resultCounts.Success
+    $warningCount = $resultCounts.Warning
+    $errorCount = $resultCounts.Errors
+    $skippedCount = $resultCounts.Skipped
 
     # Keep the handoff blockers visible: an otherwise successful item must not
     # bury a skipped, manual, warning, or failed action lower in the report.

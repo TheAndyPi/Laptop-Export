@@ -782,6 +782,11 @@ function Add-Result {
         [string]$Status,
         [string]$Details = ""
     )
+
+    # Empty source folders are intentional omissions, not a fifth status that
+    # the summary cards cannot classify. Normalize them at the ledger boundary
+    # so terminal and HTML summaries always count the same categories.
+    if ($Status -eq 'Empty') { $Status = 'Skipped' }
     
     $result = @{
         Category = $Category
@@ -792,6 +797,18 @@ function Add-Result {
     }
     
     [void]$Script:Results.Actions.Add($result)
+}
+
+function Get-TransferResultCounts {
+    # Both the terminal receipt and handoff report call this exact classifier.
+    # Keep presentation colors and totals aligned with the action ledger.
+    $actions = @($Script:Results.Actions)
+    return [PSCustomObject]@{
+        Success = @($actions | Where-Object { $_.Status -eq 'Success' }).Count
+        Warning = @($actions | Where-Object { $_.Status -in @('Warning', 'Manual', 'Pending') }).Count
+        Errors = @($actions | Where-Object { $_.Status -eq 'Error' -or $_.Status -like 'NOT EXPORTED*' -or $_.Status -eq 'Admin Required' }).Count
+        Skipped = @($actions | Where-Object { $_.Status -in @('Skipped', 'Empty') }).Count
+    }
 }
 
 function Format-FileSize {
