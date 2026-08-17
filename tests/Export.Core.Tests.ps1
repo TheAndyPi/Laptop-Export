@@ -82,6 +82,18 @@ Describe 'Online performance controls' {
     }
 }
 
+Describe 'Chrome bookmark restoration' {
+    It 'ships native bookmark stores for automatic Chrome restoration and retains HTML fallback files' {
+        $browser = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\07-browsers-onedrive.ps1') -Raw
+        $template = Get-LaptopExportSourceText -Group ImportTemplate
+        $browser | Should Match 'Chrome\\ProfileBookmarks'
+        $browser | Should Match 'available for automatic restore'
+        $template | Should Match 'Chrome\\ProfileBookmarks'
+        $template | Should Match 'Restore-ChromiumProfileBookmarks -BrowserName "Google Chrome"'
+        $template | Should Match 'fallback HTML file\(s\) available'
+    }
+}
+
 Describe 'Robocopy progress monitoring' {
     It 'uses Robocopy completion events instead of rescanning active destinations' {
         $core = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\03-core.ps1') -Raw
@@ -338,9 +350,6 @@ Describe 'Generated importer TestMode' {
         @{ MappedDrives = @(@{ Letter = 'Z'; Path = '\\test-server\transfer-share' }) } |
             ConvertTo-Json -Depth 3 |
             Set-Content -LiteralPath (Join-Path $script:Package 'Settings\SystemSettings.json') -Encoding UTF8
-        @{ Shortcuts = @(@{ Name = 'Example.lnk'; Sha256 = 'synthetic'; Ordinal = 1 }); DesktopItems = @(@{ Name = 'Example'; X = 50; Y = 50 }); SourceWorkArea = @{ X = 0; Y = 0; Width = 1920; Height = 1080 } } |
-            ConvertTo-Json -Depth 3 |
-            Set-Content -LiteralPath (Join-Path $script:Package 'Settings\DesktopLayout.json') -Encoding UTF8
         @{ Pins = @(@{ Name = 'Example.lnk'; TargetPath = 'C:\Missing\Example.exe'; Ordinal = 1 }) } |
             ConvertTo-Json -Depth 3 |
             Set-Content -LiteralPath (Join-Path $script:Package 'Settings\TaskbarLayout.json') -Encoding UTF8
@@ -376,7 +385,6 @@ Describe 'Generated importer TestMode' {
         Test-Path -LiteralPath $comparisonPath | Should Be $true
         (Get-Content -LiteralPath $comparisonPath -Raw) | Should Match ([regex]::Escape('Z: \\test-server\transfer-share'))
         $output | Should Match 'OneDrive - Would enable'
-        $output | Should Match 'Desktop layout - Would retain 1 transferred shortcut'
         $output | Should Match 'Taskbar layout - Would replace destination pins with 1 source pin'
         Test-Path -LiteralPath (Join-Path $script:Package 'Logs\DefaultAppsRestoreGuide.txt') | Should Be $true
         Test-Path -LiteralPath (Join-Path $script:Package 'Logs\AppMigrationComparison.json') | Should Be $true
@@ -386,19 +394,15 @@ Describe 'Generated importer TestMode' {
     }
 }
 
-Describe 'Layout and default-app implementation' {
-    It 'ships all three independent toggles enabled by default' {
+Describe 'Taskbar and default-app implementation' {
+    It 'ships both independent toggles enabled by default' {
         $config = Import-PowerShellDataFile -LiteralPath (Join-Path $script:RepoRoot 'src\00-development-config.psd1')
-        $config.Backup.DesktopLayout | Should Be $true
         $config.Backup.TaskbarLayout | Should Be $true
         $config.Backup.DefaultApps | Should Be $true
     }
 
-    It 'uses a hash-gated, shortcut-only OneDrive cleanup and avoids protected default-app writes' {
+    It 'avoids protected default-app writes' {
         $template = Get-LaptopExportSourceText -Group ImportTemplate
-        $template | Should Match "\.Extension -in @\('\.lnk', '\.url'\)"
-        $template | Should Match 'Get-ShortcutHash \$cloudShortcut\.FullName'
-        $template | Should Match 'SendToRecycleBin'
         $template | Should Match 'ms-settings:defaultapps'
         $template | Should Not Match 'Set-ItemProperty.+UserChoice'
     }
@@ -406,22 +410,14 @@ Describe 'Layout and default-app implementation' {
     It 'captures and restores source taskbar order while always excluding Microsoft Store' {
         $settings = Get-LaptopExportSourceText -Group Settings
         $template = Get-LaptopExportSourceText -Group ImportTemplate
-        $settings | Should Match 'DesktopLayout\.json'
         $settings | Should Match 'TaskbarLayout\.json'
         $settings | Should Match 'DefaultApps\.json'
         $settings | Should Match 'Taskband'
-        $settings | Should Match 'ShellPositionValues'
-        $settings | Should Match 'StoDesktopLayoutInterop'
-        $settings | Should Match 'DesktopItems = \$desktopItems'
-        $settings | Should Match 'ScaledShellItemCoordinates'
         $template | Should Match 'Remove-MicrosoftStoreTaskbarPin'
         $template | Should Match 'Remove-NonSourceTaskbarPins'
         $template | Should Match 'Test-SourceTaskbarPin'
         $template | Should Match 'destination pin\(s\) removed'
         $template | Should Match 'TaskbandValues'
-        $template | Should Match 'Initialize-DesktopRestoreInterop'
-        $template | Should Match 'SelectAndPositionItems'
-        $template | Should Match 'destination-display scaling'
         $template | Should Match 'Source app unavailable on destination'
         $template | Should Match 'Pin was reintroduced after removal'
     }

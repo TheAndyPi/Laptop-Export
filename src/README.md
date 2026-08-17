@@ -13,7 +13,7 @@ that generated script runs later on the replacement computer and therefore has
 its own initialization, logging, elevation, and report-update logic.
 
 The source is deliberately divided around export responsibilities: destination
-and archive handling; user data; settings; desktop layout/default apps; AppData
+and archive handling; user data; settings; taskbar layout/default apps; AppData
 review; printers; browsers/OneDrive; import-template sections; and reporting. The
 import-template sections are concatenated into one generated here-string, so
 their order in the build manifest is part of the runtime contract.

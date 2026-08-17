@@ -307,7 +307,7 @@ function Get-SystemSettings {
             $personalization.SearchboxTaskbarMode = $searchTb.SearchboxTaskbarMode
         }
         
-        # Mouse Cursor Settings
+        # Mouse pointer style, size, and per-role cursor mappings.
         $cursors = Get-ItemProperty -Path "HKCU:\Control Panel\Cursors" -ErrorAction SilentlyContinue
         if ($cursors) {
             $personalization.CursorScheme = $cursors.'(default)'
@@ -315,6 +315,22 @@ function Get-SystemSettings {
             $personalization.CursorSettings = @{}
             $cursors.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object {
                 $personalization.CursorSettings[$_.Name] = $_.Value
+            }
+        }
+
+        # Night light uses opaque binary CloudStore values rather than a
+        # conventional Settings registry value.  Preserve both entries: the
+        # state entry holds whether it is on, while settings holds intensity
+        # and schedule.  The .reg export below restores the original bytes.
+        $nightLightKeys = @(
+            @{ Name = 'State'; Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.bluelightreductionstate\Current' },
+            @{ Name = 'Settings'; Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.settings\Current' }
+        )
+        $personalization.NightLight = @{}
+        foreach ($nightLightKey in $nightLightKeys) {
+            $nightLightData = (Get-ItemProperty -LiteralPath $nightLightKey.Path -Name 'Data' -ErrorAction SilentlyContinue).Data
+            if ($null -ne $nightLightData) {
+                $personalization.NightLight[$nightLightKey.Name] = @{ Captured = $true; DataLength = @($nightLightData).Count }
             }
         }
         
@@ -382,7 +398,9 @@ Windows Registry Editor Version 5.00
             "HKCU\Control Panel\Cursors",
             "HKCU\Control Panel\Desktop",
             "HKCU\Control Panel\Desktop\PerMonitorSettings",
-            "HKCU\Software\Microsoft\Accessibility"
+            "HKCU\Software\Microsoft\Accessibility",
+            'HKCU\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.bluelightreductionstate',
+            'HKCU\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.settings'
         )
         
         foreach ($key in $regKeys) {
@@ -399,8 +417,9 @@ Windows Registry Editor Version 5.00
         
         $regContent | Out-File $regExportPath -Encoding Unicode
         
-        Write-Log "Personalization settings captured (colors, taskbar, display scale, cursors, text size)" -Level Success
-        Add-Result -Category "Settings" -Item "Personalization" -Status "Success" -Details "Colors, taskbar, display scale, cursors, text size, and visual effects captured"
+        $nightLightDetail = if ($personalization.NightLight.Count -gt 0) { 'Night light state, strength, and schedule captured' } else { 'Night light was not configured' }
+        Write-Log "Personalization settings captured (colors, taskbar, display scale, mouse pointer style, Night light, text size)" -Level Success
+        Add-Result -Category "Settings" -Item "Personalization" -Status "Success" -Details "Colors, taskbar, display scale, mouse pointer style, text size, visual effects; $nightLightDetail"
     }
     catch {
         Write-Log "Error capturing personalization: $_" -Level Warning

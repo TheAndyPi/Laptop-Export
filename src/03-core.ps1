@@ -63,11 +63,16 @@ $Script:Config = @{
     AppDataRoaming = @{
         "Signatures" = "Microsoft\Signatures"
         "QuickAccess" = "Microsoft\Windows\Recent\AutomaticDestinations"
+        # On-Screen Takeoff keeps user-scoped settings under the On Center
+        # Software vendor tree.  Preserve it separately from general AppData
+        # so it can be restored to the matching location on the new PC.
+        "OnScreenTakeoff" = "On Center Software\On-Screen Takeoff"
     }
     
     # AppData\Local paths to check/copy
     AppDataLocal = @{
         "Lotus" = "Lotus"
+        "OnScreenTakeoff" = "On Center Software\On-Screen Takeoff"
     }
     
     # Bluebeam can be in different locations - check these paths
@@ -144,7 +149,6 @@ $Script:Config = @{
         Firefox           = $true
         Edge              = $true
         OneDrive          = $true
-        DesktopLayout     = $true
         TaskbarLayout     = $true
         DefaultApps       = $true
     }
@@ -598,7 +602,6 @@ function Show-TransferSettingsMenu {
         @{ Section = "Backup"; Key = "Firefox";           Label = "Firefox";            Detail = "Firefox profile, bookmarks, logins, extensions, and settings" }
         @{ Section = "Backup"; Key = "Edge";              Label = "Microsoft Edge";     Detail = "Edge bookmarks and profile-specific favorites" }
         @{ Section = "Backup"; Key = "OneDrive";          Label = "OneDrive";           Detail = "Offline file availability check" }
-        @{ Section = "Backup"; Key = "DesktopLayout";     Label = "Desktop layout";     Detail = "Shortcut layout manifest and safe OneDrive duplicate review" }
         @{ Section = "Backup"; Key = "TaskbarLayout";     Label = "Taskbar layout";     Detail = "Pinned app shortcuts and taskbar layout" }
         @{ Section = "Backup"; Key = "DefaultApps";       Label = "Default apps";       Detail = "File and protocol default-app inventory" }
         @{ Section = "Export"; Key = "RequestAdministratorPrivileges"; Label = "Run export as administrator"; Detail = "Request UAC approval after you start the transfer" }

@@ -294,9 +294,7 @@ function Start-LaptopExport {
         $Script:DeferredChromePasswordExport = $null
     }
 
-    # 8. Capture optional user-experience layout and default-app inventories.
-    if ($Script:Config.Backup.DesktopLayout) { Backup-DesktopLayout -DestinationBase $transferBase }
-    else { Add-DisabledBackupResult -Item "Desktop layout" -Category "Settings" }
+    # 8. Capture optional taskbar-layout and default-app inventories.
     if ($Script:Config.Backup.TaskbarLayout) { Backup-TaskbarLayout -DestinationBase $transferBase }
     else { Add-DisabledBackupResult -Item "Taskbar layout" -Category "Settings" }
     if ($Script:Config.Backup.DefaultApps) { Backup-DefaultApps -DestinationBase $transferBase }

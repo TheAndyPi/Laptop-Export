@@ -136,8 +136,14 @@ function Export-ChromeBookmarks {
     )
 
     $bookmarkPath = Join-Path $BrowserPath "Chrome\Bookmarks"
+    # Retain the small native bookmark store as well as the portable HTML.
+    # The importer can copy this JSON file into a matching Chrome profile for
+    # an automatic restore; the HTML remains the safe fallback when profiles
+    # cannot be matched on the destination computer.
+    $rawUserDataPath = Join-Path $BrowserPath "Chrome\ProfileBookmarks"
     $profiles = @(Get-ChromeProfileDirectories -UserDataPath $ChromeUserDataPath)
     $exported = 0
+    $rawExported = 0
 
     foreach ($profile in $profiles) {
         $bookmarksJson = Join-Path $profile.FullName "Bookmarks"
@@ -151,6 +157,15 @@ function Export-ChromeBookmarks {
 
         if (Convert-ChromeBookmarksToHtml -JsonPath $bookmarksJson -HtmlPath $chromeHtml) {
             $exported++
+            try {
+                $rawProfilePath = Join-Path $rawUserDataPath $profile.Name
+                New-Item -ItemType Directory -Path $rawProfilePath -Force | Out-Null
+                Copy-Item -LiteralPath $bookmarksJson -Destination (Join-Path $rawProfilePath "Bookmarks") -Force -ErrorAction Stop
+                $rawExported++
+            }
+            catch {
+                Write-Log "Could not retain native Chrome bookmarks for profile '$($profile.Name)': $_" -Level Warning
+            }
             Write-Log "Chrome bookmarks exported for profile '$($profile.Name)'" -Level Success
 
             # Keep the old Default filename as a convenience for technicians
@@ -165,7 +180,9 @@ function Export-ChromeBookmarks {
     }
 
     if ($exported -gt 0) {
-        Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Success" -Details "$exported Chrome profile(s) exported as HTML"
+        $detail = "$exported Chrome profile(s) exported as HTML"
+        if ($rawExported -gt 0) { $detail += "; $rawExported profile(s) available for automatic restore" }
+        Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Success" -Details $detail
     }
     else {
         Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Skipped" -Details "No Chrome bookmark files found"

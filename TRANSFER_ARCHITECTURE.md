@@ -39,7 +39,7 @@ The module order is intentional:
 | `04-destination.ps1` | Folder/drive selection, path safety, inventory, capacity checks, ZIP and network publication | `Select-TargetDrive`, `Select-TargetDestination`, `New-TransferArchive` |
 | `05-user-data.ps1` | Standard folders, extra folders, full-profile remainder, AppData | `Copy-UserFolders`, `Copy-AppData` |
 | `06-settings.ps1` | Power, registry, drives, and system settings | `Get-SystemSettings` |
-| `06-layout.ps1` | Desktop layout and default application inventory | Desktop layout helpers |
+| `06-layout.ps1` | Taskbar layout and default application inventory | Taskbar layout helpers |
 | `06-appdata-review.ps1` | Installed programs and AppData review | `Get-InstalledPrograms`, AppData helpers |
 | `06-printers.ps1` | Printer connection and PrintBRM capture | `Backup-Printers` |
 | `07-browsers-onedrive.ps1` | Chrome, Firefox, Edge, and OneDrive handling | `Copy-BrowserData`, `Set-OneDriveLocalSync` |
@@ -174,7 +174,6 @@ LaptopTransfer_yyyyMMdd_HHmmss/
 │   ├── MappedDrivesSnapshot.json
 │   ├── PowerScheme.pow             # only when elevated export succeeds
 │   ├── PowerSchemeDetails.txt
-│   ├── DesktopLayout.json
 │   ├── TaskbarLayout.json
 │   ├── DefaultApps.json
 │   ├── InstalledPrograms.json
@@ -217,7 +216,7 @@ All bulk folder copies flow through `Copy-WithProgress`, which starts `robocopy.
 - Power: `powercfg /getactivescheme`, `powercfg /qh`, `powercfg /query`, the AC/DC overlay values under `HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes`, parsed AC/DC setting values, lid actions, and—when elevated—`powercfg /export` to `.pow`.
 - Mapped drives: active `Get-PSDrive` UNC mappings plus persistent `HKCU:\Network\*` mappings, preserving letter/path pairs.
 - Default browser: the per-user `http` `UserChoice` ProgId.
-- Personalization: `HKCU` theme, DWM, accent, taskbar, search, cursor, desktop icon, visual-effect, DPI, per-monitor DPI, accessibility, and wallpaper values.
+- Personalization: `HKCU` theme, DWM, accent, taskbar, search, mouse pointer style, Night light, desktop icon, visual-effect, DPI, per-monitor DPI, accessibility, and wallpaper values.
 - Layouts: desktop position data through Explorer Shell/COM interop and taskbar state from the Taskband registry values.
 - Default apps: file-extension and protocol association inventory from the per-user Explorer association keys. It is a snapshot, not a forced association migration.
 - Installed programs: 64-bit HKLM, 32-bit Wow6432Node HKLM, and HKCU uninstall entries. A normalized display-name/publisher match key supports destination comparison.
@@ -234,9 +233,9 @@ Printer handling has two complementary paths. `Get-Printer` captures per-user ne
 - Edge: enumerate Chromium profiles, export portable HTML, and retain each raw `Bookmarks` file so matching profiles can be restored.
 - OneDrive: Local mode can force files offline using `attrib.exe`; Online mode deliberately skips force hydration and instructs the new-device operator to sign in and verify resync.
 
-### Desktop and taskbar layout
+### Taskbar layout
 
-Desktop layout restoration uses compiled C# COM interop for Explorer's `IFolderView`/`IFolderView2` and `SelectAndPositionItems`, scaling source coordinates against destination work-area dimensions. Missing files are reported instead of fabricated. Taskbar restoration inspects Shell items and verbs, removes only non-source pins with explicit logic, excludes Microsoft Store, retains/backs up relevant state, and reports unavailable destination applications. Duplicate shortcuts across local and OneDrive Desktops are hash-gated and, only after confirmation, sent to the Recycle Bin through `Microsoft.VisualBasic.FileIO`.
+Taskbar restoration inspects Shell items and verbs, removes only non-source pins with explicit logic, excludes Microsoft Store, retains/backs up relevant state, and reports unavailable destination applications.
 
 ## 9. Import dataflow
 
@@ -326,7 +325,7 @@ When adding a capability:
 - [src/04-destination.ps1](src/04-destination.ps1) — destination safety, size checks, ZIP, network upload.
 - [src/05-user-data.ps1](src/05-user-data.ps1) — user folders and AppData.
 - [src/06-settings.ps1](src/06-settings.ps1) — Windows power, registry, drive, and system settings.
-- [src/06-layout.ps1](src/06-layout.ps1) — desktop layout and default application inventory.
+- [src/06-layout.ps1](src/06-layout.ps1) — taskbar layout and default application inventory.
 - [src/06-appdata-review.ps1](src/06-appdata-review.ps1) — installed programs and AppData review.
 - [src/06-printers.ps1](src/06-printers.ps1) — printer connection and PrintBRM capture.
 - [src/07-browsers-onedrive.ps1](src/07-browsers-onedrive.ps1) — browser and OneDrive behavior.

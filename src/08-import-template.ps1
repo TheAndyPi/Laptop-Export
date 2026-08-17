@@ -567,7 +567,7 @@ foreach ($folder in $folders) {
 }
 
 # ============================================================================
-# DESKTOP LAYOUT AND ONEDRIVE SHORTCUT DUPLICATES
+# TASKBAR PINS AND DEFAULT-APP GUIDANCE
 # ============================================================================
 
 
@@ -695,8 +695,9 @@ function Remove-NonSourceTaskbarPins {
     return $removed
 }
 
-$desktopLayoutFile = Join-Path $scriptPath 'Settings\DesktopLayout.json'
-if (Test-Path -LiteralPath $desktopLayoutFile) {
+# Desktop layout import was retired. Keep the taskbar and default-app routines
+# below independent from packages created by earlier deployment versions.
+if ($false) {
     try {
         $desktopLayout = Get-Content -LiteralPath $desktopLayoutFile -Raw | ConvertFrom-Json
         $count = @($desktopLayout.Shortcuts).Count
@@ -1049,6 +1050,34 @@ elseif (Test-Path $lotusSource) {
         }
         Write-Host ""
     }
+}
+
+# On-Screen Takeoff - Roaming and Local AppData
+# These are intentionally restored only when present in the package.  The
+# application itself should be installed before opening it on the new PC.
+$ostAppDataCopies = @(
+    @{ Source = (Join-Path $scriptPath 'AppData\OnScreenTakeoff'); Destination = (Join-Path $env:APPDATA 'On Center Software\On-Screen Takeoff'); Name = 'On-Screen Takeoff (Roaming)' },
+    @{ Source = (Join-Path $scriptPath 'AppData\OnScreenTakeoff_Local'); Destination = (Join-Path $env:LOCALAPPDATA 'On Center Software\On-Screen Takeoff'); Name = 'On-Screen Takeoff (Local)' }
+)
+foreach ($ostCopy in $ostAppDataCopies) {
+    if (-not (Test-Path -LiteralPath $ostCopy.Source)) { continue }
+    if ($TestMode) {
+        Write-Log "$($ostCopy.Name) - Would restore" -Level 'Info'
+        Add-Result -Category 'AppData' -Item $ostCopy.Name -Status 'TestMode'
+        continue
+    }
+
+    $ostLogName = if ($ostCopy.Name -match 'Local') { 'import_onscreen_takeoff_local.log' } else { 'import_onscreen_takeoff_roaming.log' }
+    $result = Copy-WithProgress -Source $ostCopy.Source -Destination $ostCopy.Destination -FolderName $ostCopy.Name -LogPath (Join-Path $logsPath $ostLogName)
+    if ($result.Status -eq 'Success') {
+        Write-Log "$($ostCopy.Name) restored: $($result.FilesCopied) files" -Level 'Success'
+        Add-Result -Category 'AppData' -Item $ostCopy.Name -Status 'Success' -Details "$($result.FilesCopied) files"
+    }
+    else {
+        Write-Log "$($ostCopy.Name) - $($result.Status)" -Level 'Warning'
+        Add-Result -Category 'AppData' -Item $ostCopy.Name -Status $result.Status -Details 'Check log for details'
+    }
+    Write-Host ''
 }
 
 # Signatures
@@ -1693,7 +1722,7 @@ if (Test-Path $personalizationReg) {
             $regImportResult = Start-Process -FilePath "reg.exe" -ArgumentList "import `"$personalizationReg`"" -Wait -PassThru -WindowStyle Hidden
             
             if ($regImportResult.ExitCode -eq 0) {
-                Write-Log "Personalization settings restored (colors, taskbar, visual effects)" -Level "Success"
+                Write-Log "Personalization settings restored (colors, taskbar, mouse pointer style, Night light, visual effects)" -Level "Success"
                 Add-Result -Category "Settings" -Item "Personalization" -Status "Success" -Details "Registry imported"
                 
                 # Notify user to restart Explorer for full effect
@@ -1804,7 +1833,12 @@ if (-not $TestMode -and (Test-Path $settingsFile)) {
             }
             if ($cursorApplied) {
                 $Script:DisplayAccessibilitySettingsChanged = $true
-                Add-Result -Category 'Settings' -Item 'Cursor settings' -Status 'Success' -Details 'Scheme and size restored; sign out/in may be required'
+                Add-Result -Category 'Settings' -Item 'Mouse pointer style' -Status 'Success' -Details 'Scheme, size, and cursor mappings restored; sign out/in may be required'
+            }
+
+            if ($p.NightLight -and $p.NightLight.Count -gt 0) {
+                Add-Result -Category 'Settings' -Item 'Night light' -Status 'Success' -Details 'Enabled state, strength, and schedule restored; sign out/in may be required'
+                $Script:DisplayAccessibilitySettingsChanged = $true
             }
 
             if ($null -ne $p.TextScaleFactor) {
@@ -1834,7 +1868,7 @@ if (-not $TestMode -and (Test-Path $settingsFile)) {
         }
     }
     if ($Script:DisplayAccessibilitySettingsChanged) {
-        Write-Host '    Display scale, cursor settings, and text size will take full effect after sign-out/sign-in.' -ForegroundColor Yellow
+        Write-Host '    Display scale, mouse pointer style, Night light, and text size will take full effect after sign-out/sign-in.' -ForegroundColor Yellow
     }
 }
 
@@ -2038,8 +2072,9 @@ if ($chromeBookmarkFiles.Count -gt 0) {
     foreach ($chromeBookmarkFile in $chromeBookmarkFiles) {
         Write-Host "    File: $($chromeBookmarkFile.FullName)" -ForegroundColor Gray
     }
-    Write-Host "    To import: Chrome > Bookmarks and lists > Import bookmarks and settings > HTML file" -ForegroundColor Gray
-    Add-Result -Category "Browser" -Item "Chrome Bookmarks" -Status "Ready" -Details "$($chromeBookmarkFiles.Count) HTML file(s) for manual import"
+    Write-Host "    HTML files are retained for manual import if a Chrome profile cannot be matched automatically." -ForegroundColor Gray
+    Write-Host "    Manual fallback: Chrome > Bookmarks and lists > Import bookmarks and settings > HTML file" -ForegroundColor Gray
+    Add-Result -Category "Browser" -Item "Chrome Bookmark HTML" -Status "Ready" -Details "$($chromeBookmarkFiles.Count) fallback HTML file(s) available"
 }
 
 # A FullProfile archive restores the complete Chrome User Data tree. Passwords
@@ -2050,6 +2085,14 @@ if (Test-Path -LiteralPath $chromeProfileArchive) {
     Write-Log "Chrome profile archive detected ($chromeArchiveFiles files)" -Level "Info"
     Write-Host "    Chrome profile archive: $chromeProfileArchive" -ForegroundColor Gray
     Restore-ChromeProfileArchive -PackageUserDataPath $chromeProfileArchive -TargetUserDataPath (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data")
+}
+else {
+    # The standard, lean Chrome export contains only profile bookmark stores.
+    # Restore those automatically where the source and destination profile
+    # directories match; HTML files above remain available for every other
+    # profile.
+    $chromeProfileBookmarks = Join-Path $browserDataPath "Chrome\ProfileBookmarks"
+    Restore-ChromiumProfileBookmarks -BrowserName "Google Chrome" -ProcessName "chrome" -PackageUserDataPath $chromeProfileBookmarks -TargetUserDataPath (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data")
 }
 
 # Chrome's native Password Manager export produces a plaintext CSV after the
@@ -2403,7 +2446,7 @@ function Update-TransferReportFromImport {
             $candidateRows = @($AppDataCandidates | ForEach-Object { "<tr><td>$(& $encode ([string]$_.Area))</td><td>$(& $encode ([string]$_.RelativePath))</td><td>$(& $encode ([string]$_.Association))</td></tr>" }) -join "`n"
             $candidatePanel = if ($candidateRows) { "<details class='section'><summary>AppData migration review<span>$($AppDataCandidates.Count) folder(s) to review; none are copied automatically</span></summary><div class='section-content'><table><thead><tr><th>Area</th><th>Folder</th><th>Association</th></tr></thead><tbody>$candidateRows</tbody></table></div></details>" } else { '' }
             if ($MissingPrograms.Count -gt 0) {
-                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><ul class='missing-app-list'>$appItems</ul></div>$candidatePanel"
+                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><details><summary>Post-transfer apps list<span>$($MissingPrograms.Count) app(s) to install or replace</span></summary><ul class='missing-app-list'>$appItems</ul></details></div>$candidatePanel"
             }
             else {
                 $appSection = "<div class='app-summary ok'><h3>Application comparison complete</h3><p>No applications from the old computer are missing on this new computer.</p></div>$candidatePanel"
@@ -2445,7 +2488,7 @@ function Update-TransferReportImportOutcomes {
             $items = @($attention | ForEach-Object {
                 "<li><strong>$(& $encode ([string]$_.Item))</strong><small>$(& $encode ([string]$_.Status)) · $(& $encode ([string]$_.Details))</small></li>"
             }) -join "`n"
-            "<section class='section'><div class='section-header'>Import actions needing attention<span class='section-subtitle'>Import items Windows could not apply automatically</span></div><div class='section-content'><div class='app-summary ready'><ul class='app-list'>$items</ul></div></div></section>"
+            "<details class='section' open><summary>Post-transfer errors and warnings<span>Import items Windows could not apply automatically</span></summary><div class='section-content'><div class='app-summary ready'><ul class='app-list'>$items</ul></div></div></details>"
         }
         else { '' }
         $reportHtml = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8

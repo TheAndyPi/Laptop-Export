@@ -57,7 +57,7 @@ function New-TransferReport {
             $class = if ($alert.Level -eq 'Error') { 'status-error' } else { 'status-warning' }
             "<tr><td>$(Out-HtmlEncoded $alert.Timestamp)</td><td><span class='status $class'>$(Out-HtmlEncoded $alert.Level)</span></td><td>$(Out-HtmlEncoded $alert.Message)</td></tr>"
         }
-        "<details class='section'><summary>Console warnings and errors<span>$($runtimeAlerts.Count) message(s), including warnings without an export-action row</span></summary><div class='section-content'><table><thead><tr><th>Time</th><th>Level</th><th>Message</th></tr></thead><tbody>$($alertRows -join "`n")</tbody></table></div></details>"
+        "<details class='section' open><summary>Console warnings and errors<span>$($runtimeAlerts.Count) message(s), including warnings without an export-action row</span></summary><div class='section-content'><table><thead><tr><th>Time</th><th>Level</th><th>Message</th></tr></thead><tbody>$($alertRows -join "`n")</tbody></table></div></details>"
     }
     else { '' }
 
