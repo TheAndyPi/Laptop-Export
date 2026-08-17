@@ -834,7 +834,7 @@ function Format-RemainingTime {
 
 function Copy-WithProgress {
     # Wrap robocopy, translate its bitmask exit code into application statuses,
-    # and stream progress from the generated log.  Robocopy codes 0-7 represent
+    # and stream progress from Robocopy's own output. Robocopy codes 0-7 represent
     # success or acceptable differences; 8 and above mean a copy failure.
     param(
         [string]$Source,
@@ -876,14 +876,19 @@ function Copy-WithProgress {
     $startTime = Get-Date
     $spinIndex = 0
     
-    # Build full argument string for robocopy
-    $robocopyArgString = ($RobocopyArgs -join " ")
+    # /NP and /NFL suppress per-file completion events. Remove them only from
+    # this process; no destination polling or per-file log writes are needed.
+    $robocopyArgsForProgress = @($RobocopyArgs | Where-Object { $_ -notin @('/NP', '/NFL') })
+    if ($robocopyArgsForProgress -notcontains '/BYTES') { $robocopyArgsForProgress += '/BYTES' }
+    $robocopyArgString = ($robocopyArgsForProgress -join " ")
     
     # Keep a direct handle to the Robocopy process.  This lets the technician
     # stop only the current copy instead of terminating the whole export.
     $pinfo = New-Object System.Diagnostics.ProcessStartInfo
     $pinfo.FileName = "robocopy.exe"
-    $pinfo.Arguments = "`"$Source`" `"$Destination`" $robocopyArgString /LOG:`"$LogPath`""
+    $pinfo.Arguments = "`"$Source`" `"$Destination`" $robocopyArgString"
+    $pinfo.RedirectStandardOutput = $true
+    $pinfo.RedirectStandardError = $true
     $pinfo.UseShellExecute = $false
     $pinfo.CreateNoWindow = $true
 
@@ -893,13 +898,32 @@ function Copy-WithProgress {
         return @{ ExitCode = -1; FilesCopied = 0; BytesCopied = 0; Status = "Warning"; Duration = [TimeSpan]::Zero }
     }
 
+    $progressState = [hashtable]::Synchronized(@{
+        CompletedFiles = 0
+        Diagnostics = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+    })
+    $progressHandler = [System.Diagnostics.DataReceivedEventHandler]{
+        param($sender, $eventArgs)
+        $line = $eventArgs.Data
+        if ($null -eq $line) { return }
+        if ($line -match '(?<!\d)100(?:\.0+)?%') { $progressState.CompletedFiles++ }
+        # Keep the historically useful headers, summary, and failures without
+        # writing one log line for every file just to support the progress UI.
+        if ($line -match '^\s*(?:Started|Ended|Source|Dest|Options|Dirs|Files|Bytes|Times)\s*:' -or
+            $line -match '(?i)\b(?:error|failed|access denied)\b') {
+            $progressState.Diagnostics.Enqueue($line)
+        }
+    }
+    $process.add_OutputDataReceived($progressHandler)
+    $process.add_ErrorDataReceived($progressHandler)
+    $process.BeginOutputReadLine()
+    $process.BeginErrorReadLine()
+
     $abortedByOperator = $false
     Write-Host "    Press S to stop this copy and continue with the next step." -ForegroundColor DarkGray
     
-    # Do not recursively enumerate the destination while robocopy is writing.
-    # Browser profiles commonly contain tens of thousands of cache files; the
-    # previous 750 ms rescan saturated the same disk and network link as the
-    # transfer. Keep cancellation responsive with a zero-I/O spinner instead.
+    # Count Robocopy's per-file completion markers. This is O(1) per output
+    # line and remains responsive without rescanning the active destination.
     while (-not $process.HasExited) {
         Start-Sleep -Milliseconds 750
 
@@ -919,15 +943,27 @@ function Copy-WithProgress {
         }
         catch { }
         
-        # Advance spinner without inspecting the destination tree.
+        $completedFiles = [math]::Min($totalFiles, [int]$progressState.CompletedFiles)
+        $percent = [math]::Min(99, [math]::Floor(($completedFiles / [double]$totalFiles) * 100))
+        $progressBarWidth = 34
+        $filledWidth = [math]::Round(($percent / 100) * $progressBarWidth)
+        $progressBar = ([string]$Script:Theme.Bar.Full * $filledWidth) + ([string]$Script:Theme.Bar.Light * ($progressBarWidth - $filledWidth))
+
+        # The spinner remains useful while a single large file is copied.
         $spin = $Script:Theme.Spinner[$spinIndex % $Script:Theme.Spinner.Count]
         $spinIndex++
         $elapsed = (Get-Date) - $startTime
-        $statusLine = "    $spin Copying $(Format-FileSize $totalSize) / $totalFiles files  elapsed $([math]::Round($elapsed.TotalSeconds, 0)) sec   "
+        $statusLine = "    $spin $progressBar $($percent.ToString().PadLeft(3))%  $completedFiles / $totalFiles files  elapsed $([math]::Round($elapsed.TotalSeconds, 0)) sec   "
         Write-Host "`r$statusLine" -NoNewline
     }
     
     $exitCode = $process.ExitCode
+    $process.remove_OutputDataReceived($progressHandler)
+    $process.remove_ErrorDataReceived($progressHandler)
+    $logLines = @("Source: $Source", "Destination: $Destination", "Robocopy exit code: $exitCode")
+    $diagnosticLine = $null
+    while ($progressState.Diagnostics.TryDequeue([ref]$diagnosticLine)) { $logLines += $diagnosticLine; $diagnosticLine = $null }
+    $logLines | Set-Content -LiteralPath $LogPath -Encoding UTF8
     
     $elapsed = (Get-Date) - $startTime
     $copySucceeded = $exitCode -lt 8

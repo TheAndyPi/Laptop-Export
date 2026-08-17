@@ -7,6 +7,44 @@
 # function keeps those rules explicit instead of treating the entire profile as
 # a raw filesystem copy.
 
+function Test-OperatingSystemDriveBitLocker {
+    # Get-BitLockerVolume and manage-bde generally require elevation. The
+    # Windows Shell property exposes the operating-system drive's high-level
+    # state to the signed-in user without changing anything.
+    $mountPoint = if ($env:SystemDrive) { $env:SystemDrive + '\' } else { 'C:\' }
+    $shell = $null
+    try {
+        $shell = New-Object -ComObject Shell.Application -ErrorAction Stop
+        $folder = $shell.NameSpace($mountPoint)
+        if ($null -eq $folder) { throw "Windows Shell could not open '$mountPoint'." }
+
+        $rawStatus = $folder.Self.ExtendedProperty('System.Volume.BitLockerProtection')
+        if ($null -eq $rawStatus) { throw "Windows did not return a BitLocker status for '$mountPoint'." }
+        $status = [int]$rawStatus
+    }
+    finally {
+        if ($shell -and [Runtime.InteropServices.Marshal]::IsComObject($shell)) {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
+        }
+    }
+
+    # These values describe the Shell property, not the administrative
+    # BitLocker cmdlet's ProtectionStatus values. Only 1 means protection is on.
+    $result = switch ($status) {
+        1 { [PSCustomObject]@{ Status = 'Success'; Details = "BitLocker protection is on for $mountPoint (Shell status 1)." }; break }
+        2 { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker is off for $mountPoint (fully decrypted; Shell status 2)." }; break }
+        3 { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker encryption is in progress or paused for $mountPoint; protection is not yet on (Shell status 3)." }; break }
+        4 { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker decryption is in progress or paused for $mountPoint (Shell status 4)." }; break }
+        5 { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker protection is suspended for $mountPoint (Shell status 5)." }; break }
+        6 { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker status for $mountPoint cannot be determined because the volume is locked (Shell status 6)." }; break }
+        8 { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker is waiting for activation on $mountPoint (Shell status 8)." }; break }
+        default { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker returned unrecognized Shell status $status for $mountPoint." }; break }
+    }
+
+    Write-Status 'BitLocker OS drive' $(if ($result.Status -eq 'Success') { 'OK' } else { 'WARN' }) $result.Details
+    return [PSCustomObject]@{ MountPoint = $mountPoint; ShellStatus = $status; Status = $result.Status; Details = $result.Details }
+}
+
 function Get-SystemSettings {
     # Collect power, personalization, network-drive, desktop, taskbar, and
     # default-app state into package files.  Capture failures are recorded as
@@ -30,18 +68,16 @@ function Get-SystemSettings {
         ExportWasAdministrator = [bool]$Script:IsAdmin
     }
 
-    # BitLocker state is a handoff prerequisite. Capture it without making an
-    # unavailable management module an export-stopping condition.
+    # Verify the operating-system drive without requiring elevation. This is a
+    # provisioning check, not an administrative inventory of every volume.
     try {
-        $bitLocker = @(Get-BitLockerVolume -ErrorAction Stop | ForEach-Object {
-            [PSCustomObject]@{ MountPoint = $_.MountPoint; VolumeStatus = [string]$_.VolumeStatus; ProtectionStatus = [string]$_.ProtectionStatus; EncryptionPercentage = $_.EncryptionPercentage }
-        })
-        $settings.BitLocker = $bitLocker
-        Add-Result -Category 'Settings' -Item 'BitLocker status' -Status 'Success' -Details (($bitLocker | ForEach-Object { "$($_.MountPoint): $($_.ProtectionStatus), $($_.VolumeStatus)" }) -join '; ')
+        $settings.BitLocker = Test-OperatingSystemDriveBitLocker
+        Add-Result -Category 'Settings' -Item 'BitLocker OS-drive status' -Status $settings.BitLocker.Status -Details $settings.BitLocker.Details
     }
     catch {
-        $settings.BitLocker = @()
-        Add-Result -Category 'Settings' -Item 'BitLocker status' -Status 'Skipped' -Details 'Could not query BitLocker on this device'
+        $settings.BitLocker = [PSCustomObject]@{ MountPoint = if ($env:SystemDrive) { $env:SystemDrive + '\' } else { 'C:\' }; ShellStatus = $null; Status = 'Warning'; Details = $_.Exception.Message }
+        Write-Status 'BitLocker OS drive' 'WARN' $settings.BitLocker.Details
+        Add-Result -Category 'Settings' -Item 'BitLocker OS-drive status' -Status 'Warning' -Details $settings.BitLocker.Details
     }
     
     # Power Settings
@@ -412,4 +448,3 @@ Windows Registry Editor Version 5.00
     
     return $settings
 }
-

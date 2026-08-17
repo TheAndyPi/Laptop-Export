@@ -82,6 +82,21 @@ Describe 'Online performance controls' {
     }
 }
 
+Describe 'Robocopy progress monitoring' {
+    It 'uses Robocopy completion events instead of rescanning active destinations' {
+        $core = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\03-core.ps1') -Raw
+        $template = Get-LaptopExportSourceText -Group ImportTemplate
+        $core | Should Match 'BeginOutputReadLine'
+        $core | Should Match 'CompletedFiles'
+        $core | Should Match 'robocopyArgsForProgress'
+        $core | Should Match "'/NP', '/NFL'"
+        $core | Should Not Match 'Get-ChildItem \$Destination -Recurse -File'
+        $template | Should Match 'BeginOutputReadLine'
+        $template | Should Match 'CompletedFiles'
+        $template | Should Not Match 'Get-ChildItem \$Destination -Recurse -File'
+    }
+}
+
 Describe 'Settings presets and additional AppData' {
     BeforeEach {
         Reset-LaptopExportResults

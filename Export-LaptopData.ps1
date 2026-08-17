@@ -254,7 +254,7 @@ $Script:TransferReportTemplate = @'
   <title>Laptop Transfer Report - {{USER}}</title>
   <style>
     :root{color-scheme:dark;--ink:#f5f9ff;--muted:#9daec6;--panel:#111d33;--panel2:#172744;--line:rgba(173,204,255,.17);--blue:#29b8ff;--violet:#9d7bff;--green:#44dda4;--amber:#ffc45d;--red:#ff7185}
-    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% -10%,#235e91 0,transparent 38%),radial-gradient(circle at 90% 5%,#4d327b 0,transparent 31%),#08111f;color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif}.container{max-width:1160px;margin:auto;padding:32px 20px 48px}.hero,.section,.stat,.route-card,.duration-card{border:1px solid var(--line);background:linear-gradient(145deg,rgba(27,45,76,.93),rgba(12,23,41,.94));box-shadow:0 18px 50px rgba(0,0,0,.19)}.hero{border-radius:24px;padding:30px;margin-bottom:18px;overflow:hidden;position:relative}.hero:after{content:"";position:absolute;width:280px;height:280px;border-radius:50%;right:-100px;top:-165px;background:radial-gradient(circle,rgba(41,184,255,.22),transparent 70%);pointer-events:none}.eyebrow,.label{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}h1{margin:5px 0 4px;font-size:clamp(28px,4vw,42px);line-height:1.1;letter-spacing:-.035em}.accent{color:var(--blue)}.meta{color:var(--muted);margin:0}.route{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:stretch;margin-top:25px}.route-card{min-width:0;border-radius:16px;padding:16px;background:rgba(7,17,31,.55)}.route-name{overflow-wrap:anywhere;font-size:20px;font-weight:700;color:#fff;margin-top:4px}.route-arrow{align-self:center;color:var(--blue);font-size:28px;text-align:center}.duration-card{border-radius:16px;margin-top:16px;padding:18px 20px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(100deg,rgba(41,184,255,.14),rgba(157,123,255,.14))}.duration{font-size:clamp(34px,5vw,56px);line-height:1;font-weight:800;letter-spacing:-.06em;color:#fff}.duration-copy{text-align:right;color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.stat{border-radius:16px;padding:18px}.number{font-size:30px;font-weight:800;line-height:1.1}.success .number,.success-text{color:var(--green)}.warning .number{color:var(--amber)}.error .number{color:var(--red)}.skipped .number{color:#c8d2e3}.section{border-radius:18px;margin:18px 0;overflow:hidden}.section-header{padding:17px 20px;background:rgba(255,255,255,.035);font-size:17px;font-weight:700}.section-subtitle{display:block;margin-top:2px;color:var(--muted);font-size:12px;font-weight:400}.section-content{padding:20px}.app-summary{border:1px solid rgba(41,184,255,.35);border-radius:14px;padding:18px;background:linear-gradient(110deg,rgba(41,184,255,.1),rgba(157,123,255,.08))}.app-summary h3{margin:0 0 6px;font-size:19px}.app-summary p{margin:0;color:var(--muted)}.app-summary.ready{border-color:rgba(255,196,93,.55)}.app-summary.ok{border-color:rgba(68,221,164,.55)}.app-list{margin:16px 0 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:9px}.app-list li{min-width:0;padding:11px 12px;border-radius:10px;background:rgba(6,15,28,.55);border:1px solid var(--line);overflow-wrap:anywhere}.app-list small,.manual-task p,.manual-task pre{display:block;max-width:100%;overflow-wrap:anywhere;word-break:break-word}.app-list small{color:var(--muted);margin-top:2px}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{padding:12px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere;word-break:break-word}th{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}.status{display:inline-block;border-radius:999px;padding:4px 9px;font-size:12px;white-space:nowrap}.status-success{background:rgba(68,221,164,.15);color:#84f2c6}.status-warning{background:rgba(255,196,93,.14);color:#ffda91}.status-error{background:rgba(255,113,133,.16);color:#ffb3be}.status-skipped{background:rgba(187,202,224,.13);color:#d9e2f0}.critical-warning{border:1px solid rgba(255,113,133,.7);background:rgba(127,29,29,.28);border-radius:18px;padding:20px;margin:18px 0}.critical-warning h2{margin:0 0 4px;color:#ffbac4}.critical-warning p{margin:0;color:#ffd1d8}.admin-success{border-radius:16px;padding:15px 20px;margin:18px 0;color:#a1f6d1}.manual-task{border-left:3px solid var(--violet);border-radius:0 10px 10px 0;background:rgba(157,123,255,.1);padding:14px 16px;margin-bottom:10px}.manual-task.critical{border-color:var(--red);background:rgba(255,113,133,.1)}.manual-task h4{margin:0 0 4px}.manual-task p{margin:0;color:var(--muted)}.manual-task pre{white-space:pre-wrap;margin:10px 0 0;color:#dfeaff;font:12px/1.45 Consolas,monospace}details.section{padding:0}details summary{cursor:pointer;list-style:none;padding:18px 20px;font-size:17px;font-weight:700;background:rgba(255,255,255,.035)}details summary::-webkit-details-marker{display:none}details summary:after{content:'+';float:right;color:var(--blue);font-size:22px;line-height:.8}details[open] summary:after{content:'−'}details summary span{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:2px}details ul{margin:0;padding-left:22px}details li{margin:9px 0;color:#dce8fa}footer{text-align:center;color:#7f91ac;font-size:12px;padding:10px}@media(max-width:700px){.container{padding:18px 14px 35px}.hero{padding:22px}.route{grid-template-columns:1fr}.route-arrow{transform:rotate(90deg);padding:0}.duration-card{align-items:flex-start;gap:12px;flex-direction:column}.duration-copy{text-align:left}.stats{grid-template-columns:repeat(2,1fr)}.section-content{overflow:auto;padding:14px}table{table-layout:auto}}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% -10%,#235e91 0,transparent 38%),radial-gradient(circle at 90% 5%,#4d327b 0,transparent 31%),#08111f;color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif}.container{max-width:1160px;margin:auto;padding:32px 20px 48px}.hero,.section,.stat,.route-card,.duration-card{border:1px solid var(--line);background:linear-gradient(145deg,rgba(27,45,76,.93),rgba(12,23,41,.94));box-shadow:0 18px 50px rgba(0,0,0,.19)}.hero{border-radius:24px;padding:30px;margin-bottom:18px;overflow:hidden;position:relative}.hero:after{content:"";position:absolute;width:280px;height:280px;border-radius:50%;right:-100px;top:-165px;background:radial-gradient(circle,rgba(41,184,255,.22),transparent 70%);pointer-events:none}.eyebrow,.label{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}h1{margin:5px 0 4px;font-size:clamp(28px,4vw,42px);line-height:1.1;letter-spacing:-.035em}.accent{color:var(--blue)}.meta{color:var(--muted);margin:0}.route{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:stretch;margin-top:25px}.route-card{min-width:0;border-radius:16px;padding:16px;background:rgba(7,17,31,.55)}.route-name{overflow-wrap:anywhere;font-size:20px;font-weight:700;color:#fff;margin-top:4px}.route-arrow{align-self:center;color:var(--blue);font-size:28px;text-align:center}.duration-card{border-radius:16px;margin-top:16px;padding:18px 20px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(100deg,rgba(41,184,255,.14),rgba(157,123,255,.14))}.duration{font-size:clamp(34px,5vw,56px);line-height:1;font-weight:800;letter-spacing:-.06em;color:#fff}.duration-copy{text-align:right;color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.stat{border-radius:16px;padding:18px}.number{font-size:30px;font-weight:800;line-height:1.1}.success .number,.success-text{color:var(--green)}.warning .number{color:var(--amber)}.error .number{color:var(--red)}.skipped .number{color:#c8d2e3}.section{border-radius:18px;margin:18px 0;overflow:hidden}.section-header{padding:17px 20px;background:rgba(255,255,255,.035);font-size:17px;font-weight:700}.section-subtitle{display:block;margin-top:2px;color:var(--muted);font-size:12px;font-weight:400}.section-content{padding:20px}.app-summary{border:1px solid rgba(41,184,255,.35);border-radius:14px;padding:18px;background:linear-gradient(110deg,rgba(41,184,255,.1),rgba(157,123,255,.08))}.app-summary h3{margin:0 0 6px;font-size:19px}.app-summary p{margin:0;color:var(--muted)}.app-summary.ready{border-color:rgba(255,196,93,.55)}.app-summary.ok{border-color:rgba(68,221,164,.55)}.app-list{margin:16px 0 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:9px}.app-list li{min-width:0;padding:11px 12px;border-radius:10px;background:rgba(6,15,28,.55);border:1px solid var(--line);overflow-wrap:anywhere}.missing-app-list{margin:16px 0 0;padding-left:22px}.missing-app-list li{padding:8px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.missing-app-list li:last-child{border-bottom:0}.app-list small,.missing-app-list small,.manual-task p,.manual-task pre{display:block;max-width:100%;overflow-wrap:anywhere;word-break:break-word}.app-list small,.missing-app-list small{color:var(--muted);margin-top:2px}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{padding:12px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere;word-break:break-word}th{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}.status{display:inline-block;border-radius:999px;padding:4px 9px;font-size:12px;white-space:nowrap}.status-success{background:rgba(68,221,164,.15);color:#84f2c6}.status-warning{background:rgba(255,196,93,.14);color:#ffda91}.status-error{background:rgba(255,113,133,.16);color:#ffb3be}.status-skipped{background:rgba(187,202,224,.13);color:#d9e2f0}.critical-warning{border:1px solid rgba(255,113,133,.7);background:rgba(127,29,29,.28);border-radius:18px;padding:20px;margin:18px 0}.critical-warning h2{margin:0 0 4px;color:#ffbac4}.critical-warning p{margin:0;color:#ffd1d8}.admin-success{border-radius:16px;padding:15px 20px;margin:18px 0;color:#a1f6d1}.manual-task{border-left:3px solid var(--violet);border-radius:0 10px 10px 0;background:rgba(157,123,255,.1);padding:14px 16px;margin-bottom:10px}.manual-task.critical{border-color:var(--red);background:rgba(255,113,133,.1)}.manual-task h4{margin:0 0 4px}.manual-task p{margin:0;color:var(--muted)}.manual-task pre{white-space:pre-wrap;margin:10px 0 0;color:#dfeaff;font:12px/1.45 Consolas,monospace}details.section{padding:0}details summary{cursor:pointer;list-style:none;padding:18px 20px;font-size:17px;font-weight:700;background:rgba(255,255,255,.035)}details summary::-webkit-details-marker{display:none}details summary:after{content:'+';float:right;color:var(--blue);font-size:22px;line-height:.8}details[open] summary:after{content:'−'}details summary span{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:2px}details ul{margin:0;padding-left:22px}details li{margin:9px 0;color:#dce8fa}footer{text-align:center;color:#7f91ac;font-size:12px;padding:10px}@media(max-width:700px){.container{padding:18px 14px 35px}.hero{padding:22px}.route{grid-template-columns:1fr}.route-arrow{transform:rotate(90deg);padding:0}.duration-card{align-items:flex-start;gap:12px;flex-direction:column}.duration-copy{text-align:left}.stats{grid-template-columns:repeat(2,1fr)}.section-content{overflow:auto;padding:14px}table{table-layout:auto}}
     /* Compact handoff view: keep long action ledgers scannable at 100% zoom. */
     body{font-size:14px;line-height:1.45}.container{padding:24px 18px 38px}.hero{padding:24px;margin-bottom:14px;border-radius:20px}h1{font-size:clamp(24px,3.4vw,36px)}.route{gap:12px;margin-top:20px}.route-card{padding:13px;border-radius:14px}.route-name{font-size:17px}.duration-card{margin-top:14px;padding:15px 17px;border-radius:14px}.duration{font-size:clamp(28px,4vw,44px)}.stats{gap:10px;margin:14px 0}.stat{padding:14px;border-radius:14px}.number{font-size:25px}.section-header,details summary{font-size:16px;padding:14px 17px}.section-content{padding:16px}th,td{padding:10px 8px}
   </style>
@@ -1284,7 +1284,7 @@ function Format-RemainingTime {
 
 function Copy-WithProgress {
     # Wrap robocopy, translate its bitmask exit code into application statuses,
-    # and stream progress from the generated log.  Robocopy codes 0-7 represent
+    # and stream progress from Robocopy's own output. Robocopy codes 0-7 represent
     # success or acceptable differences; 8 and above mean a copy failure.
     param(
         [string]$Source,
@@ -1326,14 +1326,19 @@ function Copy-WithProgress {
     $startTime = Get-Date
     $spinIndex = 0
     
-    # Build full argument string for robocopy
-    $robocopyArgString = ($RobocopyArgs -join " ")
+    # /NP and /NFL suppress per-file completion events. Remove them only from
+    # this process; no destination polling or per-file log writes are needed.
+    $robocopyArgsForProgress = @($RobocopyArgs | Where-Object { $_ -notin @('/NP', '/NFL') })
+    if ($robocopyArgsForProgress -notcontains '/BYTES') { $robocopyArgsForProgress += '/BYTES' }
+    $robocopyArgString = ($robocopyArgsForProgress -join " ")
     
     # Keep a direct handle to the Robocopy process.  This lets the technician
     # stop only the current copy instead of terminating the whole export.
     $pinfo = New-Object System.Diagnostics.ProcessStartInfo
     $pinfo.FileName = "robocopy.exe"
-    $pinfo.Arguments = "`"$Source`" `"$Destination`" $robocopyArgString /LOG:`"$LogPath`""
+    $pinfo.Arguments = "`"$Source`" `"$Destination`" $robocopyArgString"
+    $pinfo.RedirectStandardOutput = $true
+    $pinfo.RedirectStandardError = $true
     $pinfo.UseShellExecute = $false
     $pinfo.CreateNoWindow = $true
 
@@ -1343,13 +1348,32 @@ function Copy-WithProgress {
         return @{ ExitCode = -1; FilesCopied = 0; BytesCopied = 0; Status = "Warning"; Duration = [TimeSpan]::Zero }
     }
 
+    $progressState = [hashtable]::Synchronized(@{
+        CompletedFiles = 0
+        Diagnostics = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+    })
+    $progressHandler = [System.Diagnostics.DataReceivedEventHandler]{
+        param($sender, $eventArgs)
+        $line = $eventArgs.Data
+        if ($null -eq $line) { return }
+        if ($line -match '(?<!\d)100(?:\.0+)?%') { $progressState.CompletedFiles++ }
+        # Keep the historically useful headers, summary, and failures without
+        # writing one log line for every file just to support the progress UI.
+        if ($line -match '^\s*(?:Started|Ended|Source|Dest|Options|Dirs|Files|Bytes|Times)\s*:' -or
+            $line -match '(?i)\b(?:error|failed|access denied)\b') {
+            $progressState.Diagnostics.Enqueue($line)
+        }
+    }
+    $process.add_OutputDataReceived($progressHandler)
+    $process.add_ErrorDataReceived($progressHandler)
+    $process.BeginOutputReadLine()
+    $process.BeginErrorReadLine()
+
     $abortedByOperator = $false
     Write-Host "    Press S to stop this copy and continue with the next step." -ForegroundColor DarkGray
     
-    # Do not recursively enumerate the destination while robocopy is writing.
-    # Browser profiles commonly contain tens of thousands of cache files; the
-    # previous 750 ms rescan saturated the same disk and network link as the
-    # transfer. Keep cancellation responsive with a zero-I/O spinner instead.
+    # Count Robocopy's per-file completion markers. This is O(1) per output
+    # line and remains responsive without rescanning the active destination.
     while (-not $process.HasExited) {
         Start-Sleep -Milliseconds 750
 
@@ -1369,15 +1393,27 @@ function Copy-WithProgress {
         }
         catch { }
         
-        # Advance spinner without inspecting the destination tree.
+        $completedFiles = [math]::Min($totalFiles, [int]$progressState.CompletedFiles)
+        $percent = [math]::Min(99, [math]::Floor(($completedFiles / [double]$totalFiles) * 100))
+        $progressBarWidth = 34
+        $filledWidth = [math]::Round(($percent / 100) * $progressBarWidth)
+        $progressBar = ([string]$Script:Theme.Bar.Full * $filledWidth) + ([string]$Script:Theme.Bar.Light * ($progressBarWidth - $filledWidth))
+
+        # The spinner remains useful while a single large file is copied.
         $spin = $Script:Theme.Spinner[$spinIndex % $Script:Theme.Spinner.Count]
         $spinIndex++
         $elapsed = (Get-Date) - $startTime
-        $statusLine = "    $spin Copying $(Format-FileSize $totalSize) / $totalFiles files  elapsed $([math]::Round($elapsed.TotalSeconds, 0)) sec   "
+        $statusLine = "    $spin $progressBar $($percent.ToString().PadLeft(3))%  $completedFiles / $totalFiles files  elapsed $([math]::Round($elapsed.TotalSeconds, 0)) sec   "
         Write-Host "`r$statusLine" -NoNewline
     }
     
     $exitCode = $process.ExitCode
+    $process.remove_OutputDataReceived($progressHandler)
+    $process.remove_ErrorDataReceived($progressHandler)
+    $logLines = @("Source: $Source", "Destination: $Destination", "Robocopy exit code: $exitCode")
+    $diagnosticLine = $null
+    while ($progressState.Diagnostics.TryDequeue([ref]$diagnosticLine)) { $logLines += $diagnosticLine; $diagnosticLine = $null }
+    $logLines | Set-Content -LiteralPath $LogPath -Encoding UTF8
     
     $elapsed = (Get-Date) - $startTime
     $copySucceeded = $exitCode -lt 8
@@ -2845,6 +2881,44 @@ Right-click folder > 'Pin to Quick access'
 # function keeps those rules explicit instead of treating the entire profile as
 # a raw filesystem copy.
 
+function Test-OperatingSystemDriveBitLocker {
+    # Get-BitLockerVolume and manage-bde generally require elevation. The
+    # Windows Shell property exposes the operating-system drive's high-level
+    # state to the signed-in user without changing anything.
+    $mountPoint = if ($env:SystemDrive) { $env:SystemDrive + '\' } else { 'C:\' }
+    $shell = $null
+    try {
+        $shell = New-Object -ComObject Shell.Application -ErrorAction Stop
+        $folder = $shell.NameSpace($mountPoint)
+        if ($null -eq $folder) { throw "Windows Shell could not open '$mountPoint'." }
+
+        $rawStatus = $folder.Self.ExtendedProperty('System.Volume.BitLockerProtection')
+        if ($null -eq $rawStatus) { throw "Windows did not return a BitLocker status for '$mountPoint'." }
+        $status = [int]$rawStatus
+    }
+    finally {
+        if ($shell -and [Runtime.InteropServices.Marshal]::IsComObject($shell)) {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
+        }
+    }
+
+    # These values describe the Shell property, not the administrative
+    # BitLocker cmdlet's ProtectionStatus values. Only 1 means protection is on.
+    $result = switch ($status) {
+        1 { [PSCustomObject]@{ Status = 'Success'; Details = "BitLocker protection is on for $mountPoint (Shell status 1)." }; break }
+        2 { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker is off for $mountPoint (fully decrypted; Shell status 2)." }; break }
+        3 { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker encryption is in progress or paused for $mountPoint; protection is not yet on (Shell status 3)." }; break }
+        4 { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker decryption is in progress or paused for $mountPoint (Shell status 4)." }; break }
+        5 { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker protection is suspended for $mountPoint (Shell status 5)." }; break }
+        6 { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker status for $mountPoint cannot be determined because the volume is locked (Shell status 6)." }; break }
+        8 { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker is waiting for activation on $mountPoint (Shell status 8)." }; break }
+        default { [PSCustomObject]@{ Status = 'Warning'; Details = "BitLocker returned unrecognized Shell status $status for $mountPoint." }; break }
+    }
+
+    Write-Status 'BitLocker OS drive' $(if ($result.Status -eq 'Success') { 'OK' } else { 'WARN' }) $result.Details
+    return [PSCustomObject]@{ MountPoint = $mountPoint; ShellStatus = $status; Status = $result.Status; Details = $result.Details }
+}
+
 function Get-SystemSettings {
     # Collect power, personalization, network-drive, desktop, taskbar, and
     # default-app state into package files.  Capture failures are recorded as
@@ -2868,18 +2942,16 @@ function Get-SystemSettings {
         ExportWasAdministrator = [bool]$Script:IsAdmin
     }
 
-    # BitLocker state is a handoff prerequisite. Capture it without making an
-    # unavailable management module an export-stopping condition.
+    # Verify the operating-system drive without requiring elevation. This is a
+    # provisioning check, not an administrative inventory of every volume.
     try {
-        $bitLocker = @(Get-BitLockerVolume -ErrorAction Stop | ForEach-Object {
-            [PSCustomObject]@{ MountPoint = $_.MountPoint; VolumeStatus = [string]$_.VolumeStatus; ProtectionStatus = [string]$_.ProtectionStatus; EncryptionPercentage = $_.EncryptionPercentage }
-        })
-        $settings.BitLocker = $bitLocker
-        Add-Result -Category 'Settings' -Item 'BitLocker status' -Status 'Success' -Details (($bitLocker | ForEach-Object { "$($_.MountPoint): $($_.ProtectionStatus), $($_.VolumeStatus)" }) -join '; ')
+        $settings.BitLocker = Test-OperatingSystemDriveBitLocker
+        Add-Result -Category 'Settings' -Item 'BitLocker OS-drive status' -Status $settings.BitLocker.Status -Details $settings.BitLocker.Details
     }
     catch {
-        $settings.BitLocker = @()
-        Add-Result -Category 'Settings' -Item 'BitLocker status' -Status 'Skipped' -Details 'Could not query BitLocker on this device'
+        $settings.BitLocker = [PSCustomObject]@{ MountPoint = if ($env:SystemDrive) { $env:SystemDrive + '\' } else { 'C:\' }; ShellStatus = $null; Status = 'Warning'; Details = $_.Exception.Message }
+        Write-Status 'BitLocker OS drive' 'WARN' $settings.BitLocker.Details
+        Add-Result -Category 'Settings' -Item 'BitLocker OS-drive status' -Status 'Warning' -Details $settings.BitLocker.Details
     }
     
     # Power Settings
@@ -3250,7 +3322,6 @@ Windows Registry Editor Version 5.00
     
     return $settings
 }
-
 function Get-ShortcutMetadata {
     param([System.IO.FileInfo]$File, [int]$Ordinal = 0)
 
@@ -4831,62 +4902,63 @@ function Copy-WithProgress {
     Write-Host "  $(Format-FileSize $totalSize) / $totalFiles files" -ForegroundColor DarkGray
     
     $startTime = Get-Date
-    $progressBarWidth = 34
-    $lastPercent = -1
     $spinIndex = 0
     
-    # Run robocopy as a background job using ProcessStartInfo for proper argument handling
-    $robocopyScript = {
-        param($src, $dst, $log)
-        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-        $pinfo.FileName = "robocopy.exe"
-        $pinfo.Arguments = "`"$src`" `"$dst`" /E /XJ /Z /R:2 /W:3 /MT:8 /NP /LOG:`"$log`""
-        $pinfo.RedirectStandardOutput = $true
-        $pinfo.RedirectStandardError = $true
-        $pinfo.UseShellExecute = $false
-        $pinfo.CreateNoWindow = $true
-        
-        $process = New-Object System.Diagnostics.Process
-        $process.StartInfo = $pinfo
-        $process.Start() | Out-Null
-        $process.WaitForExit()
-        return $process.ExitCode
+    # Use Robocopy's per-file completion events instead of recursively sizing
+    # the destination while it is being written.
+    $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pinfo.FileName = "robocopy.exe"
+    $pinfo.Arguments = "`"$Source`" `"$Destination`" /E /XJ /Z /R:2 /W:3 /MT:8 /BYTES"
+    $pinfo.RedirectStandardOutput = $true
+    $pinfo.RedirectStandardError = $true
+    $pinfo.UseShellExecute = $false
+    $pinfo.CreateNoWindow = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $pinfo
+    if (-not $process.Start()) { return @{ ExitCode = -1; FilesCopied = 0; BytesCopied = 0; Status = "Warning" } }
+    $progressState = [hashtable]::Synchronized(@{
+        CompletedFiles = 0
+        Diagnostics = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+    })
+    $progressHandler = [System.Diagnostics.DataReceivedEventHandler]{
+        param($sender, $eventArgs)
+        $line = $eventArgs.Data
+        if ($null -eq $line) { return }
+        if ($line -match '(?<!\d)100(?:\.0+)?%') { $progressState.CompletedFiles++ }
+        if ($line -match '^\s*(?:Started|Ended|Source|Dest|Options|Dirs|Files|Bytes|Times)\s*:' -or
+            $line -match '(?i)\b(?:error|failed|access denied)\b') {
+            $progressState.Diagnostics.Enqueue($line)
+        }
     }
-    
-    $job = Start-Job -ScriptBlock $robocopyScript -ArgumentList $Source, $Destination, $LogPath
+    $process.add_OutputDataReceived($progressHandler)
+    $process.add_ErrorDataReceived($progressHandler)
+    $process.BeginOutputReadLine()
+    $process.BeginErrorReadLine()
     
     # Monitor progress
-    while ($job.State -eq 'Running') {
+    while (-not $process.HasExited) {
         Start-Sleep -Milliseconds 750
         
-        # Do not recursively rescan the destination while robocopy writes.
-        # That I/O contention was the source of the endlessly stalled bar.
-        $copiedSize = [long]0
-        
-        $percent = if ($totalSize -gt 0) { [math]::Min(100, [math]::Round(($copiedSize / $totalSize) * 100)) } else { 0 }
-        
+        $completedFiles = [math]::Min($totalFiles, [int]$progressState.CompletedFiles)
+        $percent = [math]::Min(99, [math]::Floor(($completedFiles / [double]$totalFiles) * 100))
+        $progressBarWidth = 34
         $spin = $Script:Theme.Spinner[$spinIndex % $Script:Theme.Spinner.Count]; $spinIndex++
-        $lastPercent = $percent
         $filledWidth = [math]::Round(($percent / 100) * $progressBarWidth)
         $emptyWidth = $progressBarWidth - $filledWidth
         $progressBar = ([string]$Script:Theme.Bar.Full * $filledWidth) + ([string]$Script:Theme.Bar.Light * $emptyWidth)
         
         $elapsed = (Get-Date) - $startTime
-        $speed = if ($elapsed.TotalSeconds -gt 0) { $copiedSize / $elapsed.TotalSeconds } else { 0 }
-        # Force the Int64 overload. The untyped literal 0 selects Int32 and
-        # overflows for folders larger than 2 GB.
-        $remainingBytes = [math]::Max([long]0, [long]($totalSize - $copiedSize))
-        $eta = if ($speed -gt 0 -and $copiedSize -gt 0) {
-            Format-RemainingTime ($remainingBytes / $speed)
-        }
-        else { "calculating..." }
-        
-        Write-Host "`r    $spin $progressBar $($percent.ToString().PadLeft(3))%  $(Format-FileSize $copiedSize) / $(Format-FileSize $totalSize)  $(Format-FileSize $speed)/s  ETA $eta   " -NoNewline
+        Write-Host "`r    $spin $progressBar $($percent.ToString().PadLeft(3))%  $completedFiles / $totalFiles files  elapsed $([math]::Round($elapsed.TotalSeconds, 0)) sec   " -NoNewline
     }
     
-    # Get the exit code from the job
-    $exitCode = Receive-Job -Job $job -ErrorAction SilentlyContinue
-    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    $exitCode = $process.ExitCode
+    $process.remove_OutputDataReceived($progressHandler)
+    $process.remove_ErrorDataReceived($progressHandler)
+    $logLines = @("Source: $Source", "Destination: $Destination", "Robocopy exit code: $exitCode")
+    $diagnosticLine = $null
+    while ($progressState.Diagnostics.TryDequeue([ref]$diagnosticLine)) { $logLines += $diagnosticLine; $diagnosticLine = $null }
+    $logLines | Set-Content -LiteralPath $LogPath -Encoding UTF8
     
     # A missing exit code means the worker failed or Robocopy did not start;
     # never convert that failure into a successful import.
@@ -6871,7 +6943,7 @@ function Update-TransferReportFromImport {
             $candidateRows = @($AppDataCandidates | ForEach-Object { "<tr><td>$(& $encode ([string]$_.Area))</td><td>$(& $encode ([string]$_.RelativePath))</td><td>$(& $encode ([string]$_.Association))</td></tr>" }) -join "`n"
             $candidatePanel = if ($candidateRows) { "<details class='section'><summary>AppData migration review<span>$($AppDataCandidates.Count) folder(s) to review; none are copied automatically</span></summary><div class='section-content'><table><thead><tr><th>Area</th><th>Folder</th><th>Association</th></tr></thead><tbody>$candidateRows</tbody></table></div></details>" } else { '' }
             if ($MissingPrograms.Count -gt 0) {
-                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><ul class='app-list'>$appItems</ul></div>$candidatePanel"
+                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><ul class='missing-app-list'>$appItems</ul></div>$candidatePanel"
             }
             else {
                 $appSection = "<div class='app-summary ok'><h3>Application comparison complete</h3><p>No applications from the old computer are missing on this new computer.</p></div>$candidatePanel"

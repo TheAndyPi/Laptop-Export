@@ -362,62 +362,63 @@ function Copy-WithProgress {
     Write-Host "  $(Format-FileSize $totalSize) / $totalFiles files" -ForegroundColor DarkGray
     
     $startTime = Get-Date
-    $progressBarWidth = 34
-    $lastPercent = -1
     $spinIndex = 0
     
-    # Run robocopy as a background job using ProcessStartInfo for proper argument handling
-    $robocopyScript = {
-        param($src, $dst, $log)
-        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-        $pinfo.FileName = "robocopy.exe"
-        $pinfo.Arguments = "`"$src`" `"$dst`" /E /XJ /Z /R:2 /W:3 /MT:8 /NP /LOG:`"$log`""
-        $pinfo.RedirectStandardOutput = $true
-        $pinfo.RedirectStandardError = $true
-        $pinfo.UseShellExecute = $false
-        $pinfo.CreateNoWindow = $true
-        
-        $process = New-Object System.Diagnostics.Process
-        $process.StartInfo = $pinfo
-        $process.Start() | Out-Null
-        $process.WaitForExit()
-        return $process.ExitCode
+    # Use Robocopy's per-file completion events instead of recursively sizing
+    # the destination while it is being written.
+    $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pinfo.FileName = "robocopy.exe"
+    $pinfo.Arguments = "`"$Source`" `"$Destination`" /E /XJ /Z /R:2 /W:3 /MT:8 /BYTES"
+    $pinfo.RedirectStandardOutput = $true
+    $pinfo.RedirectStandardError = $true
+    $pinfo.UseShellExecute = $false
+    $pinfo.CreateNoWindow = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $pinfo
+    if (-not $process.Start()) { return @{ ExitCode = -1; FilesCopied = 0; BytesCopied = 0; Status = "Warning" } }
+    $progressState = [hashtable]::Synchronized(@{
+        CompletedFiles = 0
+        Diagnostics = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+    })
+    $progressHandler = [System.Diagnostics.DataReceivedEventHandler]{
+        param($sender, $eventArgs)
+        $line = $eventArgs.Data
+        if ($null -eq $line) { return }
+        if ($line -match '(?<!\d)100(?:\.0+)?%') { $progressState.CompletedFiles++ }
+        if ($line -match '^\s*(?:Started|Ended|Source|Dest|Options|Dirs|Files|Bytes|Times)\s*:' -or
+            $line -match '(?i)\b(?:error|failed|access denied)\b') {
+            $progressState.Diagnostics.Enqueue($line)
+        }
     }
-    
-    $job = Start-Job -ScriptBlock $robocopyScript -ArgumentList $Source, $Destination, $LogPath
+    $process.add_OutputDataReceived($progressHandler)
+    $process.add_ErrorDataReceived($progressHandler)
+    $process.BeginOutputReadLine()
+    $process.BeginErrorReadLine()
     
     # Monitor progress
-    while ($job.State -eq 'Running') {
+    while (-not $process.HasExited) {
         Start-Sleep -Milliseconds 750
         
-        # Do not recursively rescan the destination while robocopy writes.
-        # That I/O contention was the source of the endlessly stalled bar.
-        $copiedSize = [long]0
-        
-        $percent = if ($totalSize -gt 0) { [math]::Min(100, [math]::Round(($copiedSize / $totalSize) * 100)) } else { 0 }
-        
+        $completedFiles = [math]::Min($totalFiles, [int]$progressState.CompletedFiles)
+        $percent = [math]::Min(99, [math]::Floor(($completedFiles / [double]$totalFiles) * 100))
+        $progressBarWidth = 34
         $spin = $Script:Theme.Spinner[$spinIndex % $Script:Theme.Spinner.Count]; $spinIndex++
-        $lastPercent = $percent
         $filledWidth = [math]::Round(($percent / 100) * $progressBarWidth)
         $emptyWidth = $progressBarWidth - $filledWidth
         $progressBar = ([string]$Script:Theme.Bar.Full * $filledWidth) + ([string]$Script:Theme.Bar.Light * $emptyWidth)
         
         $elapsed = (Get-Date) - $startTime
-        $speed = if ($elapsed.TotalSeconds -gt 0) { $copiedSize / $elapsed.TotalSeconds } else { 0 }
-        # Force the Int64 overload. The untyped literal 0 selects Int32 and
-        # overflows for folders larger than 2 GB.
-        $remainingBytes = [math]::Max([long]0, [long]($totalSize - $copiedSize))
-        $eta = if ($speed -gt 0 -and $copiedSize -gt 0) {
-            Format-RemainingTime ($remainingBytes / $speed)
-        }
-        else { "calculating..." }
-        
-        Write-Host "`r    $spin $progressBar $($percent.ToString().PadLeft(3))%  $(Format-FileSize $copiedSize) / $(Format-FileSize $totalSize)  $(Format-FileSize $speed)/s  ETA $eta   " -NoNewline
+        Write-Host "`r    $spin $progressBar $($percent.ToString().PadLeft(3))%  $completedFiles / $totalFiles files  elapsed $([math]::Round($elapsed.TotalSeconds, 0)) sec   " -NoNewline
     }
     
-    # Get the exit code from the job
-    $exitCode = Receive-Job -Job $job -ErrorAction SilentlyContinue
-    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    $exitCode = $process.ExitCode
+    $process.remove_OutputDataReceived($progressHandler)
+    $process.remove_ErrorDataReceived($progressHandler)
+    $logLines = @("Source: $Source", "Destination: $Destination", "Robocopy exit code: $exitCode")
+    $diagnosticLine = $null
+    while ($progressState.Diagnostics.TryDequeue([ref]$diagnosticLine)) { $logLines += $diagnosticLine; $diagnosticLine = $null }
+    $logLines | Set-Content -LiteralPath $LogPath -Encoding UTF8
     
     # A missing exit code means the worker failed or Robocopy did not start;
     # never convert that failure into a successful import.
@@ -2402,7 +2403,7 @@ function Update-TransferReportFromImport {
             $candidateRows = @($AppDataCandidates | ForEach-Object { "<tr><td>$(& $encode ([string]$_.Area))</td><td>$(& $encode ([string]$_.RelativePath))</td><td>$(& $encode ([string]$_.Association))</td></tr>" }) -join "`n"
             $candidatePanel = if ($candidateRows) { "<details class='section'><summary>AppData migration review<span>$($AppDataCandidates.Count) folder(s) to review; none are copied automatically</span></summary><div class='section-content'><table><thead><tr><th>Area</th><th>Folder</th><th>Association</th></tr></thead><tbody>$candidateRows</tbody></table></div></details>" } else { '' }
             if ($MissingPrograms.Count -gt 0) {
-                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><ul class='app-list'>$appItems</ul></div>$candidatePanel"
+                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><ul class='missing-app-list'>$appItems</ul></div>$candidatePanel"
             }
             else {
                 $appSection = "<div class='app-summary ok'><h3>Application comparison complete</h3><p>No applications from the old computer are missing on this new computer.</p></div>$candidatePanel"

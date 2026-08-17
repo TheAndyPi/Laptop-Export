@@ -208,7 +208,7 @@ The importer is generated from `New-ImportScript` with placeholders replaced for
 
 `Copy-AppData` uses curated paths: Bluebeam in either known Roaming location, Microsoft signatures, Quick Access's `f01b4d95cf55d32a.automaticDestinations-ms`, and Lotus under Local AppData. Quick Access is copied as a file rather than enumerated through Shell COM to avoid mutating the user's pins.
 
-All bulk folder copies flow through `Copy-WithProgress`, which starts `robocopy.exe` in a background job, uses `/E`, retries, multithreading, and per-stage logs, then interprets Robocopy's 0–7 exit range as success. Codes 8/9 are accepted as successful when files were copied; other outcomes become warnings/errors. The destination is measured periodically to calculate progress, throughput, and ETA.
+All bulk folder copies flow through `Copy-WithProgress`, which starts `robocopy.exe` with `/E`, retries, and multithreading, then interprets Robocopy's 0–7 exit range as success. The monitor asynchronously counts Robocopy's per-file `100%` completion events to render a file-based progress bar without recursively measuring a destination that is actively being written. Codes 8/9 are accepted as successful when files were copied; other outcomes become warnings/errors.
 
 ### Windows settings
 
