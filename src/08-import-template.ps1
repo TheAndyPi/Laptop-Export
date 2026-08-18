@@ -267,6 +267,9 @@ function Write-Log {
 
 function Add-Result {
     param([string]$Category, [string]$Item, [string]$Status, [string]$Details = "")
+    # Keep the importer ledger on the same four status groups used by its
+    # terminal receipt and the final handoff report.
+    if ($Status -eq 'Empty') { $Status = 'Skipped' }
     $Script:Results.Actions += [PSCustomObject]@{
         Category = $Category
         Item = $Item
@@ -364,60 +367,34 @@ function Copy-WithProgress {
     $startTime = Get-Date
     $spinIndex = 0
     
-    # Use Robocopy's per-file completion events instead of recursively sizing
-    # the destination while it is being written.
+    # Do not attach PowerShell script blocks to Robocopy's asynchronous output
+    # events. Windows PowerShell 5.1 invokes those callbacks on worker threads
+    # without a runspace and can terminate the import host immediately.
     $pinfo = New-Object System.Diagnostics.ProcessStartInfo
     $pinfo.FileName = "robocopy.exe"
     $pinfo.Arguments = "`"$Source`" `"$Destination`" /E /XJ /Z /R:2 /W:3 /MT:8 /BYTES"
-    $pinfo.RedirectStandardOutput = $true
-    $pinfo.RedirectStandardError = $true
+    $pinfo.RedirectStandardOutput = $false
+    $pinfo.RedirectStandardError = $false
     $pinfo.UseShellExecute = $false
     $pinfo.CreateNoWindow = $true
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $pinfo
     if (-not $process.Start()) { return @{ ExitCode = -1; FilesCopied = 0; BytesCopied = 0; Status = "Warning" } }
-    $progressState = [hashtable]::Synchronized(@{
-        CompletedFiles = 0
-        Diagnostics = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
-    })
-    $progressHandler = [System.Diagnostics.DataReceivedEventHandler]{
-        param($sender, $eventArgs)
-        $line = $eventArgs.Data
-        if ($null -eq $line) { return }
-        if ($line -match '(?<!\d)100(?:\.0+)?%') { $progressState.CompletedFiles++ }
-        if ($line -match '^\s*(?:Started|Ended|Source|Dest|Options|Dirs|Files|Bytes|Times)\s*:' -or
-            $line -match '(?i)\b(?:error|failed|access denied)\b') {
-            $progressState.Diagnostics.Enqueue($line)
-        }
-    }
-    $process.add_OutputDataReceived($progressHandler)
-    $process.add_ErrorDataReceived($progressHandler)
-    $process.BeginOutputReadLine()
-    $process.BeginErrorReadLine()
-    
-    # Monitor progress
+    # Render only from the owning runspace. This keeps the display responsive
+    # without destination rescans or unsafe background callbacks.
+    # Reserve room for the size and duration fields in an 80-column console.
+    # A 34-character completion bar wraps onto a second line.
+    $progressBarWidth = 16
     while (-not $process.HasExited) {
         Start-Sleep -Milliseconds 750
-        
-        $completedFiles = [math]::Min($totalFiles, [int]$progressState.CompletedFiles)
-        $percent = [math]::Min(99, [math]::Floor(($completedFiles / [double]$totalFiles) * 100))
-        $progressBarWidth = 34
         $spin = $Script:Theme.Spinner[$spinIndex % $Script:Theme.Spinner.Count]; $spinIndex++
-        $filledWidth = [math]::Round(($percent / 100) * $progressBarWidth)
-        $emptyWidth = $progressBarWidth - $filledWidth
-        $progressBar = ([string]$Script:Theme.Bar.Full * $filledWidth) + ([string]$Script:Theme.Bar.Light * $emptyWidth)
-        
         $elapsed = (Get-Date) - $startTime
-        Write-Host "`r    $spin $progressBar $($percent.ToString().PadLeft(3))%  $completedFiles / $totalFiles files  elapsed $([math]::Round($elapsed.TotalSeconds, 0)) sec   " -NoNewline
+        Write-Host "`r    $spin Copying $totalFiles files ($(Format-FileSize $totalSize))  elapsed $([math]::Round($elapsed.TotalSeconds, 0)) sec   " -NoNewline
     }
     
     $exitCode = $process.ExitCode
-    $process.remove_OutputDataReceived($progressHandler)
-    $process.remove_ErrorDataReceived($progressHandler)
     $logLines = @("Source: $Source", "Destination: $Destination", "Robocopy exit code: $exitCode")
-    $diagnosticLine = $null
-    while ($progressState.Diagnostics.TryDequeue([ref]$diagnosticLine)) { $logLines += $diagnosticLine; $diagnosticLine = $null }
     $logLines | Set-Content -LiteralPath $LogPath -Encoding UTF8
     
     # A missing exit code means the worker failed or Robocopy did not start;
@@ -1311,24 +1288,61 @@ elseif ((Test-Path $powerScheme) -and $hasIndividualPowerSettings) {
 # policy or unsupported by the new hardware are reported individually.
 
 function Set-ImportedPowerOverlay {
-    # Apply captured AC/DC values independently to the existing managed plan so
-    # a policy rejection of one setting does not hide the others.
+    # PowerSetActiveOverlayScheme accepts the overlay GUID by value.  The old
+    # declaration passed an extra user-root pointer, which made the Windows
+    # Settings Power mode restore fail even when a valid overlay was captured.
     param([string]$OverlayGuid)
-    if ([string]::IsNullOrWhiteSpace($OverlayGuid) -or $OverlayGuid -notmatch '^[0-9a-fA-F-]{36}$') { return $false }
+    if ([string]::IsNullOrWhiteSpace($OverlayGuid) -or $OverlayGuid -notmatch '^[0-9a-fA-F-]{36}$') {
+        return [PSCustomObject]@{ Applied = $false; EffectiveOverlayGuid = $null; Detail = 'Captured overlay identifier is invalid' }
+    }
     try {
         if (-not ('StoPowerOverlay' -as [type])) {
             Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 public static class StoPowerOverlay {
-    [DllImport("PowrProf.dll", SetLastError=true)]
-    public static extern uint PowerSetActiveOverlayScheme(IntPtr UserRootPowerKey, ref Guid OverlaySchemeGuid);
+    [DllImport("PowrProf.dll", EntryPoint="PowerSetActiveOverlayScheme", SetLastError=true)]
+    public static extern uint PowerSetActiveOverlayScheme(Guid overlaySchemeGuid);
+    [DllImport("PowrProf.dll", EntryPoint="PowerGetEffectiveOverlayScheme")]
+    public static extern uint PowerGetEffectiveOverlayScheme(out Guid overlaySchemeGuid);
 }
 "@ -ErrorAction Stop
         }
         $guid = [Guid]$OverlayGuid
-        return ([StoPowerOverlay]::PowerSetActiveOverlayScheme([IntPtr]::Zero, [ref]$guid) -eq 0)
-    } catch { return $false }
+        $setResult = [StoPowerOverlay]::PowerSetActiveOverlayScheme($guid)
+        if ($setResult -ne 0) {
+            return [PSCustomObject]@{ Applied = $false; EffectiveOverlayGuid = $null; Detail = "PowerSetActiveOverlayScheme returned $setResult" }
+        }
+        $effective = [guid]::Empty
+        $effectiveResult = [StoPowerOverlay]::PowerGetEffectiveOverlayScheme([ref]$effective)
+        return [PSCustomObject]@{
+            Applied = $true
+            EffectiveOverlayGuid = if ($effectiveResult -eq 0) { $effective.ToString() } else { $null }
+            Detail = if ($effectiveResult -eq 0 -and $effective.ToString() -ne $guid.ToString()) { "Applied, but Windows reports effective overlay $effective (policy or hardware may override it)" } else { 'Applied and verified' }
+        }
+    } catch {
+        return [PSCustomObject]@{ Applied = $false; EffectiveOverlayGuid = $null; Detail = $_.Exception.Message }
+    }
+}
+
+function Get-ImportResultCounts {
+    # This is deliberately the only classifier for import outcomes. The
+    # terminal summary and the report update both consume these values.
+    $actions = @($Script:Results.Actions)
+    return [PSCustomObject]@{
+        Success = @($actions | Where-Object { $_.Status -eq 'Success' }).Count
+        Warning = @($actions | Where-Object { $_.Status -in @('Warning', 'Manual', 'Pending') }).Count
+        Errors = @($actions | Where-Object { $_.Status -eq 'Error' }).Count
+        Skipped = @($actions | Where-Object { $_.Status -eq 'Skipped' }).Count
+    }
+}
+
+function Get-ImportAttentionActions {
+    # Keep the report's post-transfer list and the terminal attention section
+    # one-for-one with the non-success outcomes in the import ledger.
+    return @($Script:Results.Actions | Where-Object {
+        $_.Status -in @('Warning', 'Error', 'Skipped', 'Manual', 'Pending')
+    })
 }
 
 if ($hasIndividualPowerSettings) {
@@ -1382,21 +1396,32 @@ if ($hasIndividualPowerSettings) {
 # The Windows Settings Power mode control is represented by distinct AC/DC
 # overlay schemes. Attempt this in the signed-in context; policy or hardware
 # rejection is reported as skipped rather than escalating the import.
-if ($settingsData -and $settingsData.PowerModeOverlay) {
+if ($settingsData -and ($settingsData.PowerMode -or $settingsData.PowerModeOverlay)) {
+    # New packages capture the actual requested overlay through PowrProf. Keep
+    # the registry fallback only for packages created by older exporters.
+    $capturedOverlay = if ($settingsData.PowerMode -and $settingsData.PowerMode.RequestedOverlayGuid) {
+        [string]$settingsData.PowerMode.RequestedOverlayGuid
+    }
+    elseif ($settingsData.PowerMode -and $settingsData.PowerMode.EffectiveOverlayGuid) {
+        [string]$settingsData.PowerMode.EffectiveOverlayGuid
+    }
+    elseif ($settingsData.PowerModeOverlay.ActiveOverlayAcPowerScheme) {
+        [string]$settingsData.PowerModeOverlay.ActiveOverlayAcPowerScheme
+    }
+    else { [string]$settingsData.PowerModeOverlay.ActiveOverlayDcPowerScheme }
     if ($TestMode) {
-        Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'TestMode' -Details 'Would apply captured AC/DC power-mode overlay'
+        Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'TestMode' -Details "Would apply captured overlay $capturedOverlay"
     }
     else {
-        $overlayResults = @()
-        foreach ($overlay in @($settingsData.PowerModeOverlay.ActiveOverlayAcPowerScheme, $settingsData.PowerModeOverlay.ActiveOverlayDcPowerScheme) | Select-Object -Unique) {
-            if (-not $overlay) { continue }
-            $overlayResults += [bool](Set-ImportedPowerOverlay -OverlayGuid ([string]$overlay))
+        $overlayResult = Set-ImportedPowerOverlay -OverlayGuid $capturedOverlay
+        if ($overlayResult.Applied -and ($null -eq $overlayResult.EffectiveOverlayGuid -or $overlayResult.EffectiveOverlayGuid -eq $capturedOverlay)) {
+            Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'Success' -Details $overlayResult.Detail
         }
-        if ($overlayResults.Count -gt 0 -and ($overlayResults -notcontains $false)) {
-            Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'Success' -Details 'Captured power-mode overlay applied'
+        elseif ($overlayResult.Applied) {
+            Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'Warning' -Details $overlayResult.Detail
         }
         else {
-            Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'Skipped' -Details 'Overlay could not be applied without elevation, policy, or supported hardware'
+            Add-Result -Category 'Settings' -Item 'Windows power mode' -Status 'Skipped' -Details "Overlay could not be applied: $($overlayResult.Detail)"
         }
     }
 }
@@ -2352,13 +2377,20 @@ function Test-UserFacingProgram {
     param([object]$Program)
     $name = [string]$Program.DisplayName
     if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    $publisher = [string]$Program.Publisher
+
+    # These app families are supplied through the normal image or standard
+    # post-transfer configuration. Keep this safeguard independent of the
+    # serialized configuration so they never appear in a handoff app list.
+    if ("$name`n$publisher" -match '\b(?:Adobe|ClickShare|Lenovo|Microsoft|Windows)\b') { return $false }
+
     foreach ($pattern in @($appComparisonExcludePatterns)) {
         # A legacy Windows PowerShell JSON import can leave the configured
         # patterns nested in an Object[] value. Never cast that aggregate to a
         # regex: "System.Object[]" is a character class that matches most app
         # names and would hide every missing-application warning.
         foreach ($individualPattern in @($pattern)) {
-            if ($individualPattern -is [string] -and $individualPattern -and $name -match $individualPattern) { return $false }
+            if ($individualPattern -is [string] -and $individualPattern -and ($name -match $individualPattern -or $publisher -match $individualPattern)) { return $false }
         }
     }
     return $true
@@ -2404,7 +2436,7 @@ function ConvertTo-ReviewHtml {
     if (-not $rows) { $rows = '<tr><td colspan="3">No missing apps detected.</td></tr>' }
     $candidateRows = @($Candidates | ForEach-Object { "<tr><td>$(& $encode $_.Area)</td><td>$(& $encode $_.RelativePath)</td><td>$(& $encode $_.Association)</td></tr>" }) -join "`n"
     if (-not $candidateRows) { $candidateRows = '<tr><td colspan="3">No AppData candidates available.</td></tr>' }
-    return "<html><head><meta charset='utf-8'><title>Application Migration Review</title><style>body{font-family:Segoe UI;margin:32px;color:#202020}table{border-collapse:collapse;width:100%;margin-bottom:25px}td,th{padding:8px;border:1px solid #ccc;text-align:left}th{background:#17365d;color:#fff}h1{color:#17365d}</style></head><body><h1>Application Migration Review</h1><p>Review missing applications and AppData candidates before handoff. Candidate folders are review-only and were not copied automatically.</p><h2>Missing applications</h2><table><tr><th>Application</th><th>Publisher</th><th>Old version</th></tr>$rows</table><h2>AppData candidates</h2><table><tr><th>Area</th><th>Folder</th><th>Association</th></tr>$candidateRows</table></body></html>"
+    return "<html><head><meta charset='utf-8'><title>Application Migration Review</title><style>body{font-family:Segoe UI;margin:32px;color:#202020}table{border-collapse:collapse;width:100%;margin-bottom:25px}td,th{padding:8px;border:1px solid #ccc;text-align:left}th{background:#17365d;color:#fff}h1{color:#17365d}</style></head><body><h1>Application Migration Review</h1><p>Review missing applications and AppData candidates before handoff. Candidate folders are review-only and were not copied automatically. Adobe, ClickShare, Lenovo, Microsoft, and Windows-related AppData folders are excluded from this review.</p><h2>Missing applications</h2><table><tr><th>Application</th><th>Publisher</th><th>Old version</th></tr>$rows</table><h2>AppData candidates</h2><table><tr><th>Area</th><th>Folder</th><th>Association</th></tr>$candidateRows</table></body></html>"
 }
 
 function Set-TransferReportMarkedContent {
@@ -2444,9 +2476,9 @@ function Update-TransferReportFromImport {
             # Use one explicit table row per candidate. This avoids serializing
             # an array into a single card in the handoff report.
             $candidateRows = @($AppDataCandidates | ForEach-Object { "<tr><td>$(& $encode ([string]$_.Area))</td><td>$(& $encode ([string]$_.RelativePath))</td><td>$(& $encode ([string]$_.Association))</td></tr>" }) -join "`n"
-            $candidatePanel = if ($candidateRows) { "<details class='section'><summary>AppData migration review<span>$($AppDataCandidates.Count) folder(s) to review; none are copied automatically</span></summary><div class='section-content'><table><thead><tr><th>Area</th><th>Folder</th><th>Association</th></tr></thead><tbody>$candidateRows</tbody></table></div></details>" } else { '' }
+            $candidatePanel = if ($candidateRows) { "<details class='section'><summary>AppData migration review<span>$($AppDataCandidates.Count) folder(s) to review; excluded app families are omitted</span></summary><div class='section-content'><p>Adobe, ClickShare, Lenovo, Microsoft, and Windows-related AppData folders are excluded from this review; none of the remaining folders are copied automatically.</p><table><thead><tr><th>Area</th><th>Folder</th><th>Association</th></tr></thead><tbody>$candidateRows</tbody></table></div></details>" } else { '' }
             if ($MissingPrograms.Count -gt 0) {
-                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) still need installation</h3><p>These applications were found on the old computer but not on this new computer. Install or approve replacements before handoff.</p><details><summary>Post-transfer apps list<span>$($MissingPrograms.Count) app(s) to install or replace</span></summary><ul class='missing-app-list'>$appItems</ul></details></div>$candidatePanel"
+                $appSection = "<div class='app-summary ready'><h3>$($MissingPrograms.Count) app(s) need installation</h3><p>Please confirm which apps you would like to install on the new device.</p><details><summary>Post-transfer apps list<span>$($MissingPrograms.Count) app(s) to install or replace</span></summary><ul class='missing-app-list'>$appItems</ul></details></div>$candidatePanel"
             }
             else {
                 $appSection = "<div class='app-summary ok'><h3>Application comparison complete</h3><p>No applications from the old computer are missing on this new computer.</p></div>$candidatePanel"
@@ -2480,18 +2512,19 @@ function Update-TransferReportImportOutcomes {
     $reportPath = Join-Path $scriptPath 'TransferReport.html'
     if (-not (Test-Path -LiteralPath $reportPath)) { return }
     try {
-        $attention = @($Script:Results.Actions | Where-Object {
-            $_.Status -in @('Warning', 'Error', 'Skipped', 'Manual', 'Pending')
-        })
+        $resultCounts = Get-ImportResultCounts
+        $attention = Get-ImportAttentionActions
         $encode = { param($Value) [Security.SecurityElement]::Escape([string]$Value) }
+        $summary = "<section class='stats'><div class='stat success'><div class='number'>$($resultCounts.Success)</div><div class='label'>Successful import steps</div></div><div class='stat warning'><div class='number'>$($resultCounts.Warning)</div><div class='label'>Import warnings</div></div><div class='stat error'><div class='number'>$($resultCounts.Errors)</div><div class='label'>Import errors</div></div><div class='stat skipped'><div class='number'>$($resultCounts.Skipped)</div><div class='label'>Import skipped</div></div></section>"
         $content = if ($attention.Count) {
             $items = @($attention | ForEach-Object {
                 "<li><strong>$(& $encode ([string]$_.Item))</strong><small>$(& $encode ([string]$_.Status)) · $(& $encode ([string]$_.Details))</small></li>"
             }) -join "`n"
-            "<details class='section' open><summary>Post-transfer errors and warnings<span>Import items Windows could not apply automatically</span></summary><div class='section-content'><div class='app-summary ready'><ul class='app-list'>$items</ul></div></div></details>"
+            "<details class='section' open><summary>Post-transfer items needing attention<span>$($resultCounts.Warning) warning(s) · $($resultCounts.Errors) error(s) · $($resultCounts.Skipped) skipped item(s)</span></summary><div class='section-content'><div class='app-summary ready'><ul class='app-list'>$items</ul></div></div></details>"
         }
-        else { '' }
+        else { "<section class='admin-success'>No import items need attention.</section>" }
         $reportHtml = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8
+        $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'TRANSFER_SUMMARY' -Content $summary
         $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'IMPORT_RESULTS' -Content $content
         $importDuration = (Get-Date) - $Script:Results.StartTime
         $importMinutes = [math]::Round($importDuration.TotalMinutes, 1)
@@ -2500,8 +2533,8 @@ function Update-TransferReportImportOutcomes {
             $exportMinutes = 0.0
             [void][double]::TryParse(($exportDuration -replace '[^0-9.]', ''), [ref]$exportMinutes)
             $totalMinutes = [math]::Round(($exportMinutes + $importMinutes), 1)
-            $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'TRANSFER_DURATION' -Content "$totalMinutes min total ($exportDuration export + $importMinutes min import)"
-            $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'TRANSFER_DURATION_COPY' -Content 'Total active transfer time across both computers'
+            $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'TRANSFER_DURATION' -Content "$totalMinutes min total"
+            $reportHtml = Set-TransferReportMarkedContent -Html $reportHtml -Marker 'TRANSFER_DURATION_COPY' -Content "($exportDuration export + $importMinutes min import)"
         }
         Set-Content -LiteralPath $reportPath -Value $reportHtml -Encoding UTF8
         Write-Log "Transfer report updated with $($attention.Count) import item(s) needing attention." -Level 'Info'
@@ -2552,6 +2585,7 @@ else {
             [PSCustomObject]@{ DisplayName = $_.DisplayName; Publisher = $_.Publisher; OldVersion = $_.DisplayVersion; NewVersion = $newByKey[$_.MatchKey].DisplayVersion; VersionDifferent = ($_.DisplayVersion -ne $newByKey[$_.MatchKey].DisplayVersion) }
         })
         $candidateItems = @()
+        $filteredAppDataCandidates = @()
         $candidatePath = Join-Path $scriptPath 'Settings\AppDataCandidates.json'
         if ($reviewAppDataCandidates -and (Test-Path -LiteralPath $candidatePath)) {
             $missingWords = @($missingPrograms | ForEach-Object { ConvertTo-ProgramMatchPart $_.DisplayName })
@@ -2559,15 +2593,22 @@ else {
             # It also ensures one row is rendered for each AppData candidate.
             $candidateInventory = Get-Content -LiteralPath $candidatePath -Raw | ConvertFrom-Json
             $candidateItems = @(foreach ($candidate in @($candidateInventory)) {
+                # Apply the installed-app exclusions to AppData review too.
+                # These folders are provisioned or configured separately and
+                # should not create a migration-review action.
+                if (-not (Test-UserFacingProgram ([PSCustomObject]@{ DisplayName = $candidate.RelativePath; Publisher = '' }))) {
+                    $filteredAppDataCandidates += $candidate
+                    continue
+                }
                 $associationHint = ConvertTo-ProgramMatchPart $candidate.AssociationHint
                 $association = if ($associationHint -and ($missingWords | Where-Object { $_ -like "*$associationHint*" })) { 'Potentially associated with missing app' } elseif ($candidate.CoveredByCuratedBackup) { 'Already covered by curated backup' } else { 'Review candidate' }
                 [PSCustomObject]@{ Area = $candidate.Area; RelativePath = $candidate.RelativePath; SizeBytes = $candidate.SizeBytes; Association = $association }
             })
         }
         elseif ($reviewAppDataCandidates) { Write-Log 'AppData candidate review skipped: source inventory is missing.' -Level 'Warning' }
-        $comparison = [PSCustomObject]@{ GeneratedAt = (Get-Date).ToString('o'); Missing = $missingPrograms; Filtered = $filteredPrograms; Matched = $matchedPrograms; AppDataCandidates = $candidateItems }
+        $comparison = [PSCustomObject]@{ GeneratedAt = (Get-Date).ToString('o'); Missing = $missingPrograms; Filtered = $filteredPrograms; Matched = $matchedPrograms; AppDataCandidates = $candidateItems; FilteredAppDataCandidates = $filteredAppDataCandidates }
         $comparison | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationComparison.json') -Encoding UTF8
-        @('Application migration review', '', "Missing user-facing applications: $($missingPrograms.Count)", "Filtered technical entries: $($filteredPrograms.Count)", '') + @($missingPrograms | ForEach-Object { "MISSING | $($_.DisplayName) | $($_.Publisher) | old version: $($_.DisplayVersion)" }) + @('', 'Filtered technical entries:') + @($filteredPrograms | ForEach-Object { "FILTERED | $($_.DisplayName) | $($_.Publisher)" }) + @('', 'AppData candidates:') + @($candidateItems | ForEach-Object { "[$($_.Area)] $($_.RelativePath) | $($_.Association)" }) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.txt') -Encoding UTF8
+        @('Application migration review', '', "Missing user-facing applications: $($missingPrograms.Count)", "Filtered technical entries: $($filteredPrograms.Count)", "Filtered managed AppData candidates: $($filteredAppDataCandidates.Count)", '') + @($missingPrograms | ForEach-Object { "MISSING | $($_.DisplayName) | $($_.Publisher) | old version: $($_.DisplayVersion)" }) + @('', 'Filtered technical entries:') + @($filteredPrograms | ForEach-Object { "FILTERED | $($_.DisplayName) | $($_.Publisher)" }) + @('', 'Filtered managed AppData candidates:') + @($filteredAppDataCandidates | ForEach-Object { "FILTERED | [$($_.Area)] $($_.RelativePath)" }) + @('', 'AppData candidates:') + @($candidateItems | ForEach-Object { "[$($_.Area)] $($_.RelativePath) | $($_.Association)" }) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.txt') -Encoding UTF8
         (ConvertTo-ReviewHtml -Missing $missingPrograms -Candidates $candidateItems) | Set-Content -LiteralPath (Join-Path $logsPath 'AppMigrationReview.html') -Encoding UTF8
         if (-not $TestMode) { Update-TransferReportFromImport -MissingPrograms $missingPrograms -AppDataCandidates $candidateItems }
         $detail = "$($missingPrograms.Count) missing app(s); $($candidateItems.Count) AppData candidate(s)"
@@ -2606,47 +2647,69 @@ Write-Host ""
 $Script:Results.EndTime = Get-Date
 $duration = $Script:Results.EndTime - $Script:Results.StartTime
 
-$successCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Success" }).Count
-$warningCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Warning" -or $_.Status -eq "Manual" -or $_.Status -eq "Pending" }).Count
-$errorCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Error" }).Count
-$skippedCount = ($Script:Results.Actions | Where-Object { $_.Status -eq "Skipped" }).Count
+$resultCounts = Get-ImportResultCounts
+$successCount = $resultCounts.Success
+$warningCount = $resultCounts.Warning
+$errorCount = $resultCounts.Errors
+$skippedCount = $resultCounts.Skipped
 
 Write-Host "  Import complete" -ForegroundColor Green
 Write-SummaryCard -Success $successCount -Warning $warningCount -Errors $errorCount -Skipped $skippedCount -Duration "$([math]::Round($duration.TotalMinutes, 1)) min"
 
-if ($Script:Results.Warnings.Count -gt 0) {
+$attention = Get-ImportAttentionActions
+if ($attention.Count -gt 0) {
     Write-Section "Items needing attention"
-    foreach ($warning in $Script:Results.Warnings) {
-        Write-Status $warning "WARN"
-    }
-}
-
-if ($Script:Results.ManualTasks.Count -gt 0) {
-    Write-Section "Items needing attention"
-    foreach ($task in $Script:Results.ManualTasks) {
-        Write-Host "  $([char]0x26A0) " -ForegroundColor Yellow -NoNewline
-        Write-Host $task.Task -ForegroundColor Yellow
-        Write-Host "    $($task.Reason)" -ForegroundColor DarkGray
-        if ($task.Instructions) {
-            Write-Host "    $($task.Instructions -replace '[\r\n]+', ' ')" -ForegroundColor Gray
+    foreach ($action in $attention) {
+        $status = switch ($action.Status) {
+            'Error' { 'FAIL' }
+            'Skipped' { 'SKIP' }
+            default { 'WARN' }
         }
+        Write-Status "$($action.Category): $($action.Item)" $status $action.Details
     }
     Write-Host ""
 }
 
-Write-Section "Remaining manual steps"
-$manualSteps = @(
-    "Sign into Microsoft 365 / Teams / Outlook",
-    "Sign into OneDrive and verify sync",
-    "Configure Lotus Notes (if applicable)",
-    "Sign into Chrome (enables password sync)",
-    "Activate Adobe / Bluebeam licenses",
-    "Verify restored printers print a test page",
-    "Connect to STOBG Network Wi-Fi",
-    "Test all critical applications",
-    "Verify BitLocker status"
+if ($Script:Results.ManualTasks.Count -gt 0) {
+    Write-Section "Manual follow-up instructions"
+    foreach ($task in $Script:Results.ManualTasks) {
+        Write-Host "  $([char]0x26A0) " -ForegroundColor Yellow -NoNewline
+        Write-Host $task.Task -ForegroundColor Yellow
+        Write-Host "    $($task.Reason)" -ForegroundColor DarkGray
+        if ($task.Instructions) { Write-Host "    $($task.Instructions -replace '[\r\n]+', ' ')" -ForegroundColor Gray }
+    }
+    Write-Host ""
+}
+
+Write-Section "Manual Configuration"
+$manualConfigurationSteps = @(
+    "Set default apps",
+    "Log into all auto-opened apps and verify they work",
+    "Log into M365 apps (Teams, Onedrive, Outlook)",
+    "Configure Adobe/Bluebeam Revu",
+    "Configure Bluebeam Stapler (If installed, sign in/out of Bluebeam)",
+    "Connect to STOBG WiFi"
 )
-foreach ($step in $manualSteps) {
+foreach ($step in $manualConfigurationSteps) {
+    Write-Host "  $([char]0x25A1) " -ForegroundColor DarkGray -NoNewline
+    Write-Host $step -ForegroundColor White
+}
+
+Write-Section "Verification/Checks"
+$verificationSteps = @(
+    "Perform a Teams test call",
+    "Verify/Resolve Imaging Errors",
+    "Verify/Run Lenovo System Update",
+    "Verify/Run Windows Updates",
+    "Verify Bitlocker is Enabled",
+    "Verify Lotus Notes (If still used)",
+    "Verify taskbar has no MS Store",
+    "Verify data is successfully transferred over",
+    "Verify power settings match",
+    "Verify printers match",
+    "Verify manual drive mappings"
+)
+foreach ($step in $verificationSteps) {
     Write-Host "  $([char]0x25A1) " -ForegroundColor DarkGray -NoNewline
     Write-Host $step -ForegroundColor White
 }
@@ -2659,6 +2722,60 @@ Write-Host ""
 # TestMode must never show UAC or launch the helper.
 $adminAuditPath = Join-Path $logsPath "AdminImportResult.json"
 
+function Get-SystemExportArtifactProvenance {
+    # Packages created before SystemExport.json still receive a useful, clear
+    # status based on their legacy settings and files. New packages report the
+    # exact attempt that produced each full-system artifact.
+    param([ValidateSet('Power', 'PrintBrm')][string]$Artifact)
+
+    $manifestPath = Join-Path $scriptPath 'Settings\SystemExport.json'
+    if (Test-Path -LiteralPath $manifestPath) {
+        try {
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            $entry = $manifest.$Artifact
+            if ($entry) {
+                return [PSCustomObject]@{
+                    Attempted = [bool]$entry.Attempted
+                    CapturedWithAdministratorRights = [bool]$entry.CapturedWithAdministratorRights
+                    Status = if ($entry.Status) { [string]$entry.Status } else { 'Unknown' }
+                    Detail = if ($entry.Detail) { [string]$entry.Detail } else { '' }
+                }
+            }
+        }
+        catch { Write-Log "Could not read system-export provenance: $($_.Exception.Message)" -Level Info }
+    }
+
+    $legacySettings = $null
+    try { $legacySettings = Get-Content -LiteralPath (Join-Path $scriptPath 'Settings\SystemSettings.json') -Raw | ConvertFrom-Json } catch { }
+    $legacyElevated = if ($legacySettings) { [bool]$legacySettings.ExportWasAdministrator } else { $false }
+    $legacyArtifactPath = if ($Artifact -eq 'Power') { Join-Path $scriptPath 'Settings\PowerScheme.pow' } else { Join-Path $scriptPath 'Printers\Printers.printerExport' }
+    return [PSCustomObject]@{
+        Attempted = Test-Path -LiteralPath $legacyArtifactPath
+        CapturedWithAdministratorRights = $legacyElevated
+        Status = if (Test-Path -LiteralPath $legacyArtifactPath) { 'LegacyPackage' } else { 'Unknown' }
+        Detail = 'Legacy package: precise per-artifact elevation provenance is not available.'
+    }
+}
+
+function Write-SystemExportProvenanceSummary {
+    Write-Section 'Printer and power export status'
+    foreach ($entry in @(
+        @{ Label = 'Full power plan'; Artifact = 'Power' },
+        @{ Label = 'PrintBRM printer package'; Artifact = 'PrintBrm' }
+    )) {
+        $provenance = Get-SystemExportArtifactProvenance -Artifact $entry.Artifact
+        $captureContext = if ($provenance.Attempted -and $provenance.Status -in @('Succeeded', 'LegacyPackage')) {
+            if ($provenance.CapturedWithAdministratorRights) { 'captured with administrator rights' } else { 'captured without administrator rights' }
+        }
+        elseif ($provenance.Attempted) { 'attempted without a completed capture' }
+        else { 'not available in this package' }
+        $detail = if ($provenance.Detail) { " - $($provenance.Detail)" } else { '' }
+        Write-Host "  $($entry.Label): $captureContext$detail" -ForegroundColor DarkCyan
+    }
+    Write-Host '  Administrator export is recommended for the most complete printer and power capture; it remains optional.' -ForegroundColor Yellow
+    Write-Host ''
+}
+
 function Write-AdminHelperAudit {
     param([string]$Status, [string]$Detail)
     $audit = [PSCustomObject]@{ Timestamp = (Get-Date).ToString("o"); Status = $Status; Detail = $Detail; Source = "Import-LaptopData.ps1" }
@@ -2666,20 +2783,30 @@ function Write-AdminHelperAudit {
     Add-Content -LiteralPath (Join-Path $logsPath "AdminImportLog.txt") -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Status] $Detail"
 }
 
+function Test-AdminHelperElevationCancelled {
+    # ERROR_CANCELLED (1223) is stable across localized UAC dialog text.
+    param([System.Exception]$Exception)
+
+    if (-not $Exception) { return $false }
+    if ($Exception.Message -match '(?i)cancel|denied|aborted') { return $true }
+    try { return (($Exception.HResult -band 0xFFFF) -eq 1223) }
+    catch { return $false }
+}
+
 function Invoke-StandardSystemRestoreFallback {
     # PrintBRM is the only standard-user fallback. Power settings must remain
     # deferred until the administrator helper is explicitly approved.
-    param([string]$HelperPath)
+    param([string]$HelperPath, [ValidateSet('Both', 'Printers', 'Power')][string]$Scope)
 
     # If UAC is unavailable, attempt only the printer migration package. Do
     # not let a declined elevation attempt modify any power configuration.
-    if ($isAdmin) { return }
+    if ($isAdmin -or $Scope -eq 'Power') { return }
     $printerExport = Join-Path $scriptPath 'Printers\Printers.printerExport'
     if (-not (Test-Path -LiteralPath $printerExport)) { return }
 
     try {
         Write-Host '  Trying non-administrator fallback for PrintBRM only; power settings remain deferred...' -ForegroundColor Cyan
-        $fallbackProcess = Start-Process -FilePath 'powershell.exe' -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$HelperPath`" -AllowStandardUser -PrintBrmOnly"
+        $fallbackProcess = Start-Process -FilePath 'powershell.exe' -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$HelperPath`" -AllowStandardUser -Scope Printers"
         if ($fallbackProcess.ExitCode -eq 0) {
             Write-Host '  Non-administrator fallback completed. See Logs\AdminImportLog.txt.' -ForegroundColor Green
             Write-AdminHelperAudit -Status 'FallbackCompleted' -Detail 'UAC was unavailable; standard-user PrintBRM-only fallback completed. Power settings remain deferred.'
@@ -2695,6 +2822,8 @@ function Invoke-StandardSystemRestoreFallback {
     }
 }
 
+Write-SystemExportProvenanceSummary
+
 if ($TestMode) {
     Write-AdminHelperAudit -Status "Skipped" -Detail "TestMode never launches the administrator helper."
 }
@@ -2702,22 +2831,12 @@ elseif (-not $enableAdminHelper) {
     Write-AdminHelperAudit -Status "Skipped" -Detail "Optional administrator helper is disabled by package configuration."
 }
 else {
-    $exportAdminState = 'unknown'
-    try {
-        $exportSettings = Get-Content -LiteralPath (Join-Path $scriptPath 'Settings\SystemSettings.json') -Raw | ConvertFrom-Json
-        $exportAdminState = if ($exportSettings.ExportWasAdministrator) { 'with administrator rights' } else { 'without administrator rights' }
-    } catch { }
-    Write-Host "  System settings were exported $exportAdminState." -ForegroundColor DarkGray
-    Write-Host '  [1] Restore printers now without administrator rights' -ForegroundColor Cyan
-    Write-Host '  [2] Restore printers and power settings with administrator rights' -ForegroundColor Cyan
-    $adminChoice = Read-UserInput '  Select 1-2 (or press Enter to skip)'
-    if ($adminChoice -eq '1') {
-        $helperPath = Join-Path $scriptPath 'Import-SystemSettings.ps1'
-        if (Test-Path -LiteralPath $helperPath) { Invoke-StandardSystemRestoreFallback -HelperPath $helperPath }
-        else { Write-AdminHelperAudit -Status 'Deferred' -Detail 'Import-SystemSettings.ps1 is missing.' }
-        $enableAdminHelper = $false
-    }
-    elseif ($adminChoice -ne '2') { $enableAdminHelper = $false }
+    Write-Host '  [1] Retry printers and power settings with administrator rights' -ForegroundColor Cyan
+    Write-Host '  [2] Retry printers only with administrator rights' -ForegroundColor Cyan
+    Write-Host '  [3] Retry power settings only with administrator rights' -ForegroundColor Cyan
+    $adminChoice = Read-UserInput '  Select 1-3 (or press Enter to skip)'
+    $adminScope = switch ($adminChoice) { '1' { 'Both' }; '2' { 'Printers' }; '3' { 'Power' }; default { $null } }
+    if (-not $adminScope) { $enableAdminHelper = $false }
     if (-not $enableAdminHelper) {
         Write-AdminHelperAudit -Status 'Skipped' -Detail 'Technician chose not to run the optional administrator helper.'
         Write-Host '  Elevated power and PrintBRM restore skipped by technician.' -ForegroundColor Yellow
@@ -2730,21 +2849,34 @@ else {
     }
     else {
         try {
-            Write-Host "  Requesting administrator approval for power settings and PrintBRM..." -ForegroundColor Cyan
-            $helperProcess = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`""
+            $scopeLabel = switch ($adminScope) { 'Both' { 'power settings and PrintBRM' }; 'Printers' { 'PrintBRM' }; 'Power' { 'power settings' } }
+            Write-Host "  Requesting administrator approval for $scopeLabel..." -ForegroundColor Cyan
+            $helperProcess = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`" -Scope $adminScope"
             if ($helperProcess.ExitCode -eq 0) {
-                Write-Host "  Elevated power and printer restore completed. See Logs\\AdminImportLog.txt." -ForegroundColor Green
+                Write-Host "  Elevated $scopeLabel restore completed. See Logs\\AdminImportLog.txt." -ForegroundColor Green
             }
             else {
                 Write-Host "  Administrator helper reported an error; system tasks are deferred." -ForegroundColor Yellow
                 Write-AdminHelperAudit -Status "Deferred" -Detail "Helper exited with code $($helperProcess.ExitCode)."
-                Invoke-StandardSystemRestoreFallback -HelperPath $helperPath
+                Invoke-StandardSystemRestoreFallback -HelperPath $helperPath -Scope $adminScope
             }
         }
         catch {
-            Write-Host "  Administrator approval was cancelled or denied; system tasks are deferred." -ForegroundColor Yellow
-            Write-AdminHelperAudit -Status "Cancelled" -Detail "UAC elevation was cancelled, denied, or could not start: $($_.Exception.Message)"
-            Invoke-StandardSystemRestoreFallback -HelperPath $helperPath
+            if (Test-AdminHelperElevationCancelled -Exception $_.Exception) {
+                $cancelledMessage = "Administrator $scopeLabel import was requested, but UAC elevation was cancelled. The import will continue with user-level results."
+                Write-Host "  $cancelledMessage" -ForegroundColor Red
+                Write-Log $cancelledMessage -Level Error
+                Add-Result -Category 'System Restore' -Item "Elevated $scopeLabel" -Status 'Error' -Details $cancelledMessage
+                Write-AdminHelperAudit -Status 'Cancelled' -Detail "$cancelledMessage $($_.Exception.Message)"
+                # Keep this non-terminating: user data and the report still
+                # need to finish, and the printer-only fallback can still help.
+                Write-Error -Message $cancelledMessage -ErrorAction Continue
+            }
+            else {
+                Write-Host "  Administrator approval could not start; system tasks are deferred." -ForegroundColor Yellow
+                Write-AdminHelperAudit -Status "Deferred" -Detail "Could not start UAC elevation: $($_.Exception.Message)"
+            }
+            Invoke-StandardSystemRestoreFallback -HelperPath $helperPath -Scope $adminScope
         }
     }
     }
@@ -2888,7 +3020,16 @@ function New-AdminImportScript {
     only as a logged fallback when destination UAC is unavailable.
 #>
 #Requires -Version 5.1
-param([switch]$AllowStandardUser, [switch]$PrintBrmOnly)
+param(
+    [switch]$AllowStandardUser,
+    # PrintBrmOnly is retained for packages that were generated before Scope
+    # was introduced. New callers explicitly choose Both, Printers, or Power.
+    [switch]$PrintBrmOnly,
+    [ValidateSet('Both', 'Printers', 'Power')][string]$Scope = 'Both'
+)
+if ($PrintBrmOnly) { $Scope = 'Printers' }
+$restorePower = $Scope -in @('Both', 'Power')
+$restorePrinters = $Scope -in @('Both', 'Printers')
 $ErrorActionPreference = 'Continue'
 $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logsPath = Join-Path $scriptPath 'Logs'
@@ -2918,6 +3059,13 @@ if (-not $result.Elevated -and -not $AllowStandardUser) {
     exit 1
 }
 if (-not $result.Elevated -and $AllowStandardUser) {
+    if ($Scope -ne 'Printers') {
+        $result.Status = 'Denied'
+        $result.Errors += 'The standard-user fallback is limited to printers.'
+        Write-Audit 'Standard-user fallback was asked to restore power; no changes were made.' 'Error'
+        Save-Result
+        exit 1
+    }
     Write-Audit 'Running explicit non-administrator PrintBRM-only fallback; power settings will not be attempted.' 'Warning'
 }
 
@@ -2930,22 +3078,22 @@ if (Test-Path -LiteralPath $settingsFile) {
 
 # Legacy packages have only a .pow file. New packages keep the managed plan
 # and receive their captured AC/DC values one by one.
-if ($PrintBrmOnly) {
+if (-not $restorePower) {
     $result.Power += [PSCustomObject]@{ Item = 'Power settings'; Status = 'Skipped'; Detail = 'Deferred: non-administrator fallback is PrintBRM-only' }
     Write-Audit 'Power settings deferred because this is a PrintBRM-only fallback.' 'Info'
 }
-elseif ((Test-Path -LiteralPath $powerScheme) -and -not ($settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count)) {
+elseif (Test-Path -LiteralPath $powerScheme) {
     try {
         $guid = [guid]::NewGuid().ToString()
         $output = & powercfg /import $powerScheme $guid 2>&1
         if ($LASTEXITCODE -ne 0) { throw "powercfg /import exit ${LASTEXITCODE}: $(($output | Out-String).Trim())" }
         $output = & powercfg /setactive $guid 2>&1
         if ($LASTEXITCODE -ne 0) { throw "powercfg /setactive exit ${LASTEXITCODE}: $(($output | Out-String).Trim())" }
-        $result.Power += [PSCustomObject]@{ Item = 'Legacy power scheme'; Status = 'Success'; Detail = "Imported and activated $guid" }
-        Write-Audit 'Legacy power scheme imported and activated.' 'Success'
-    } catch { $result.Power += [PSCustomObject]@{ Item = 'Legacy power scheme'; Status = 'Failed'; Detail = $_.Exception.Message }; $result.Errors += $_.Exception.Message; Write-Audit "Power scheme failed: $_" 'Error' }
+        $result.Power += [PSCustomObject]@{ Item = 'Full power scheme'; Status = 'Success'; Detail = "Imported and activated $guid" }
+        Write-Audit 'Full power scheme imported and activated.' 'Success'
+    } catch { $result.Power += [PSCustomObject]@{ Item = 'Full power scheme'; Status = 'Failed'; Detail = $_.Exception.Message }; $result.Errors += $_.Exception.Message; Write-Audit "Power scheme failed: $_" 'Error' }
 }
-if (-not $PrintBrmOnly -and $settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count) {
+if ($restorePower -and $settingsData.PowerSettingValues -and @($settingsData.PowerSettingValues).Count) {
     foreach ($setting in @($settingsData.PowerSettingValues)) {
         foreach ($kind in @(@{ Name='AC'; Command='/setacvalueindex'; Value=[string]$setting.ACValue }, @{ Name='DC'; Command='/setdcvalueindex'; Value=[string]$setting.DCValue })) {
             if (-not $kind.Value) { continue }
@@ -2958,7 +3106,7 @@ if (-not $PrintBrmOnly -and $settingsData.PowerSettingValues -and @($settingsDat
     }
     & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
 }
-if (-not $PrintBrmOnly -and $settingsData.LidClose -and $settingsData.LidClose.OnAC) {
+if ($restorePower -and $settingsData.LidClose -and $settingsData.LidClose.OnAC) {
     $map = @{ 'Do Nothing'=0; Sleep=1; Hibernate=2; 'Shut Down'=3 }
     foreach ($kind in @(@{ Command='/setacvalueindex'; Value=$map[$settingsData.LidClose.OnAC] }, @{ Command='/setdcvalueindex'; Value=$map[$settingsData.LidClose.OnBattery] })) {
         if ($null -ne $kind.Value) { & powercfg $kind.Command SCHEME_CURRENT SUB_BUTTONS LIDACTION $kind.Value 2>&1 | Out-Null }
@@ -2966,12 +3114,48 @@ if (-not $PrintBrmOnly -and $settingsData.LidClose -and $settingsData.LidClose.O
     & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
     $result.Power += [PSCustomObject]@{ Item = 'Lid actions'; Status = 'Attempted'; Detail = "AC: $($settingsData.LidClose.OnAC); DC: $($settingsData.LidClose.OnBattery)" }
 }
+if ($restorePower -and $settingsData) {
+    $capturedOverlay = if ($settingsData.PowerMode -and $settingsData.PowerMode.RequestedOverlayGuid) { [string]$settingsData.PowerMode.RequestedOverlayGuid }
+        elseif ($settingsData.PowerMode -and $settingsData.PowerMode.EffectiveOverlayGuid) { [string]$settingsData.PowerMode.EffectiveOverlayGuid }
+        elseif ($settingsData.PowerModeOverlay -and $settingsData.PowerModeOverlay.ActiveOverlayAcPowerScheme) { [string]$settingsData.PowerModeOverlay.ActiveOverlayAcPowerScheme }
+        elseif ($settingsData.PowerModeOverlay) { [string]$settingsData.PowerModeOverlay.ActiveOverlayDcPowerScheme }
+    if ($capturedOverlay -match '^[0-9a-fA-F-]{36}$') {
+        try {
+            if (-not ('StoAdminPowerOverlay' -as [type])) {
+                Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class StoAdminPowerOverlay {
+    [DllImport("PowrProf.dll", EntryPoint="PowerSetActiveOverlayScheme", SetLastError=true)]
+    public static extern uint PowerSetActiveOverlayScheme(Guid overlaySchemeGuid);
+    [DllImport("PowrProf.dll", EntryPoint="PowerGetEffectiveOverlayScheme")]
+    public static extern uint PowerGetEffectiveOverlayScheme(out Guid overlaySchemeGuid);
+}
+"@ -ErrorAction Stop
+            }
+            $overlayGuid = [guid]$capturedOverlay
+            $setResult = [StoAdminPowerOverlay]::PowerSetActiveOverlayScheme($overlayGuid)
+            if ($setResult -ne 0) { throw "PowerSetActiveOverlayScheme returned $setResult." }
+            $effectiveGuid = [guid]::Empty
+            $effectiveResult = [StoAdminPowerOverlay]::PowerGetEffectiveOverlayScheme([ref]$effectiveGuid)
+            $detail = if ($effectiveResult -eq 0 -and $effectiveGuid.ToString() -ne $capturedOverlay) { "Applied $capturedOverlay; effective overlay is $effectiveGuid (policy or hardware override)." } else { "Applied and verified $capturedOverlay." }
+            $status = if ($effectiveResult -eq 0 -and $effectiveGuid.ToString() -ne $capturedOverlay) { 'Warning' } else { 'Success' }
+            $result.Power += [PSCustomObject]@{ Item = 'Windows power mode'; Status = $status; Detail = $detail }
+            Write-Audit "Windows power mode: $detail" $(if($status -eq 'Success'){'Success'}else{'Warning'})
+        }
+        catch {
+            $result.Power += [PSCustomObject]@{ Item = 'Windows power mode'; Status = 'Failed'; Detail = $_.Exception.Message }
+            $result.Errors += "Windows power mode: $($_.Exception.Message)"
+            Write-Audit "Windows power mode failed: $($_.Exception.Message)" 'Warning'
+        }
+    }
+}
 
 $printerExport = Join-Path $scriptPath 'Printers\Printers.printerExport'
 $printBrm = Join-Path $env:WINDIR 'System32\spool\tools\PrintBrm.exe'
 $result.PrintBrm.PackagePresent = Test-Path -LiteralPath $printerExport
 $result.PrintBrm.ToolPresent = Test-Path -LiteralPath $printBrm
-if ($result.PrintBrm.PackagePresent -and $result.PrintBrm.ToolPresent) {
+if ($restorePrinters -and $result.PrintBrm.PackagePresent -and $result.PrintBrm.ToolPresent) {
     try {
         $brmLog = Join-Path $logsPath 'printbrm_restore.log'
         & $printBrm -R -F $printerExport -O FORCE *>&1 | Tee-Object -LiteralPath $brmLog | Out-Null
@@ -2981,7 +3165,8 @@ if ($result.PrintBrm.PackagePresent -and $result.PrintBrm.ToolPresent) {
         if ($LASTEXITCODE -eq 0 -and [bool]::Parse('{DELETE_PRINTBRM_AFTER_IMPORT}')) { Remove-Item -LiteralPath $printerExport -Force; Write-Audit 'PrintBRM succeeded; migration package deleted.' 'Success' }
         elseif ($LASTEXITCODE -ne 0) { Write-Audit "PrintBRM failed with exit $LASTEXITCODE; package retained." 'Warning' }
     } catch { $result.PrintBrm.Status='Failed'; $result.Errors += "PrintBRM error: $($_.Exception.Message)"; Write-Audit "PrintBRM error: $_; package retained." 'Error' }
-} elseif ($result.PrintBrm.PackagePresent) { $result.PrintBrm.Status='Skipped'; $result.PrinterStatus += [PSCustomObject]@{ Item='Local/direct-IP printers'; Status='Skipped'; Detail='PrintBRM.exe not found' } }
+} elseif ($restorePrinters -and $result.PrintBrm.PackagePresent) { $result.PrintBrm.Status='Skipped'; $result.PrinterStatus += [PSCustomObject]@{ Item='Local/direct-IP printers'; Status='Skipped'; Detail='PrintBRM.exe not found' } }
+elseif (-not $restorePrinters) { $result.PrintBrm.Status='Skipped'; $result.PrinterStatus += [PSCustomObject]@{ Item='Local/direct-IP printers'; Status='Skipped'; Detail='Not selected for this administrator retry' } }
 
 $result.Status = if ($result.Errors.Count) { 'CompletedWithErrors' } else { 'Completed' }
 Save-Result

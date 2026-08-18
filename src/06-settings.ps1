@@ -45,6 +45,134 @@ function Test-OperatingSystemDriveBitLocker {
     return [PSCustomObject]@{ MountPoint = $mountPoint; ShellStatus = $status; Status = $result.Status; Details = $result.Details }
 }
 
+function Get-WindowsPowerMode {
+    # The Power & battery "Power mode" selector is an overlay, not an ordinary
+    # power-plan value.  Reading the old registry overlay values is not enough:
+    # they can be absent or policy-derived.  Ask PowrProf for the mode Windows
+    # is actually using so a destination can restore the same selector.
+    if (-not ('StoPowerOverlayCapture' -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class StoPowerOverlayCapture {
+    [DllImport("PowrProf.dll", EntryPoint="PowerGetActualOverlayScheme")]
+    public static extern uint PowerGetActualOverlayScheme(out Guid overlaySchemeGuid);
+    [DllImport("PowrProf.dll", EntryPoint="PowerGetEffectiveOverlayScheme")]
+    public static extern uint PowerGetEffectiveOverlayScheme(out Guid overlaySchemeGuid);
+}
+"@ -ErrorAction Stop
+    }
+
+    $actual = [guid]::Empty
+    $effective = [guid]::Empty
+    $actualResult = [StoPowerOverlayCapture]::PowerGetActualOverlayScheme([ref]$actual)
+    $effectiveResult = [StoPowerOverlayCapture]::PowerGetEffectiveOverlayScheme([ref]$effective)
+    if ($actualResult -ne 0 -and $effectiveResult -ne 0) {
+        throw "Windows did not expose a Power mode overlay (actual=$actualResult; effective=$effectiveResult)."
+    }
+
+    $requestedGuid = if ($actualResult -eq 0) { $actual } else { $effective }
+    $modeNames = @{
+        '961cc777-2547-4f9d-8174-7d86181b8a7a' = 'Best power efficiency'
+        '00000000-0000-0000-0000-000000000000' = 'Balanced'
+        'ded574b5-45a0-4f42-8737-46345c09c238' = 'Best performance'
+    }
+    $requestedText = $requestedGuid.ToString()
+    return [ordered]@{
+        RequestedOverlayGuid = $requestedText
+        EffectiveOverlayGuid = if ($effectiveResult -eq 0) { $effective.ToString() } else { $null }
+        DisplayName = if ($modeNames.ContainsKey($requestedText)) { $modeNames[$requestedText] } else { "Windows power-mode overlay $requestedText" }
+        Source = if ($actualResult -eq 0) { 'PowerGetActualOverlayScheme' } else { 'PowerGetEffectiveOverlayScheme' }
+    }
+}
+
+function Get-SystemExportProvenance {
+    # Power and PrintBRM can be captured first in the transferring user's
+    # session, then retried by the small UAC helper.  Keep their provenance in
+    # a separate, durable manifest so the generated importer can accurately
+    # tell a technician which attempt produced each artifact.
+    param([string]$DestinationBase)
+
+    $manifestPath = Join-Path $DestinationBase 'Settings\SystemExport.json'
+    $existing = $null
+    if (Test-Path -LiteralPath $manifestPath) {
+        try { $existing = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json }
+        catch { Write-Log "Could not read existing system-export provenance: $($_.Exception.Message)" -Level Warning }
+    }
+
+    $existingPower = if ($existing) { $existing.Power } else { $null }
+    $existingPrintBrm = if ($existing) { $existing.PrintBrm } else { $null }
+    return [PSCustomObject]@{
+        SchemaVersion = 1
+        AdminExportRequested = [bool]$Script:Config.Export.RequestAdministratorPrivileges
+        MainExporterWasAdministrator = [bool]$Script:IsAdmin
+        UpdatedAt = (Get-Date).ToString('o')
+        Power = [PSCustomObject]@{
+            Attempted = if ($existingPower -and $null -ne $existingPower.Attempted) { [bool]$existingPower.Attempted } else { $false }
+            CapturedWithAdministratorRights = if ($existingPower -and $null -ne $existingPower.CapturedWithAdministratorRights) { [bool]$existingPower.CapturedWithAdministratorRights } else { $false }
+            Status = if ($existingPower -and $existingPower.Status) { [string]$existingPower.Status } else { 'NotAttempted' }
+            Detail = if ($existingPower -and $existingPower.Detail) { [string]$existingPower.Detail } else { 'No full power-plan export was attempted.' }
+            UpdatedAt = if ($existingPower -and $existingPower.UpdatedAt) { [string]$existingPower.UpdatedAt } else { $null }
+        }
+        PrintBrm = [PSCustomObject]@{
+            Attempted = if ($existingPrintBrm -and $null -ne $existingPrintBrm.Attempted) { [bool]$existingPrintBrm.Attempted } else { $false }
+            CapturedWithAdministratorRights = if ($existingPrintBrm -and $null -ne $existingPrintBrm.CapturedWithAdministratorRights) { [bool]$existingPrintBrm.CapturedWithAdministratorRights } else { $false }
+            Status = if ($existingPrintBrm -and $existingPrintBrm.Status) { [string]$existingPrintBrm.Status } else { 'NotAttempted' }
+            Detail = if ($existingPrintBrm -and $existingPrintBrm.Detail) { [string]$existingPrintBrm.Detail } else { 'No PrintBRM export was attempted.' }
+            UpdatedAt = if ($existingPrintBrm -and $existingPrintBrm.UpdatedAt) { [string]$existingPrintBrm.UpdatedAt } else { $null }
+        }
+    }
+}
+
+function Set-SystemExportProvenance {
+    # A failed optional admin retry must never erase the last known-good
+    # standard-user provenance.  This writes only after a concrete attempt and
+    # uses a replace operation so readers never receive partial JSON.
+    param(
+        [string]$DestinationBase,
+        [ValidateSet('Power', 'PrintBrm')][string]$Artifact,
+        [bool]$Attempted,
+        [bool]$CapturedWithAdministratorRights,
+        [ValidateSet('NotAttempted', 'Succeeded', 'Failed', 'Unavailable', 'Skipped')][string]$Status,
+        [string]$Detail
+    )
+
+    try {
+        $settingsPath = Join-Path $DestinationBase 'Settings'
+        if (-not (Test-Path -LiteralPath $settingsPath)) { New-Item -ItemType Directory -Path $settingsPath -Force | Out-Null }
+        $manifestPath = Join-Path $settingsPath 'SystemExport.json'
+        $provenance = Get-SystemExportProvenance -DestinationBase $DestinationBase
+        $provenance.AdminExportRequested = [bool]$Script:Config.Export.RequestAdministratorPrivileges
+        $provenance.MainExporterWasAdministrator = [bool]$Script:IsAdmin
+        $provenance.UpdatedAt = (Get-Date).ToString('o')
+        $provenance.$Artifact = [PSCustomObject]@{
+            Attempted = $Attempted
+            CapturedWithAdministratorRights = $CapturedWithAdministratorRights
+            Status = $Status
+            Detail = $Detail
+            UpdatedAt = (Get-Date).ToString('o')
+        }
+
+        $temporaryPath = Join-Path $settingsPath ("SystemExport.$PID.$([guid]::NewGuid().ToString('N')).tmp")
+        try {
+            [System.IO.File]::WriteAllText($temporaryPath, ($provenance | ConvertTo-Json -Depth 6), [System.Text.UTF8Encoding]::new($false))
+            if (Test-Path -LiteralPath $manifestPath) {
+                try { [System.IO.File]::Replace($temporaryPath, $manifestPath, $null) }
+                catch {
+                    # File.Replace can be unavailable on some redirected
+                    # folders. The temporary file still makes this fallback
+                    # overwrite a complete JSON document in one operation.
+                    [System.IO.File]::Copy($temporaryPath, $manifestPath, $true)
+                    Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+            else { [System.IO.File]::Move($temporaryPath, $manifestPath) }
+        }
+        finally { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue }
+    }
+    catch { Write-Log "Could not update system-export provenance for ${Artifact}: $($_.Exception.Message)" -Level Warning }
+}
+
 function Get-SystemSettings {
     # Collect power, personalization, network-drive, desktop, taskbar, and
     # default-app state into package files.  Capture failures are recorded as
@@ -86,6 +214,9 @@ function Get-SystemSettings {
         
         $powerScheme = powercfg /getactivescheme
         $settings.PowerScheme = $powerScheme
+        $settings.PowerMode = Get-WindowsPowerMode
+        # Retain the registry snapshot for older generated import scripts. The
+        # PowerMode API result above is the authoritative capture for new ones.
         $overlayPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes'
         $overlayValues = Get-ItemProperty -LiteralPath $overlayPath -ErrorAction SilentlyContinue
         $settings.PowerModeOverlay = @{
@@ -101,8 +232,9 @@ function Get-SystemSettings {
         # A .pow export is a complete, portable copy of the active plan.  It
         # contains the AC and DC values for every setting exposed in Control
         # Panel and Power & battery (including the hidden advanced settings),
-        # rather than just the small lid-close subset parsed below.  Windows
-        # requires an elevated process to export or import a plan.
+        # rather than just the small lid-close subset parsed below. Always try
+        # this once in the current user context: some devices allow it without
+        # UAC, and a later opt-in helper can safely retry only this operation.
         $powerExport = Join-Path $settingsPath "PowerScheme.pow"
         if (-not $schemeGuid) {
             throw "Could not determine the active power-scheme GUID."
@@ -156,27 +288,37 @@ function Get-SystemSettings {
             Write-Log "Captured $($settings.PowerSettingValueCount) individual AC/DC power-setting value(s)" -Level Success
         }
 
-        if ($Script:IsAdmin) {
-            if (Test-Path -LiteralPath $powerExport) {
-                Remove-Item -LiteralPath $powerExport -Force -ErrorAction Stop
-            }
+        if (Test-Path -LiteralPath $powerExport) {
+            Remove-Item -LiteralPath $powerExport -Force -ErrorAction Stop
+        }
 
-            $powerExportResult = & powercfg /export $powerExport $schemeGuid 2>&1
-            $powerExportExitCode = $LASTEXITCODE
-            $settings.PowerSchemeExported = ((Test-Path -LiteralPath $powerExport) -and ((Get-Item -LiteralPath $powerExport).Length -gt 0) -and $powerExportExitCode -eq 0)
-            $settings.PowerSchemeExportExitCode = $powerExportExitCode
-            $settings.PowerSettingsMirror = "PowerScheme.pow"
+        $powerExportResult = & powercfg /export $powerExport $schemeGuid 2>&1
+        $powerExportExitCode = $LASTEXITCODE
+        $settings.PowerSchemeExported = ((Test-Path -LiteralPath $powerExport) -and ((Get-Item -LiteralPath $powerExport).Length -gt 0) -and $powerExportExitCode -eq 0)
+        $settings.PowerSchemeExportExitCode = $powerExportExitCode
+        $settings.PowerSchemeExportWasAdministrator = [bool]$Script:IsAdmin
+        $settings.PowerSettingsMirror = "PowerScheme.pow"
 
-            if ($settings.PowerSchemeExported) {
-                Write-Log "Complete power scheme exported successfully" -Level Success
-            } else {
-                $exportMessage = ($powerExportResult | Out-String).Trim()
-                throw "Power-scheme export failed (exit $powerExportExitCode). $exportMessage"
+        $powerAccessMode = if ($Script:IsAdmin) { 'administrator' } else { 'standard user' }
+        if ($settings.PowerSchemeExported) {
+            $powerDetail = "Complete power plan captured by $powerAccessMode export (exit $powerExportExitCode)."
+            Set-SystemExportProvenance -DestinationBase $DestinationBase -Artifact Power -Attempted $true -CapturedWithAdministratorRights ([bool]$Script:IsAdmin) -Status Succeeded -Detail $powerDetail
+            Write-Log "Complete power scheme exported successfully by $powerAccessMode" -Level Success
+        }
+        else {
+            $exportMessage = ($powerExportResult | Out-String).Trim()
+            $powerDetail = "Complete power plan was not created by the $powerAccessMode attempt (exit $powerExportExitCode)."
+            if ($exportMessage) { $powerDetail += " $exportMessage" }
+            Set-SystemExportProvenance -DestinationBase $DestinationBase -Artifact Power -Attempted $true -CapturedWithAdministratorRights ([bool]$Script:IsAdmin) -Status Failed -Detail $powerDetail
+            if ($Script:IsAdmin) {
+                Write-Log $powerDetail -Level Warning
             }
-        } else {
-            $settings.PowerSchemeExported = $false
-            $settings.PowerSchemeExportExitCode = $null
-            Write-Log "Complete power-scheme export skipped because the export is not elevated; individual values will still be restored" -Level Info
+            else {
+                # This is an expected capability boundary, not a failed export:
+                # individual values remain captured and the admin retry is an
+                # explicitly optional recommendation.
+                Write-Log "$powerDetail Administrator export is recommended but optional." -Level Info
+            }
         }
         
         # Capture lid close settings using powercfg query (works without admin)
@@ -199,9 +341,11 @@ function Get-SystemSettings {
         }
         
         Write-Log "Complete power settings captured" -Level Success
-        Add-Result -Category "Settings" -Item "Power Configuration" -Status $(if ($settings.PowerSettingValueCount -gt 0) { "Success" } else { "Warning" }) -Details "$($settings.PowerSettingValueCount) individual AC/DC values captured$(if ($settings.PowerSchemeExported) { '; full plan also exported' }); lid: AC=$($settings.LidClose.OnAC), DC=$($settings.LidClose.OnBattery); power mode overlays captured"
+        $fullPlanDetail = if ($settings.PowerSchemeExported) { "; full plan exported by $powerAccessMode" } elseif ($Script:IsAdmin) { '; full plan export did not complete' } else { '; full plan standard-user attempt did not complete (administrator export is recommended, optional)' }
+        Add-Result -Category "Settings" -Item "Power Configuration" -Status $(if ($settings.PowerSettingValueCount -gt 0) { "Success" } else { "Warning" }) -Details "$($settings.PowerSettingValueCount) individual AC/DC values captured$fullPlanDetail; lid: AC=$($settings.LidClose.OnAC), DC=$($settings.LidClose.OnBattery); Windows power mode: $($settings.PowerMode.DisplayName)"
     }
     catch {
+        Set-SystemExportProvenance -DestinationBase $DestinationBase -Artifact Power -Attempted $true -CapturedWithAdministratorRights ([bool]$Script:IsAdmin) -Status Failed -Detail "Power-settings capture did not complete: $($_.Exception.Message)"
         Write-Log "Error capturing power settings: $_" -Level Warning
         Add-Result -Category "Settings" -Item "Power Configuration" -Status "Manual" -Details "Could not capture - verify manually"
         Add-ManualTask -Task "Verify Power Settings" -Reason "Automatic capture failed" -Instructions "Check lid close action and sleep settings manually on both computers"

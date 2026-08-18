@@ -168,11 +168,6 @@ function Export-ChromeBookmarks {
             }
             Write-Log "Chrome bookmarks exported for profile '$($profile.Name)'" -Level Success
 
-            # Keep the old Default filename as a convenience for technicians
-            # who are accustomed to the original single-profile layout.
-            if ($profile.Name -eq "Default") {
-                Copy-Item -LiteralPath $chromeHtml -Destination (Join-Path $BrowserPath "Chrome_Bookmarks.html") -Force
-            }
         }
         else {
             Write-Log "Could not convert Chrome bookmarks for profile '$($profile.Name)'" -Level Warning

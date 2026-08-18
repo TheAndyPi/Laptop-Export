@@ -30,7 +30,7 @@ else {
 # ============================================================================
 
 $Script:Config = @{
-    Version = "0.9"
+    Version = "1.0"
     TransferFolderName = "LaptopTransfer_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 
     # Printer driver binaries in the PrintBRM package. Network printers also
@@ -39,8 +39,8 @@ $Script:Config = @{
     # smaller package.
     IncludePrinterDrivers = $true
 
-    # Elevation is opt-in from the Transfer Settings screen. This keeps the
-    # initial mode selection uninterrupted while retaining full export support.
+    # Elevation is opt-in from the Transfer Settings screen. It retries only
+    # PrintBRM and the full power-plan export after user-context capture.
     Export = @{
         RequestAdministratorPrivileges = $false
     }
@@ -604,7 +604,7 @@ function Show-TransferSettingsMenu {
         @{ Section = "Backup"; Key = "OneDrive";          Label = "OneDrive";           Detail = "Offline file availability check" }
         @{ Section = "Backup"; Key = "TaskbarLayout";     Label = "Taskbar layout";     Detail = "Pinned app shortcuts and taskbar layout" }
         @{ Section = "Backup"; Key = "DefaultApps";       Label = "Default apps";       Detail = "File and protocol default-app inventory" }
-        @{ Section = "Export"; Key = "RequestAdministratorPrivileges"; Label = "Run export as administrator"; Detail = "Request UAC approval after you start the transfer" }
+        @{ Section = "Export"; Key = "RequestAdministratorPrivileges"; Label = "RECOMMENDED: Admin printer + power export"; Detail = "OFF by default; at the end, UAC retries only PrintBRM and the full power plan" }
         @{ Section = "Import"; Key = "LotusNotes";        Label = "Import Lotus Notes"; Detail = "Restore exported Lotus local data on the new laptop" }
         @{ Section = "Import"; Key = "DeletePrintBrmAfterImport"; Label = "Delete PrintBRM after import"; Detail = "Remove the printer package after a successful restore" }
         @{ Section = "Import"; Key = "AppComparison"; Label = "Compare installed apps"; Detail = "Compare old and new PC installed-program inventories" }
@@ -632,6 +632,7 @@ function Show-TransferSettingsMenu {
             $setting = $settings[$index]
             if ($index -eq 16) {
                 Write-Section "Export settings"
+                Write-Host "  RECOMMENDED: Enable the next setting when you can approve UAC. It improves PrintBRM and full power-plan capture; all other export work stays as the signed-in user." -ForegroundColor Yellow
             }
             if ($index -eq 17) {
                 Write-Section "Generated import settings"
@@ -676,7 +677,7 @@ function Show-TransferSettingsMenu {
         $advancedHint = if ($Script:Config.TransferMode -eq 'Online') { '; [A] Advanced Online Controls' } else { '' }
         Write-Host "  Select a number to toggle it; [B] Basic; [V] Advanced$advancedHint; [R] Refresh; select Online payload limit to enter a GB value." -ForegroundColor Gray
         Write-Host "  Select Chrome to cycle its three backup modes." -ForegroundColor DarkGray
-        Write-Host "  Administrator mode is requested only after you choose Start transfer." -ForegroundColor DarkGray
+        Write-Host "  The recommended printer + power admin retry is OFF by default and requests UAC only at the end of export." -ForegroundColor DarkGray
         Write-Host "  ZIP archives are optional for Local transfers and enabled by default for Online transfers." -ForegroundColor DarkGray
         Write-Host "  Import settings are written into the transfer package's generated import script." -ForegroundColor DarkGray
 
@@ -836,9 +837,9 @@ function Format-RemainingTime {
 }
 
 function Copy-WithProgress {
-    # Wrap robocopy, translate its bitmask exit code into application statuses,
-    # and stream progress from Robocopy's own output. Robocopy codes 0-7 represent
-    # success or acceptable differences; 8 and above mean a copy failure.
+    # Wrap robocopy and translate its bitmask exit code into application
+    # statuses. Robocopy codes 0-7 represent success or acceptable
+    # differences; 8 and above mean a copy failure.
     param(
         [string]$Source,
         [string]$Destination,
@@ -879,19 +880,20 @@ function Copy-WithProgress {
     $startTime = Get-Date
     $spinIndex = 0
     
-    # /NP and /NFL suppress per-file completion events. Remove them only from
-    # this process; no destination polling or per-file log writes are needed.
-    $robocopyArgsForProgress = @($RobocopyArgs | Where-Object { $_ -notin @('/NP', '/NFL') })
-    if ($robocopyArgsForProgress -notcontains '/BYTES') { $robocopyArgsForProgress += '/BYTES' }
-    $robocopyArgString = ($robocopyArgsForProgress -join " ")
+    $robocopyArgString = ($RobocopyArgs -join " ")
     
     # Keep a direct handle to the Robocopy process.  This lets the technician
     # stop only the current copy instead of terminating the whole export.
     $pinfo = New-Object System.Diagnostics.ProcessStartInfo
     $pinfo.FileName = "robocopy.exe"
     $pinfo.Arguments = "`"$Source`" `"$Destination`" $robocopyArgString"
-    $pinfo.RedirectStandardOutput = $true
-    $pinfo.RedirectStandardError = $true
+    # Do not attach PowerShell script blocks to OutputDataReceived. On Windows
+    # PowerShell 5.1 those callbacks run on worker threads with no runspace,
+    # which terminates the host as soon as Robocopy writes its first output.
+    # Keep the process detached from console output and render a responsive
+    # indeterminate display from this (runspace-owned) loop instead.
+    $pinfo.RedirectStandardOutput = $false
+    $pinfo.RedirectStandardError = $false
     $pinfo.UseShellExecute = $false
     $pinfo.CreateNoWindow = $true
 
@@ -901,32 +903,11 @@ function Copy-WithProgress {
         return @{ ExitCode = -1; FilesCopied = 0; BytesCopied = 0; Status = "Warning"; Duration = [TimeSpan]::Zero }
     }
 
-    $progressState = [hashtable]::Synchronized(@{
-        CompletedFiles = 0
-        Diagnostics = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
-    })
-    $progressHandler = [System.Diagnostics.DataReceivedEventHandler]{
-        param($sender, $eventArgs)
-        $line = $eventArgs.Data
-        if ($null -eq $line) { return }
-        if ($line -match '(?<!\d)100(?:\.0+)?%') { $progressState.CompletedFiles++ }
-        # Keep the historically useful headers, summary, and failures without
-        # writing one log line for every file just to support the progress UI.
-        if ($line -match '^\s*(?:Started|Ended|Source|Dest|Options|Dirs|Files|Bytes|Times)\s*:' -or
-            $line -match '(?i)\b(?:error|failed|access denied)\b') {
-            $progressState.Diagnostics.Enqueue($line)
-        }
-    }
-    $process.add_OutputDataReceived($progressHandler)
-    $process.add_ErrorDataReceived($progressHandler)
-    $process.BeginOutputReadLine()
-    $process.BeginErrorReadLine()
-
     $abortedByOperator = $false
     Write-Host "    Press S to stop this copy and continue with the next step." -ForegroundColor DarkGray
     
-    # Count Robocopy's per-file completion markers. This is O(1) per output
-    # line and remains responsive without rescanning the active destination.
+    # Use only the owning PowerShell runspace while Robocopy runs. This keeps
+    # stop-key handling responsive and avoids expensive destination rescans.
     while (-not $process.HasExited) {
         Start-Sleep -Milliseconds 750
 
@@ -946,26 +927,18 @@ function Copy-WithProgress {
         }
         catch { }
         
-        $completedFiles = [math]::Min($totalFiles, [int]$progressState.CompletedFiles)
-        $percent = [math]::Min(99, [math]::Floor(($completedFiles / [double]$totalFiles) * 100))
-        $progressBarWidth = 34
-        $filledWidth = [math]::Round(($percent / 100) * $progressBarWidth)
-        $progressBar = ([string]$Script:Theme.Bar.Full * $filledWidth) + ([string]$Script:Theme.Bar.Light * ($progressBarWidth - $filledWidth))
-
-        # The spinner remains useful while a single large file is copied.
+        # A spinner is reliable for both one large file and many small files;
+        # deriving a percentage from asynchronous output is not safe in
+        # Windows PowerShell 5.1.
         $spin = $Script:Theme.Spinner[$spinIndex % $Script:Theme.Spinner.Count]
         $spinIndex++
         $elapsed = (Get-Date) - $startTime
-        $statusLine = "    $spin $progressBar $($percent.ToString().PadLeft(3))%  $completedFiles / $totalFiles files  elapsed $([math]::Round($elapsed.TotalSeconds, 0)) sec   "
+        $statusLine = "    $spin Copying $totalFiles files ($(Format-FileSize $totalSize))  elapsed $([math]::Round($elapsed.TotalSeconds, 0)) sec   "
         Write-Host "`r$statusLine" -NoNewline
     }
     
     $exitCode = $process.ExitCode
-    $process.remove_OutputDataReceived($progressHandler)
-    $process.remove_ErrorDataReceived($progressHandler)
-    $logLines = @("Source: $Source", "Destination: $Destination", "Robocopy exit code: $exitCode")
-    $diagnosticLine = $null
-    while ($progressState.Diagnostics.TryDequeue([ref]$diagnosticLine)) { $logLines += $diagnosticLine; $diagnosticLine = $null }
+    $logLines = @("Source: $Source", "Destination: $Destination", "Robocopy exit code: $exitCode", "Robocopy arguments: $robocopyArgString")
     $logLines | Set-Content -LiteralPath $LogPath -Encoding UTF8
     
     $elapsed = (Get-Date) - $startTime
@@ -989,7 +962,10 @@ function Copy-WithProgress {
         }
     }
 
-    $progressBar = [string]$Script:Theme.Bar.Full * 34
+    # Keep the final status on one line in the standard 80-column console.
+    # The prior 34-character bar left too little room for the size and
+    # duration fields, causing the completion display to wrap.
+    $progressBar = [string]$Script:Theme.Bar.Full * 16
     Write-Host "`r$(' ' * 140)" -NoNewline
     Write-Host "`r    " -NoNewline
     Write-Host "$($Script:Theme.Glyphs.OK) " -ForegroundColor Green -NoNewline

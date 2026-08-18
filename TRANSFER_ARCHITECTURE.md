@@ -126,11 +126,11 @@ flowchart LR
 
 Elevation is opt-in and deferred until after settings confirmation. `Start-ElevatedExport` does not relaunch the complete exporter. It starts a narrowly scoped helper from `Start-ElevatedSystemExport`, passing only the package path. The helper contains no user-data routines, HKCU migration, drive mapping, or browser work. It retries the full power-plan export and PrintBRM capture where Windows permits them.
 
-If the technician declines UAC, ordinary collection continues. The report flags admin-only gaps and tells the operator to rerun elevated before wiping the old device.
+The **RECOMMENDED: Admin printer + power export** toggle is off by default in both Basic and Advanced. Regardless of that choice, the user-context exporter attempts power and PrintBRM first. When UAC is selected, the helper retries only the chosen system artifacts at the end and atomically replaces them only after a valid elevated result. `Settings\SystemExport.json` records per-artifact success and whether it was captured with administrator rights. Declining UAC leaves the standard-user artifacts intact and is recorded as optional, not a transfer failure.
 
 ### Import elevation
 
-`QuickImport.bat` runs `Import-LaptopData.ps1` as the current signed-in user. The importer explicitly exits if it detects an elevated main process, because user-scoped restoration must target the new user's profile and HKCU. At the end, it may start `Import-SystemSettings.ps1` with `Start-Process -Verb RunAs`. That helper performs only the power-plan and PrintBRM work, writes `Logs/AdminImportResult.json`, and retains the printer package after failure. If UAC is unavailable, the importer makes one explicit `-AllowStandardUser` fallback attempt and records the outcome.
+`QuickImport.bat` runs `Import-LaptopData.ps1` as the current signed-in user. The importer explicitly exits if it detects an elevated main process, because user-scoped restoration must target the new user's profile and HKCU. Normal-user printer connections and power settings are attempted first. At the end, it reports the per-artifact export provenance from `Settings\SystemExport.json` (or a legacy fallback), states that admin export is recommended but optional, and offers both system tasks, printers only, or power only through `Import-SystemSettings.ps1` with `Start-Process -Verb RunAs`. That helper writes `Logs/AdminImportResult.json` and retains the printer package after failure. If UAC is unavailable, the importer makes one explicit `-AllowStandardUser` printer-only fallback attempt and records the outcome.
 
 ### Credential and secret boundary
 
@@ -213,7 +213,7 @@ All bulk folder copies flow through `Copy-WithProgress`, which starts `robocopy.
 
 `Get-SystemSettings` writes JSON plus native Windows artifacts:
 
-- Power: `powercfg /getactivescheme`, `powercfg /qh`, `powercfg /query`, the AC/DC overlay values under `HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes`, parsed AC/DC setting values, lid actions, and—when elevated—`powercfg /export` to `.pow`.
+- Power: `powercfg /getactivescheme`, `powercfg /qh`, `powercfg /query`, the Windows Power Mode overlay reported by `PowrProf` (with a registry snapshot retained for compatibility), parsed AC/DC setting values, lid actions, and—when elevated—`powercfg /export` to `.pow`.
 - Mapped drives: active `Get-PSDrive` UNC mappings plus persistent `HKCU:\Network\*` mappings, preserving letter/path pairs.
 - Default browser: the per-user `http` `UserChoice` ProgId.
 - Personalization: `HKCU` theme, DWM, accent, taskbar, search, mouse pointer style, Night light, desktop icon, visual-effect, DPI, per-monitor DPI, accessibility, and wallpaper values.

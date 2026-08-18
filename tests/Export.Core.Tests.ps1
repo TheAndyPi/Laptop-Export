@@ -95,16 +95,16 @@ Describe 'Chrome bookmark restoration' {
 }
 
 Describe 'Robocopy progress monitoring' {
-    It 'uses Robocopy completion events instead of rescanning active destinations' {
+    It 'uses a runspace-safe spinner instead of rescanning or async callbacks' {
         $core = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\03-core.ps1') -Raw
         $template = Get-LaptopExportSourceText -Group ImportTemplate
-        $core | Should Match 'BeginOutputReadLine'
-        $core | Should Match 'CompletedFiles'
-        $core | Should Match 'robocopyArgsForProgress'
-        $core | Should Match "'/NP', '/NFL'"
+        $core | Should Match 'Copying \$totalFiles files'
+        $core | Should Not Match 'BeginOutputReadLine'
+        $core | Should Not Match '\.add_OutputDataReceived'
         $core | Should Not Match 'Get-ChildItem \$Destination -Recurse -File'
-        $template | Should Match 'BeginOutputReadLine'
-        $template | Should Match 'CompletedFiles'
+        $template | Should Match 'Copying \$totalFiles files'
+        $template | Should Not Match 'BeginOutputReadLine'
+        $template | Should Not Match '\.add_OutputDataReceived'
         $template | Should Not Match 'Get-ChildItem \$Destination -Recurse -File'
     }
 }
@@ -121,6 +121,7 @@ Describe 'Settings presets and additional AppData' {
         $script:Config.Backup.AdditionalAppData | Should Be $false
         $script:SelectedAdditionalAppData.Count | Should Be 0
         $script:SettingsPreset | Should Be 'Basic'
+        $script:Config.Export.RequestAdministratorPrivileges | Should Be $false
     }
 
     It 'Advanced enables both advanced options' {
@@ -128,6 +129,7 @@ Describe 'Settings presets and additional AppData' {
         $script:Config.Backup.EntireUserProfile | Should Be $true
         $script:Config.Backup.AdditionalAppData | Should Be $true
         $script:SettingsPreset | Should Be 'Advanced'
+        $script:Config.Export.RequestAdministratorPrivileges | Should Be $false
     }
 
     It 'keeps only non-curated Local and Roaming folders as selectable candidates' {
@@ -223,7 +225,7 @@ Describe 'Advanced AppData size selection' {
 }
 
 Describe 'Deferred administrator elevation' {
-    It 'keeps export user-context capture separate from the scoped elevated helper' {
+    It 'keeps export user-context capture separate from the scoped elevated helper and makes admin optional' {
         $config = Import-PowerShellDataFile -LiteralPath (Join-Path $script:RepoRoot 'src\00-development-config.psd1')
         $core = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\03-core.ps1') -Raw
         $main = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\10-main.ps1') -Raw
@@ -231,16 +233,69 @@ Describe 'Deferred administrator elevation' {
         $template = Get-LaptopExportSourceText -Group ImportTemplate
         $config.Export.RequestAdministratorPrivileges | Should Be $false
         $config.Import.EnableAdminHelper | Should Be $true
-        $core | Should Match 'Run export as administrator'
+        $core | Should Match 'RECOMMENDED: Admin printer \+ power export'
+        $core | Should Match 'OFF by default'
         $core | Should Match 'Do not relaunch the whole exporter'
         $main | Should Match 'Start-ElevatedSystemExport'
         $printers | Should Match 'function Start-ElevatedSystemExport'
         $printers | Should Match 'PrintBRM and full power-plan capture'
-        $template | Should Match 'Requesting administrator approval for power settings and PrintBRM'
+        $printers | Should Match 'SystemExport\.json'
+        $printers | Should Match 'Publish-Artifact'
+        $printers | Should Match 'AdminExportResult\.json'
+        $printers | Should Match 'Administrator export is recommended, optional'
+        $printers | Should Match 'function Test-UacElevationCancelled'
+        $printers | Should Match 'ERROR_CANCELLED \(1223\)'
+        $printers | Should Match 'UAC elevation was cancelled\. The export will continue'
+        $template | Should Match 'function Write-SystemExportProvenanceSummary'
+        $template | Should Match 'captured with administrator rights'
+        $template | Should Match 'Administrator export is recommended for the most complete printer and power capture; it remains optional'
+        $template | Should Match 'Retry printers and power settings with administrator rights'
+        $template | Should Match 'Retry printers only with administrator rights'
+        $template | Should Match 'Retry power settings only with administrator rights'
         $template | Should Match 'function Invoke-StandardSystemRestoreFallback'
+        $template | Should Match 'function Test-AdminHelperElevationCancelled'
+        $template | Should Match 'Administrator \$scopeLabel import was requested, but UAC elevation was cancelled\. The import will continue'
+        $template | Should Match 'Add-Result -Category ''System Restore'' -Item "Elevated \$scopeLabel" -Status ''Error'''
         $template | Should Match 'AllowStandardUser'
-        $template | Should Match 'PrintBrmOnly'
+        $template | Should Match "ValidateSet\('Both', 'Printers', 'Power'\)"
         $template | Should Match 'power settings remain deferred'
+    }
+
+    It 'writes independent, durable provenance for standard and elevated artifact attempts' {
+        Reset-LaptopExportResults
+        $script:IsAdmin = $false
+        $script:Config.Export.RequestAdministratorPrivileges = $false
+        $package = Join-Path $TestDrive 'ProvenancePackage'
+        New-Item -ItemType Directory -Path $package -Force | Out-Null
+
+        Set-SystemExportProvenance -DestinationBase $package -Artifact Power -Attempted $true -CapturedWithAdministratorRights $false -Status Succeeded -Detail 'Standard-user power export succeeded.'
+        Set-SystemExportProvenance -DestinationBase $package -Artifact PrintBrm -Attempted $true -CapturedWithAdministratorRights $true -Status Succeeded -Detail 'Elevated PrintBRM export succeeded.'
+
+        $provenancePath = Join-Path $package 'Settings\SystemExport.json'
+        Test-Path -LiteralPath $provenancePath | Should Be $true
+        $provenance = Get-Content -LiteralPath $provenancePath -Raw | ConvertFrom-Json
+        $provenance.Power.Status | Should Be 'Succeeded'
+        $provenance.Power.CapturedWithAdministratorRights | Should Be $false
+        $provenance.PrintBrm.Status | Should Be 'Succeeded'
+        $provenance.PrintBrm.CapturedWithAdministratorRights | Should Be $true
+    }
+
+    It 'recognizes a cancelled requested UAC elevation for non-terminating error reporting' {
+        Test-UacElevationCancelled -Exception ([System.Exception]::new('The operation was canceled by the user.')) | Should Be $true
+        Test-UacElevationCancelled -Exception ([System.Exception]::new('PrintBRM helper exited with code 1.')) | Should Be $false
+    }
+}
+
+Describe 'Windows Settings power mode' {
+    It 'captures and restores the Power & battery Power mode through PowrProf' {
+        $settings = Get-LaptopExportSourceText -Group Settings
+        $template = Get-LaptopExportSourceText -Group ImportTemplate
+        $settings | Should Match 'function Get-WindowsPowerMode'
+        $settings | Should Match 'PowerGetActualOverlayScheme'
+        $settings | Should Match 'RequestedOverlayGuid'
+        $template | Should Match 'PowerSetActiveOverlayScheme\(Guid overlaySchemeGuid\)'
+        $template | Should Match 'PowerGetEffectiveOverlayScheme'
+        $template | Should Match 'Windows power mode'
     }
 }
 
@@ -298,6 +353,31 @@ Describe 'Generated package artifacts' {
         $errors.Count | Should Be 0
     }
 
+    It 'generates an administrator import helper that parses successfully' {
+        New-AdminImportScript -DestinationBase $script:Package
+        $helperPath = Join-Path $script:Package 'Import-SystemSettings.ps1'
+        $tokens = $null
+        $errors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($helperPath, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should Be 0
+    }
+
+    It 'keeps the generated export helper syntactically valid after placeholder replacement' {
+        $printerSource = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\06-printers.ps1') -Raw
+        $startToken = "`$helperScript = @'"
+        $start = $printerSource.IndexOf($startToken, [StringComparison]::Ordinal)
+        $start | Should BeGreaterThan -1
+        $helperStart = $start + $startToken.Length
+        if ($printerSource.Substring($helperStart, 2) -eq "`r`n") { $helperStart += 2 } elseif ($printerSource[$helperStart] -eq "`n") { $helperStart++ }
+        $end = $printerSource.IndexOf("'@", $helperStart, [StringComparison]::Ordinal)
+        $end | Should BeGreaterThan $helperStart
+        $helperText = $printerSource.Substring($helperStart, $end - $helperStart) -replace '\{INCLUDE_DRIVERS\}', 'true'
+        $tokens = $null
+        $errors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseInput($helperText, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should Be 0
+    }
+
     It 'HTML-encodes untrusted result details in the report' {
         Add-Result -Category 'Test' -Item 'Completed first' -Status 'Success' -Details 'Completed'
         Add-Result -Category 'Test' -Item 'Skipped second' -Status 'Skipped' -Details 'Needs review'
@@ -334,6 +414,17 @@ Describe 'Generated package artifacts' {
         (Get-Content -LiteralPath $template -Raw) | Should Match '{{APP_MIGRATION_SECTION}}'
         (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\09-report.ps1') -Raw) | Should Match 'Get-TransferReportTemplate'
     }
+
+    It 'keeps import report counts and attention rows on the same importer ledger' {
+        $template = Get-LaptopExportSourceText -Group ImportTemplate
+        $reportTemplate = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\TransferReport.template.html') -Raw
+        $template | Should Match 'function Get-ImportResultCounts'
+        $template | Should Match 'function Get-ImportAttentionActions'
+        $template | Should Match "-Marker 'TRANSFER_SUMMARY'"
+        $template | Should Match 'Post-transfer items needing attention'
+        $template | Should Match '\$attention = Get-ImportAttentionActions'
+        $reportTemplate | Should Match '<!-- TRANSFER_SUMMARY -->'
+    }
 }
 
 Describe 'Generated importer TestMode' {
@@ -350,6 +441,13 @@ Describe 'Generated importer TestMode' {
         @{ MappedDrives = @(@{ Letter = 'Z'; Path = '\\test-server\transfer-share' }) } |
             ConvertTo-Json -Depth 3 |
             Set-Content -LiteralPath (Join-Path $script:Package 'Settings\SystemSettings.json') -Encoding UTF8
+        @{
+            SchemaVersion = 1
+            Power = @{ Attempted = $true; CapturedWithAdministratorRights = $false; Status = 'Succeeded'; Detail = 'Standard-user power export succeeded.' }
+            PrintBrm = @{ Attempted = $true; CapturedWithAdministratorRights = $true; Status = 'Succeeded'; Detail = 'Elevated PrintBRM export succeeded.' }
+        } |
+            ConvertTo-Json -Depth 4 |
+            Set-Content -LiteralPath (Join-Path $script:Package 'Settings\SystemExport.json') -Encoding UTF8
         @{ Pins = @(@{ Name = 'Example.lnk'; TargetPath = 'C:\Missing\Example.exe'; Ordinal = 1 }) } |
             ConvertTo-Json -Depth 3 |
             Set-Content -LiteralPath (Join-Path $script:Package 'Settings\TaskbarLayout.json') -Encoding UTF8
@@ -378,6 +476,9 @@ Describe 'Generated importer TestMode' {
 
         $LASTEXITCODE | Should Be 0
         $output | Should Match 'TEST MODE - No changes will be made'
+        $output | Should Match 'Full power plan: captured without administrator rights'
+        $output | Should Match 'PrintBRM printer package: captured with administrator rights'
+        $output | Should Match 'Administrator export is recommended for the most complete printer and power capture; it remains optional'
         Test-Path -LiteralPath $targetMarker | Should Be $false
         (Get-FileHash -LiteralPath $sourcePayload -Algorithm SHA256).Hash | Should Be $sourceHashBefore
         Test-Path -LiteralPath (Join-Path $script:Package 'Logs\AdminImportResult.json') | Should Be $true
@@ -443,12 +544,30 @@ Describe 'Application migration review implementation' {
         $template | Should Match 'Application comparison unavailable'
         $template | Should Match 'Test-UserFacingProgram'
         $template | Should Match 'AppComparisonExcludePatterns'
+        $template | Should Match '\$publisher -match \$individualPattern'
+        $template | Should Match 'Please confirm which apps you would like to install on the new device\.'
+        $template | Should Match 'Windows-related AppData folders are excluded from this review'
+        $template | Should Match 'FilteredAppDataCandidates'
         $template | Should Match '& \$encode \(\[string\]\$_\.DisplayName\)'
         $template | Should Match 'DESTINATION_COMPUTER'
         $template | Should Match 'IMPORT_APP_COMPARISON'
         $template | Should Match 'AppDataCandidates = @\(\)'
         $template | Should Match 'AppData migration review'
         $template | Should Not Match "Start-Process \(Join-Path \$logsPath 'AppMigrationReview\\.html'\)"
+    }
+
+    It 'excludes managed application families from the post-transfer apps list' {
+        $config = Import-PowerShellDataFile -LiteralPath (Join-Path $script:RepoRoot 'src\00-development-config.psd1')
+        $template = Get-LaptopExportSourceText -Group ImportTemplate
+        $patterns = $config.Import.AppComparisonExcludePatterns -join "`n"
+        $patterns | Should Match '\\bAdobe\\b'
+        $patterns | Should Match '\\bClickShare\\b'
+        $patterns | Should Match '\\bLenovo\\b'
+        $patterns | Should Match '\\bMicrosoft\\b'
+        $patterns | Should Match '\\bWindows\\b'
+        $template | Should Match '\\b\(\?:Adobe\|ClickShare\|Lenovo\|Microsoft\|Windows\)\\b'
+        $template | Should Match 'app\(s\) need installation'
+        $template | Should Match 'Please confirm which apps you would like to install on the new device\.'
     }
 }
 

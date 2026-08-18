@@ -19,7 +19,7 @@
     The username to export. Used when running elevated to preserve original user context.
 
 .NOTES
-    Version: 0.6
+    Version: 1.0
     Author: STO IT
     Run as: The user being transferred (IT admin logged in as user)
 #>

@@ -43,14 +43,16 @@
         EnableAdminHelper = $true
         AppComparison = $true
         AppDataReview = $true
-        # These technical uninstall entries are excluded from the user-facing
-        # missing-app report. Add patterns here when a new managed runtime or
-        # driver should not become a handoff action.
+        # These technical and managed uninstall entries are excluded from the
+        # user-facing missing-app report. Adobe, ClickShare, Lenovo, Microsoft,
+        # and Windows-related apps are handled through standard imaging and
+        # post-transfer configuration, rather than as handoff actions.
         AppComparisonExcludePatterns = @(
             '^Microsoft Visual C\+\+', '^Microsoft \.NET', '^Microsoft Windows Desktop Runtime', '^Microsoft ASP\.NET Core',
             '^Microsoft Edge( WebView2 Runtime| Update)?$', '^Microsoft Update Health Tools', '^Microsoft OneDrive',
             '^Microsoft Teams Meeting Add-in', '^Windows (Desktop Runtime|Software Development Kit)', '^KB\d+',
-            'Driver', 'Firmware', 'Lenovo (System Update|Vantage Service|USB|LAN|Dock)', 'Intel.*(Driver|Component)',
+            '\bAdobe\b', '\bClickShare\b', '\bLenovo\b', '\bMicrosoft\b', '\bWindows\b',
+            'Driver', 'Firmware', 'Intel.*(Driver|Component)',
             'Realtek.*(Driver|Audio)', 'NVIDIA.*(Driver|FrameView)', 'AMD.*(Driver|Software)'
         )
 
@@ -83,8 +85,9 @@
     }
 
     Export = @{
-        # When enabled, request UAC approval after the technician confirms
-        # Transfer Settings. It is off by default to avoid an early prompt.
+        # RECOMMENDED for a complete PrintBRM package and full power-plan file.
+        # When enabled, request UAC only after normal user-context export is
+        # complete. It is off by default for both Basic and Advanced presets.
         RequestAdministratorPrivileges = $false
     }
 

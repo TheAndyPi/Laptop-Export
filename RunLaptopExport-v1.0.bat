@@ -5,7 +5,7 @@
 setlocal
 
 set "SCRIPT_DIR=%~dp0"
-set "SCRIPT_PATH=%SCRIPT_DIR%Export-LaptopData-v0.9.ps1"
+set "SCRIPT_PATH=%SCRIPT_DIR%Export-LaptopData-v1.0.ps1"
 set "TEMP_PATH=%SCRIPT_PATH%.download"
 set "SCRIPT_URL=https://raw.githubusercontent.com/TheAndyPi/Laptop-Export/PrototypeSuperUnstable/Export-LaptopData.ps1"
 
