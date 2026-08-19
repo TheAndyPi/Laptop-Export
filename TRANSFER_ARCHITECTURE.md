@@ -1,6 +1,13 @@
 # Laptop Transfer Architecture
 
-This document is the end-to-end technical guide for the STO Building Group laptop transfer tool. It is written for developers maintaining or extending the codebase, not for technicians performing a normal transfer.
+This document is the high-level technical guide for the STO Building Group laptop transfer tool. It is written for developers and engineers maintaining or extending the codebase.
+
+> [!TIP]
+> **Complete Technical Documentation Suite:**
+> - 🔬 **[Exhaustive Technical Architecture & Deep Dive](docs/TECHNICAL_DEEP_DIVE.md)** — Stage-by-stage Windows OS internals, P/Invoke, COM interfaces, and Robocopy math.
+> - 📊 **[Version Comparison & Lineage Matrix](docs/VERSION_COMPARISON.md)** — Detailed 26-dimension comparison of v0.7, v0.8, v0.9, and v1.0.
+> - 📖 **[IT Technician Field Guide & SOP](docs/IT_TECHNICIAN_GUIDE.md)** — Standard operating procedure and technician checklists.
+> - 🔍 **[Comprehensive Troubleshooting Guide](docs/TROUBLESHOOTING.md)** — Diagnostic decision tree and remediation procedures.
 
 The tool is a PowerShell 5.1 application that runs on the old Windows laptop, builds a portable transfer package, and emits the scripts and evidence needed to restore that package on the replacement laptop.
 
