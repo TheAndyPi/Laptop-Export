@@ -650,7 +650,7 @@ function Show-TransferSettingsMenu {
                 Write-Host "  SETTINGS PRESET: $($Script:SettingsPreset.ToUpper()) " -ForegroundColor $presetStyle.Foreground -BackgroundColor $presetStyle.Background -NoNewline
                 Write-Host "  [B] Basic  [V] Advanced" -ForegroundColor Cyan
                 Write-Host "  Basic disables full-profile transfer and extra AppData selection; Advanced enables both." -ForegroundColor DarkGray
-                Write-Host "  Folder-size estimate shown below is refreshed before copying, not when toggles change." -ForegroundColor DarkGray
+                Write-Host "  Estimated sizes update as you change settings; unfinished folder scans show calculating..." -ForegroundColor DarkGray
                 Write-Host ''
             }
 
@@ -674,6 +674,7 @@ function Show-TransferSettingsMenu {
         }
 
         Write-Host ""
+        Write-KeyValue 'Estimated total' $(if ($null -eq $estimate) { 'Calculating in background...' } else { Format-FileSize $estimate.TotalBytes })
         $advancedHint = if ($Script:Config.TransferMode -eq 'Online') { '; [A] Advanced Online Controls' } else { '' }
         Write-Host "  Select a number to toggle it; [B] Basic; [V] Advanced$advancedHint; [R] Refresh; select Online payload limit to enter a GB value." -ForegroundColor Gray
         Write-Host "  Select Chrome to cycle its three backup modes." -ForegroundColor DarkGray

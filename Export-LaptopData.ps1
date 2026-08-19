@@ -1102,7 +1102,7 @@ function Show-TransferSettingsMenu {
                 Write-Host "  SETTINGS PRESET: $($Script:SettingsPreset.ToUpper()) " -ForegroundColor $presetStyle.Foreground -BackgroundColor $presetStyle.Background -NoNewline
                 Write-Host "  [B] Basic  [V] Advanced" -ForegroundColor Cyan
                 Write-Host "  Basic disables full-profile transfer and extra AppData selection; Advanced enables both." -ForegroundColor DarkGray
-                Write-Host "  Folder-size estimate shown below is refreshed before copying, not when toggles change." -ForegroundColor DarkGray
+                Write-Host "  Estimated sizes update as you change settings; unfinished folder scans show calculating..." -ForegroundColor DarkGray
                 Write-Host ''
             }
 
@@ -1126,6 +1126,7 @@ function Show-TransferSettingsMenu {
         }
 
         Write-Host ""
+        Write-KeyValue 'Estimated total' $(if ($null -eq $estimate) { 'Calculating in background...' } else { Format-FileSize $estimate.TotalBytes })
         $advancedHint = if ($Script:Config.TransferMode -eq 'Online') { '; [A] Advanced Online Controls' } else { '' }
         Write-Host "  Select a number to toggle it; [B] Basic; [V] Advanced$advancedHint; [R] Refresh; select Online payload limit to enter a GB value." -ForegroundColor Gray
         Write-Host "  Select Chrome to cycle its three backup modes." -ForegroundColor DarkGray
@@ -1998,9 +1999,12 @@ function Update-AdvancedPayloadEstimate {
     # Recalculate all display rows from the completed inventory cache. This is
     # still a zero-I/O refresh, but it prevents toggles such as Chrome
     # FullProfile or Downloads from leaving the final estimate stale.
-    if ($null -eq $Script:StartupPayloadEstimate) { return }
+    # A background scan can return results incrementally.  Refresh from the
+    # partial display estimate too, otherwise settings changed before the job
+    # completes leave the overview showing the old payload until completion.
+    if ($null -eq $Script:StartupPayloadEstimate -and $null -eq $Script:TransferSizeDisplayEstimate) { return }
     $estimate = Get-TransferSizeDisplayEstimate
-    $Script:StartupPayloadEstimate = $estimate
+    if ($null -ne $Script:StartupPayloadEstimate) { $Script:StartupPayloadEstimate = $estimate }
     $Script:TransferSizeDisplayEstimate = $estimate
 }
 
@@ -3982,6 +3986,29 @@ function Test-UacElevationCancelled {
     catch { return $false }
 }
 
+function Resolve-ElevatedPackagePath {
+    # A filtered UAC token commonly cannot see the user's mapped drive letters.
+    # Convert only mapped network drives to their UNC provider path; local,
+    # removable, and already-UNC destinations remain exactly as selected.
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try { $resolvedPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).ProviderPath }
+    catch { return $Path }
+    if ($resolvedPath -notmatch '^[A-Za-z]:\\') { return $resolvedPath }
+
+    try {
+        $driveId = $resolvedPath.Substring(0, 2)
+        $logicalDrive = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$driveId'" -ErrorAction Stop
+        if ($logicalDrive.DriveType -eq 4 -and $logicalDrive.ProviderName) {
+            $relativePath = $resolvedPath.Substring(2).TrimStart('\\')
+            if ($relativePath) { return (Join-Path $logicalDrive.ProviderName $relativePath) }
+            return $logicalDrive.ProviderName
+        }
+    }
+    catch { }
+    return $resolvedPath
+}
+
 function Start-ElevatedSystemExport {
     param([string]$DestinationBase)
 
@@ -3993,20 +4020,43 @@ function Start-ElevatedSystemExport {
     # user-data capture routines, so profile-scoped data remains normal-user.
     $logsPath = Join-Path $DestinationBase 'Logs'
     if (-not (Test-Path -LiteralPath $logsPath)) { New-Item -ItemType Directory -Path $logsPath -Force | Out-Null }
-    $helperPath = Join-Path $logsPath 'Export-SystemSettings.elevated.ps1'
+    # Do not launch the UAC process from the transfer destination. Elevated
+    # tokens often cannot see a mapped/network destination drive, which means
+    # PowerShell can fail before this helper gets a chance to create its log.
+    # Use Public Documents rather than the current user's Temp folder: a UAC
+    # credential prompt can run under a different administrator account that
+    # has no access to the standard user's profile. The package path is still
+    # passed separately so the helper remains scoped to this completed export.
+    $elevationStagingPath = Join-Path $env:PUBLIC 'Documents\STOBG-LaptopExport'
+    New-Item -ItemType Directory -Path $elevationStagingPath -Force -ErrorAction Stop | Out-Null
+    $helperPath = Join-Path $elevationStagingPath "Export-SystemSettings.$([guid]::NewGuid().ToString('N')).ps1"
+    $startupDiagnosticPath = Join-Path $elevationStagingPath "Export-SystemSettings.$([guid]::NewGuid().ToString('N')).startup.log"
+    $elevatedPackagePath = Resolve-ElevatedPackagePath -Path $DestinationBase
     $helperScript = @'
 #Requires -Version 5.1
 param(
     [Parameter(Mandatory = $true)][string]$PackagePath,
     [bool]$CapturePower = $true,
-    [bool]$CapturePrinters = $true
+    [bool]$CapturePrinters = $true,
+    [string]$StartupDiagnosticPath
 )
 $ErrorActionPreference = 'Continue'
-$logsPath = Join-Path $PackagePath 'Logs'
-$settingsPath = Join-Path $PackagePath 'Settings'
-$printersPath = Join-Path $PackagePath 'Printers'
-New-Item -ItemType Directory -Path $logsPath -Force | Out-Null
-$logPath = Join-Path $logsPath 'AdminExportLog.txt'
+function Write-StartupDiagnostic([string]$Message) {
+    if (-not $StartupDiagnosticPath) { return }
+    try { Add-Content -LiteralPath $StartupDiagnosticPath -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message" -ErrorAction Stop } catch { }
+}
+try {
+    $logsPath = Join-Path $PackagePath 'Logs'
+    $settingsPath = Join-Path $PackagePath 'Settings'
+    $printersPath = Join-Path $PackagePath 'Printers'
+    New-Item -ItemType Directory -Path $logsPath -Force -ErrorAction Stop | Out-Null
+    $logPath = Join-Path $logsPath 'AdminExportLog.txt'
+    Write-StartupDiagnostic "Administrator helper initialized for package: $PackagePath"
+}
+catch {
+    Write-StartupDiagnostic "Administrator helper could not access the package path '$PackagePath': $($_.Exception.Message)"
+    exit 2
+}
 function Write-Audit([string]$Message) { Add-Content -LiteralPath $logPath -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message" }
 function Save-JsonAtomically([string]$Path, [object]$Data) {
     $folder = Split-Path -Parent $Path
@@ -4184,9 +4234,18 @@ exit $(if ($failed) { 1 } else { 0 })
     try {
         $scopeLabel = switch ("$capturePower/$capturePrinters") { 'True/True' { 'PrintBRM and full power-plan capture' }; 'True/False' { 'full power-plan capture' }; default { 'PrintBRM capture' } }
         Write-Host "    Requesting administrator approval for $scopeLabel..." -ForegroundColor Cyan
-        $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`" -PackagePath `"$DestinationBase`" -CapturePower:$($capturePower.ToString().ToLowerInvariant()) -CapturePrinters:$($capturePrinters.ToString().ToLowerInvariant())"
+        $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`" -PackagePath `"$elevatedPackagePath`" -CapturePower:$($capturePower.ToString().ToLowerInvariant()) -CapturePrinters:$($capturePrinters.ToString().ToLowerInvariant()) -StartupDiagnosticPath `"$startupDiagnosticPath`""
         $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList $arguments -ErrorAction Stop
-        if ($process.ExitCode -ne 0) { throw "Elevated helper exited with code $($process.ExitCode). Review Logs\\AdminExportLog.txt." }
+        if ($process.ExitCode -ne 0) {
+            $startupDiagnostic = if (Test-Path -LiteralPath $startupDiagnosticPath) { (Get-Content -LiteralPath $startupDiagnosticPath -Raw -ErrorAction SilentlyContinue).Trim() } else { $null }
+            $diagnosticSuffix = if ($startupDiagnostic) {
+                " Startup diagnostic: $startupDiagnostic"
+            }
+            else {
+                ' The helper did not reach package logging; this usually means elevation could not access the package path or Windows blocked the helper before startup.'
+            }
+            throw "Elevated helper exited with code $($process.ExitCode).$diagnosticSuffix"
+        }
         if ($capturePower) { Add-Result -Category 'Settings' -Item 'Power Scheme (elevated)' -Status 'Success' -Details 'Complete plan captured by scoped elevated helper' }
         if ($capturePrinters) {
             Add-Result -Category 'Printers' -Item 'Printer Migration File (elevated)' -Status 'Success' -Details 'Created by scoped elevated helper; see printbrm_backup_elevated.log'
@@ -4210,7 +4269,10 @@ exit $(if ($failed) { 1 } else { 0 })
             Add-Result -Category 'System Export' -Item "Elevated $scopeLabel" -Status 'Warning' -Details $_.Exception.Message
         }
     }
-    finally { Remove-Item -LiteralPath $helperPath -Force -ErrorAction SilentlyContinue }
+    finally {
+        Remove-Item -LiteralPath $helperPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $startupDiagnosticPath -Force -ErrorAction SilentlyContinue
+    }
 }
 # ============================================================================
 # BROWSER DATA

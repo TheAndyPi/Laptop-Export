@@ -542,9 +542,12 @@ function Update-AdvancedPayloadEstimate {
     # Recalculate all display rows from the completed inventory cache. This is
     # still a zero-I/O refresh, but it prevents toggles such as Chrome
     # FullProfile or Downloads from leaving the final estimate stale.
-    if ($null -eq $Script:StartupPayloadEstimate) { return }
+    # A background scan can return results incrementally.  Refresh from the
+    # partial display estimate too, otherwise settings changed before the job
+    # completes leave the overview showing the old payload until completion.
+    if ($null -eq $Script:StartupPayloadEstimate -and $null -eq $Script:TransferSizeDisplayEstimate) { return }
     $estimate = Get-TransferSizeDisplayEstimate
-    $Script:StartupPayloadEstimate = $estimate
+    if ($null -ne $Script:StartupPayloadEstimate) { $Script:StartupPayloadEstimate = $estimate }
     $Script:TransferSizeDisplayEstimate = $estimate
 }
 

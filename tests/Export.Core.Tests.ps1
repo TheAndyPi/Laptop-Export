@@ -51,6 +51,21 @@ Describe 'Online payload estimation' {
         $estimate.TotalBytes | Should Be 2048
     }
 
+    It 'refreshes a partial display estimate after a settings change' {
+        $downloadsPath = Join-Path $script:OriginalUserProfile 'Downloads'
+        $script:FolderInventoryCache = @{
+            ($downloadsPath.TrimEnd([char]92)) = [PSCustomObject]@{ FileCount = 1; Bytes = 2048 }
+        }
+        $script:StartupPayloadEstimate = $null
+        $script:TransferSizeDisplayEstimate = Get-TransferSizeDisplayEstimate
+
+        $script:Config.Backup.Downloads = $false
+        Update-AdvancedPayloadEstimate
+
+        $script:TransferSizeDisplayEstimate.TotalBytes | Should Be 0
+        $script:StartupPayloadEstimate | Should BeNullOrEmpty
+    }
+
     It 'retains the Downloads-cap override as a runtime setting' {
         $core = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\03-core.ps1') -Raw
         $userData = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\05-user-data.ps1') -Raw
