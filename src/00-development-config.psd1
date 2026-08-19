@@ -85,9 +85,8 @@
     }
 
     Export = @{
-        # RECOMMENDED for a complete PrintBRM package and full power-plan file.
-        # When enabled, request UAC only after normal user-context export is
-        # complete. It is off by default for both Basic and Advanced presets.
+        # Request UAC only when the technician explicitly enables it. This
+        # keeps the normal export entirely in the signed-in user's context.
         RequestAdministratorPrivileges = $false
     }
 

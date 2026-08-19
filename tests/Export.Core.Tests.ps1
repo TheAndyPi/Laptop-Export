@@ -240,7 +240,7 @@ Describe 'Advanced AppData size selection' {
 }
 
 Describe 'Deferred administrator elevation' {
-    It 'keeps export user-context capture separate from the scoped elevated helper and makes admin optional' {
+    It 'keeps export user-context capture separate from the scoped elevated helper and makes system capture opt-in' {
         $config = Import-PowerShellDataFile -LiteralPath (Join-Path $script:RepoRoot 'src\00-development-config.psd1')
         $core = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\03-core.ps1') -Raw
         $main = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\10-main.ps1') -Raw
@@ -248,10 +248,12 @@ Describe 'Deferred administrator elevation' {
         $template = Get-LaptopExportSourceText -Group ImportTemplate
         $config.Export.RequestAdministratorPrivileges | Should Be $false
         $config.Import.EnableAdminHelper | Should Be $true
-        $core | Should Match 'RECOMMENDED: Admin printer \+ power export'
+        $core | Should Match 'ALPHA: UAC printer \+ power export'
         $core | Should Match 'OFF by default'
         $core | Should Match 'Do not relaunch the whole exporter'
         $main | Should Match 'Start-ElevatedSystemExport'
+        $main | Should Match 'New-AdminImportScript -DestinationBase \$transferBase'
+        $main | Should Match 'Import package verification'
         $printers | Should Match 'function Start-ElevatedSystemExport'
         $printers | Should Match 'PrintBRM and full power-plan capture'
         $printers | Should Match 'SystemExport\.json'
@@ -263,7 +265,7 @@ Describe 'Deferred administrator elevation' {
         $printers | Should Match 'UAC elevation was cancelled\. The export will continue'
         $template | Should Match 'function Write-SystemExportProvenanceSummary'
         $template | Should Match 'captured with administrator rights'
-        $template | Should Match 'Administrator export is recommended for the most complete printer and power capture; it remains optional'
+        $template | Should Match 'Administrator printer and power restore is an Alpha feature'
         $template | Should Match 'Retry printers and power settings with administrator rights'
         $template | Should Match 'Retry printers only with administrator rights'
         $template | Should Match 'Retry power settings only with administrator rights'
@@ -375,6 +377,21 @@ Describe 'Generated package artifacts' {
         $errors = $null
         [void][System.Management.Automation.Language.Parser]::ParseFile($helperPath, [ref]$tokens, [ref]$errors)
         $errors.Count | Should Be 0
+    }
+
+    It 'always creates the administrator helper, including settings-free packages' {
+        $originalSystemSettings = $script:Config.Backup.SystemSettings
+        $originalPrinters = $script:Config.Backup.Printers
+        try {
+            $script:Config.Backup.SystemSettings = $false
+            $script:Config.Backup.Printers = $false
+            New-AdminImportScript -DestinationBase $script:Package
+            Test-Path -LiteralPath (Join-Path $script:Package 'Import-SystemSettings.ps1') -PathType Leaf | Should Be $true
+        }
+        finally {
+            $script:Config.Backup.SystemSettings = $originalSystemSettings
+            $script:Config.Backup.Printers = $originalPrinters
+        }
     }
 
     It 'keeps the generated export helper syntactically valid after placeholder replacement' {
@@ -493,7 +510,7 @@ Describe 'Generated importer TestMode' {
         $output | Should Match 'TEST MODE - No changes will be made'
         $output | Should Match 'Full power plan: captured without administrator rights'
         $output | Should Match 'PrintBRM printer package: captured with administrator rights'
-        $output | Should Match 'Administrator export is recommended for the most complete printer and power capture; it remains optional'
+        $output | Should Match 'Administrator printer and power restore is an Alpha feature'
         Test-Path -LiteralPath $targetMarker | Should Be $false
         (Get-FileHash -LiteralPath $sourcePayload -Algorithm SHA256).Hash | Should Be $sourceHashBefore
         Test-Path -LiteralPath (Join-Path $script:Package 'Logs\AdminImportResult.json') | Should Be $true

@@ -79,13 +79,13 @@ flowchart TD
 
 #### Banner: *"INCOMPLETE EXPORT: ADMIN-ONLY ITEMS WERE NOT CAPTURED"* in Report
 - **Symptom:** The HTML report displays a prominent red banner stating admin rights were required.
-- **Root Cause:** The export was run with **Admin printer + power export** toggle turned `OFF` (the default setting), or the technician clicked "No" on the final UAC prompt.
+- **Root Cause:** The export was run with **Admin printer + power export** turned `OFF` (the default setting), or the technician clicked "No" on the final UAC prompt.
 - **Impact Assessment:**
   - **Is data lost?** **NO.** 100% of user files (Desktop, Documents, Downloads, Favorites, Pictures), curated AppData (Bluebeam, Outlook signatures, Quick Access, Lotus Notes), browser bookmarks/profiles, taskbar pins, dark mode/themes, and network printer connections were captured completely as the standard user.
   - **What was omitted?** Only the full binary active power scheme file (`PowerScheme.pow`) and local USB/direct-IP printer queues via `PrintBrm.exe`.
 - **Resolution:**
   - In 98% of corporate laptop migrations, standard-user capture is completely sufficient because the destination laptop receives the corporate standard power plan and network printers automatically.
-  - If the user has custom local desktop USB label printers or specialized power plan timeouts, run the export again, toggle **RECOMMENDED: Admin printer + power export** to `ON`, and approve the UAC prompt at completion.
+  - Re-run the export with **Admin printer + power export** set to `ON` and approve the UAC prompt at completion.
 
 ---
 

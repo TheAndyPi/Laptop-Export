@@ -604,7 +604,7 @@ function Show-TransferSettingsMenu {
         @{ Section = "Backup"; Key = "OneDrive";          Label = "OneDrive";           Detail = "Offline file availability check" }
         @{ Section = "Backup"; Key = "TaskbarLayout";     Label = "Taskbar layout";     Detail = "Pinned app shortcuts and taskbar layout" }
         @{ Section = "Backup"; Key = "DefaultApps";       Label = "Default apps";       Detail = "File and protocol default-app inventory" }
-        @{ Section = "Export"; Key = "RequestAdministratorPrivileges"; Label = "RECOMMENDED: Admin printer + power export"; Detail = "OFF by default; at the end, UAC retries only PrintBRM and the full power plan" }
+        @{ Section = "Export"; Key = "RequestAdministratorPrivileges"; Label = "ALPHA: UAC printer + power export"; Detail = "OFF by default; may fall back to the standard-user attempt" }
         @{ Section = "Import"; Key = "LotusNotes";        Label = "Import Lotus Notes"; Detail = "Restore exported Lotus local data on the new laptop" }
         @{ Section = "Import"; Key = "DeletePrintBrmAfterImport"; Label = "Delete PrintBRM after import"; Detail = "Remove the printer package after a successful restore" }
         @{ Section = "Import"; Key = "AppComparison"; Label = "Compare installed apps"; Detail = "Compare old and new PC installed-program inventories" }
@@ -632,7 +632,7 @@ function Show-TransferSettingsMenu {
             $setting = $settings[$index]
             if ($index -eq 16) {
                 Write-Section "Export settings"
-                Write-Host "  RECOMMENDED: Enable the next setting when you can approve UAC. It improves PrintBRM and full power-plan capture; all other export work stays as the signed-in user." -ForegroundColor Yellow
+                Write-Host "  ALPHA: The next setting requests UAC for printer and power capture. It can fall back to the standard-user attempt." -ForegroundColor Yellow
             }
             if ($index -eq 17) {
                 Write-Section "Generated import settings"
@@ -678,7 +678,7 @@ function Show-TransferSettingsMenu {
         $advancedHint = if ($Script:Config.TransferMode -eq 'Online') { '; [A] Advanced Online Controls' } else { '' }
         Write-Host "  Select a number to toggle it; [B] Basic; [V] Advanced$advancedHint; [R] Refresh; select Online payload limit to enter a GB value." -ForegroundColor Gray
         Write-Host "  Select Chrome to cycle its three backup modes." -ForegroundColor DarkGray
-        Write-Host "  The recommended printer + power admin retry is OFF by default and requests UAC only at the end of export." -ForegroundColor DarkGray
+        Write-Host "  The Alpha UAC printer + power capture is OFF by default and may fall back to the standard-user attempt." -ForegroundColor DarkGray
         Write-Host "  ZIP archives are optional for Local transfers and enabled by default for Online transfers." -ForegroundColor DarkGray
         Write-Host "  Import settings are written into the transfer package's generated import script." -ForegroundColor DarkGray
 

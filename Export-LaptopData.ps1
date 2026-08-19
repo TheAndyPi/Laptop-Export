@@ -202,9 +202,8 @@ $Script:DevelopmentConfig = @{
     }
 
     Export = @{
-        # RECOMMENDED for a complete PrintBRM package and full power-plan file.
-        # When enabled, request UAC only after normal user-context export is
-        # complete. It is off by default for both Basic and Advanced presets.
+        # Request UAC only when the technician explicitly enables it. This
+        # keeps the normal export entirely in the signed-in user's context.
         RequestAdministratorPrivileges = $false
     }
 
@@ -1056,7 +1055,7 @@ function Show-TransferSettingsMenu {
         @{ Section = "Backup"; Key = "OneDrive";          Label = "OneDrive";           Detail = "Offline file availability check" }
         @{ Section = "Backup"; Key = "TaskbarLayout";     Label = "Taskbar layout";     Detail = "Pinned app shortcuts and taskbar layout" }
         @{ Section = "Backup"; Key = "DefaultApps";       Label = "Default apps";       Detail = "File and protocol default-app inventory" }
-        @{ Section = "Export"; Key = "RequestAdministratorPrivileges"; Label = "RECOMMENDED: Admin printer + power export"; Detail = "OFF by default; at the end, UAC retries only PrintBRM and the full power plan" }
+        @{ Section = "Export"; Key = "RequestAdministratorPrivileges"; Label = "ALPHA: UAC printer + power export"; Detail = "OFF by default; may fall back to the standard-user attempt" }
         @{ Section = "Import"; Key = "LotusNotes";        Label = "Import Lotus Notes"; Detail = "Restore exported Lotus local data on the new laptop" }
         @{ Section = "Import"; Key = "DeletePrintBrmAfterImport"; Label = "Delete PrintBRM after import"; Detail = "Remove the printer package after a successful restore" }
         @{ Section = "Import"; Key = "AppComparison"; Label = "Compare installed apps"; Detail = "Compare old and new PC installed-program inventories" }
@@ -1084,7 +1083,7 @@ function Show-TransferSettingsMenu {
             $setting = $settings[$index]
             if ($index -eq 16) {
                 Write-Section "Export settings"
-                Write-Host "  RECOMMENDED: Enable the next setting when you can approve UAC. It improves PrintBRM and full power-plan capture; all other export work stays as the signed-in user." -ForegroundColor Yellow
+                Write-Host "  ALPHA: The next setting requests UAC for printer and power capture. It can fall back to the standard-user attempt." -ForegroundColor Yellow
             }
             if ($index -eq 17) {
                 Write-Section "Generated import settings"
@@ -1130,7 +1129,7 @@ function Show-TransferSettingsMenu {
         $advancedHint = if ($Script:Config.TransferMode -eq 'Online') { '; [A] Advanced Online Controls' } else { '' }
         Write-Host "  Select a number to toggle it; [B] Basic; [V] Advanced$advancedHint; [R] Refresh; select Online payload limit to enter a GB value." -ForegroundColor Gray
         Write-Host "  Select Chrome to cycle its three backup modes." -ForegroundColor DarkGray
-        Write-Host "  The recommended printer + power admin retry is OFF by default and requests UAC only at the end of export." -ForegroundColor DarkGray
+        Write-Host "  The Alpha UAC printer + power capture is OFF by default and may fall back to the standard-user attempt." -ForegroundColor DarkGray
         Write-Host "  ZIP archives are optional for Local transfers and enabled by default for Online transfers." -ForegroundColor DarkGray
         Write-Host "  Import settings are written into the transfer package's generated import script." -ForegroundColor DarkGray
 
@@ -7603,7 +7602,7 @@ function Write-SystemExportProvenanceSummary {
         $detail = if ($provenance.Detail) { " - $($provenance.Detail)" } else { '' }
         Write-Host "  $($entry.Label): $captureContext$detail" -ForegroundColor DarkCyan
     }
-    Write-Host '  Administrator export is recommended for the most complete printer and power capture; it remains optional.' -ForegroundColor Yellow
+    Write-Host '  Administrator printer and power restore is an Alpha feature; it remains optional and can fall back to the standard-user attempt.' -ForegroundColor Yellow
     Write-Host ''
 }
 
@@ -8350,6 +8349,12 @@ function Start-LaptopExport {
     }
     
     Write-Log "Transfer folder created at $transferBase" -Level Success
+
+    Write-Section 'Alpha feature warning'
+    $alphaUacState = if ($Script:Config.Export.RequestAdministratorPrivileges) { 'enabled for this transfer' } else { 'disabled for this transfer' }
+    Write-Status 'UAC printer + power export' 'WARN' "ALPHA; $alphaUacState"
+    Write-Host '  Even when enabled and approved, this capture may fall back to the standard-user attempt.' -ForegroundColor Yellow
+    Write-Host '  Verify printer and power results in the transfer report before retiring the source laptop.' -ForegroundColor DarkGray
     
     # Execute export tasks
     Write-Banner -Title "Starting Export Process ($($Script:Config.TransferMode))"
@@ -8418,17 +8423,34 @@ function Start-LaptopExport {
     # only UAC prompt, limited to PrintBRM and the complete power-plan file.
     Start-ElevatedSystemExport -DestinationBase $transferBase
 
-    # 9. Generate import script
+    # 9. Generate the administrative helper before the main importer. Every
+    # package gets this small, self-contained recovery path so a failed or
+    # intentionally skipped source-side artifact never makes the destination
+    # helper disappear. The helper checks which artifacts are actually present
+    # and records skipped work instead of applying absent data.
+    New-AdminImportScript -DestinationBase $transferBase
     New-ImportScript -DestinationBase $transferBase -Settings $settings
-    # Do not ship an elevated power/printer helper when neither stage was
-    # selected. This keeps an intentionally settings-free package from trying
-    # to process PowerShell/power artifacts that do not exist.
-    if ($Script:Config.Backup.SystemSettings -or $Script:Config.Backup.Printers) {
-        New-AdminImportScript -DestinationBase $transferBase
-    }
 
     # 9. Generate quick import batch file
     New-QuickImportBatch -DestinationBase $transferBase
+
+    # Surface a missing launcher immediately, but do not abandon a completed
+    # transfer package. The report and console retain a clear error while the
+    # technician can still recover the copied data and remaining artifacts.
+    $requiredPackageArtifacts = @('Import-LaptopData.ps1', 'Import-SystemSettings.ps1', 'QuickImport.bat')
+    $missingPackageArtifacts = @($requiredPackageArtifacts | Where-Object {
+        -not (Test-Path -LiteralPath (Join-Path $transferBase $_) -PathType Leaf)
+    })
+    if ($missingPackageArtifacts.Count -gt 0) {
+        $artifactError = "Required import package artifact(s) were not generated: $($missingPackageArtifacts -join ', ')."
+        Write-Host "  $($Script:Theme.Glyphs.FAIL) $artifactError" -ForegroundColor Red
+        Write-Log $artifactError -Level Error
+        Add-Result -Category 'Scripts' -Item 'Import package verification' -Status 'Error' -Details $artifactError
+    }
+    else {
+        Write-Log 'Verified import scripts and launcher in the transfer package.' -Level Success
+        Add-Result -Category 'Scripts' -Item 'Import package verification' -Status 'Success' -Details 'Import-LaptopData.ps1, Import-SystemSettings.ps1, and QuickImport.bat are present'
+    }
 
     if (-not $Script:Config.Transfer.CreateZipArchive) {
         Write-Log "ZIP archive creation disabled by configuration" -Level Info
@@ -8483,7 +8505,12 @@ function Start-LaptopExport {
     Write-Status "AppData"                "INFO" "Bluebeam, signatures, Quick Access"
     Write-Status "Settings"               "INFO" "power, drives, personalization"
     if ($Script:Config.Backup.Printers) {
-        Write-Status "Printers" "INFO" "PrintBRM package"
+        $printerConnectionFile = Join-Path $transferBase 'Printers\PrinterConnections.json'
+        $printerPackageFile = Join-Path $transferBase 'Printers\Printers.printerExport'
+        $printerDetail = if (Test-Path -LiteralPath $printerPackageFile -PathType Leaf) { 'connections + PrintBRM package' }
+            elseif (Test-Path -LiteralPath $printerConnectionFile -PathType Leaf) { 'network-connection inventory; PrintBRM unavailable' }
+            else { 'capture did not create a printer artifact; review Logs\printbrm_backup.log' }
+        Write-Status "Printers" "INFO" $printerDetail
     }
     else {
         Write-Status "Printers" "SKIP" "disabled by configuration"
@@ -8492,6 +8519,7 @@ function Start-LaptopExport {
     if ($Script:Config.Backup.Firefox) { Write-Status "Firefox" "INFO" "selected" } else { Write-Status "Firefox" "SKIP" "disabled by configuration" }
     if ($Script:Config.Backup.Edge) { Write-Status "Edge" "INFO" "selected" } else { Write-Status "Edge" "SKIP" "disabled by configuration" }
     Write-Status "Import-LaptopData.ps1"  "OK"   "run on new machine"
+    Write-Status "Import-SystemSettings.ps1" "OK" "administrator helper for printers + power"
     Write-Status "QuickImport.bat"        "OK"   "double-click (runs as signed-in user)"
     Write-Status "TransferReport.html"    "OK"   "full report"
     if ($publishedArchivePath) {

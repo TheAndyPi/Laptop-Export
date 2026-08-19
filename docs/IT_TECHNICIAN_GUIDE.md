@@ -102,13 +102,13 @@ Press **`2`** to customize settings if needed. The **Transfer Settings** master 
   [15] ON  Taskbar layout                 Pinned app shortcuts and taskbar layout
   [16] ON  Default apps                   File and protocol default-app inventory
   
-  [17] OFF RECOMMENDED: Admin printer + power export (OFF by default)
+  [17] OFF ALPHA: UAC printer + power export (OFF by default)
 ```
 
 #### Preset Guidance:
 - **Basic Preset (Default - Recommended for 95% of users):** Copies standard user folders, curated AppData (Bluebeam, Signatures, Quick Access, Lotus, OST), Chrome/Edge bookmarks, Firefox profile, Taskbar pins, system personalization, and network printers.
 - **Advanced Preset:** Press **`V`** to enable `EntireUserProfile` (copies non-standard profile folders) and open the **Advanced AppData Selection** screen to choose specific vendor folders from `AppData\Local` or `AppData\Roaming`.
-- **Admin Printer + Power Toggle (#17):** Toggle to **ON** if you have administrator credentials and want a complete binary PrintBRM backup and exact `.pow` power scheme. **Note:** User data stays strictly in the user's context; UAC is requested only for a 5-second helper at the end.
+- **Alpha UAC Printer + Power Toggle (#17):** Toggle to **ON** only when you want to try the Alpha UAC capture. It can fall back to the standard-user attempt even after UAC approval. **Note:** User data stays strictly in the user's context; UAC is requested only for a short helper at the end.
 
 Press **`S`** to Start Transfer.
 

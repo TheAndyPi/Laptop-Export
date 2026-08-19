@@ -2772,7 +2772,7 @@ function Write-SystemExportProvenanceSummary {
         $detail = if ($provenance.Detail) { " - $($provenance.Detail)" } else { '' }
         Write-Host "  $($entry.Label): $captureContext$detail" -ForegroundColor DarkCyan
     }
-    Write-Host '  Administrator export is recommended for the most complete printer and power capture; it remains optional.' -ForegroundColor Yellow
+    Write-Host '  Administrator printer and power restore is an Alpha feature; it remains optional and can fall back to the standard-user attempt.' -ForegroundColor Yellow
     Write-Host ''
 }
 
