@@ -324,7 +324,22 @@ When adding a capability:
 - Do not treat a Robocopy exit code as a normal process exit code; interpret its documented 0–7 success range and inspect logs for partial-copy codes.
 - Preserve backward compatibility in generated import templates. Existing packages may omit newer fields such as `MatchKey`, per-profile bookmark files, or managed power plans.
 
-## 13. Key files for code navigation
+## 13. Known Strengths & Limitations
+
+### Known Strengths
+- **Enterprise Fidelity:** Migrates complex user state (Bluebeam, Outlook signatures, Quick Access binary stores, Lotus Notes, OST, PowrProf power overlays, Taskbar pin ordering).
+- **Context Isolation:** Scoped elevation invariant guarantees `$env:USERPROFILE` and `HKCU:` are never corrupted by admin token switching.
+- **High Performance:** Zero-I/O Robocopy parallel copies (`/MT:16`), non-blocking background sizing jobs, and fast local staging with unbuffered network uploads.
+- **Fail-Safe Resilience:** Win32 handle canonicalization, live `S` key step-cancellation, and atomic JSON replacement (`SystemExport.json`).
+
+### Known Limitations
+> [!WARNING]
+> **Stability & Field Maturity (v0.8 vs v1.0 as of August 18, 2026):**
+> - **v0.8 Baseline:** Exceptionally stable and **rigorously battle-tested** in production enterprise environments.
+> - **v1.0 Release:** Introduces significant advanced subsystems (PowrProf C-interop, Taskbar shell reconciliation, native Chromium bookmark JSON injection, Shell BitLocker inspection, zero-I/O monitor). While it passes all 28+ Pester automated unit/regression tests and is **mostly tested to work properly as of August 18, 2026**, it is **not yet 100% field-stabilized** across every possible corporate hardware OEM/docking configuration.
+> - **Codebase Complexity:** The codebase is extremely complex (13 interrelated modules, dynamic C# interop, COM objects, multi-threaded runspaces, generated templates) and requires senior PowerShell systems engineering expertise to maintain.
+
+## 14. Key files for code navigation
 
 - [Build-Deployment.ps1](Build-Deployment.ps1) — compiler and module order.
 - [src/01-bootstrap.ps1](src/01-bootstrap.ps1) — parameters, identity, configuration bootstrap.

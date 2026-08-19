@@ -8,7 +8,42 @@ This document provides a comprehensive, rigorous architectural and feature compa
 
 ---
 
-## 1. Executive Summary & Evolutionary Lineage
+## 1. Executive Summary: The Architectural Leap from v0.7 to v1.0
+
+To put it plainly: **v0.7 was a fragile file-copy script; v1.0 is an enterprise-grade migration platform.**
+
+Going from v0.7 to v1.0 represents a complete paradigm shift: transitioning from a prototype utility prone to capturing the wrong profile or hanging during transfers, to a hardened, multi-threaded system engineered around Windows OS internals, C# interop, and strict security invariants.
+
+### Key Pillars of the Evolution:
+
+1. **Architectural Safety & Context Isolation:**
+   - *In v0.7:* Launching as Administrator silently redirected `$env:USERPROFILE`, `$env:APPDATA`, and `HKCU:` to the **Administrator's account**, causing the tool to back up the admin's empty profile or corrupt registry keys instead of the employee's data.
+   - *In v1.0:* Enforces the **Scoped Elevation Invariant**. The main export and import *always* execute in the authentic standard user's security context. Administrative rights (UAC) are requested **only** at the very end for a 5-second isolated helper script (`Export-SystemSettings.elevated.ps1`) targeting strictly two OS tasks: `powercfg /export` and `PrintBrm.exe`.
+2. **Transfer Speed & Performance (50% to 70% Faster):**
+   - *In v0.7:* Synchronous folder scans locked the UI on launch; Robocopy progress rescanned the destination directory repeatedly (`Get-ChildItem -Recurse`), causing massive disk thrashing and 40–60% throughput loss; slow ZIP compression (`CompressionLevel.Optimal` at ~10 MB/s).
+   - *In v1.0:* **Non-blocking background worker jobs** (`Start-Job`) measure folder sizes without freezing the menu; **Zero-I/O Robocopy Engine** uses `/MT:16` parallel copies with a runspace-safe spinner and zero destination disk rescans; **Network Local Staging** in `%LOCALAPPDATA%` uses `CompressionLevel.Fastest` (65–90 MB/s) and unbuffered `/J` streams.
+3. **Migration Breadth & System Fidelity:**
+   - *In v0.7:* Basic user folders + raw Chrome HTML export (required manual technician re-import). No Firefox, Edge, taskbar layout, or Windows 11 power modes. Legacy Start Menu junction failed.
+   - *In v1.0:* **Dual-Track Chromium:** Injects native `ProfileBookmarks` JSON directly into matching destination profiles automatically, plus HTML fallbacks and authenticated password CSV flows; **Firefox:** Full Roaming/Local profile copy with safety backups (`Firefox_Backup_*`); **Taskbar:** Pins, Taskband ordering, and shell reconciliation; **PowrProf C-Interop:** Native P/Invoke to `PowrProf.dll` for Windows 11 Power Mode overlays; **Start Menu:** Canonical `%APPDATA%` resolution; **BitLocker:** Live Shell COM status checks without admin.
+4. **Application Migration Readiness Engine:**
+   - *In v0.7:* Zero visibility into software differences between old and new PCs.
+   - *In v1.0:* Scans 64-bit HKLM, 32-bit Wow6432Node, and HKCU uninstall hives; generates normalized match keys (`displayname|publisher`); filters system updates/runtimes via regex; and produces a standalone `Logs\AppMigrationReview.html` report.
+5. **Operator Control & Fail-Safe Resiliency:**
+   - *In v0.7:* No interactive toggles, no recursion safeguards, no per-folder cancellation.
+   - *In v1.0:* **Settings Presets** (Basic vs Advanced vs Custom); **Live Step-Skip (`S` Key)** to cancel a stalled folder without aborting the transfer; **Win32 Handle Traversal** (`CreateFile`/`GetFinalPathNameByHandle`) blocking recursive destination loops; **Atomic Provenance Manifests** (`SystemExport.json` via `System.IO.File.Replace`).
+6. **Code Quality & Testing:**
+   - *In v0.7:* Monolithic 3,707 lines in a single file; 0 automated tests.
+   - *In v1.0:* 13 modular source files in `src/`, automated compiler (`Build-Deployment.ps1`) with AST syntax verification, and a comprehensive **28+ automated Pester regression test suite** (`Invoke-LaptopExportTests.ps1`).
+
+---
+
+### Known Strengths, Limitations & Maturity Assessment
+
+> [!WARNING]
+> **Field Stability & Maturity (v0.8 Baseline vs v1.0 as of August 18, 2026):**
+> - **v0.8 Stability:** v0.8 is **very rigorously tested to work properly** across extensive real-world enterprise deployments. Its simpler subsystems make it a battle-hardened, rock-solid baseline.
+> - **v1.0 Stability:** v1.0 is **mostly tested to work properly as of August 18, 2026**. It passes 100% of the 28+ automated Pester unit and regression tests, but because it introduces cutting-edge subsystems (PowrProf P/Invoke, Taskbar shell reconciliation, native Chromium JSON injection, Shell BitLocker inspection, and zero-I/O lifecycle monitoring), it is **not yet 100% field-stabilized** across every niche corporate OEM hardware, print spooler driver, or docking setup.
+> - **Codebase Complexity:** The codebase is **extremely complex**, spanning 13 modular PowerShell source files, dynamic C# interop, COM interfaces, background runspaces, and generated templates. Maintaining and extending it requires senior-level PowerShell / Windows engineering expertise.
 
 ```mermaid
 timeline

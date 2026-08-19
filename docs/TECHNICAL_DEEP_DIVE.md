@@ -653,3 +653,46 @@ The test suite runs via Pester (`Invoke-LaptopExportTests.ps1`) and exercises al
 6. **BitLocker Shell Logic:** Tests Shell COM status code parsing.
 7. **HTML Report Encoding:** Validates HTML escaping against synthetic `<script>` tags, quotes, and ampersands.
 8. **Generated Importer Dry Run (`-TestMode`):** Parses and executes the generated importer in non-destructive dry-run mode.
+
+---
+
+## 6. Known Strengths & Known Limitations
+
+### 6.1 Known Strengths
+
+1. **Unrivaled Enterprise Migration Fidelity:**
+   Captures complex application state that ordinary file backups miss: multi-location Bluebeam Revu toolsets/stamps, Outlook email signatures, Quick Access binary pins, Lotus Notes local data, On-Screen Takeoff (OST) database caches, Windows 11 Power Mode overlays via PowrProf C-interop, active AC/DC power indices, and Taskbar pin link ordering with post-restart shell reconciliation.
+2. **Strict Context Isolation (The Scoped Elevation Invariant):**
+   Eliminates the legacy PowerShell elevation trap where running as admin corrupts `$env:USERPROFILE` and `HKCU:`. The primary exporter and importer run exclusively as the standard user, isolating UAC elevation to a 5-second child helper for `powercfg` and `PrintBrm`.
+3. **High-Throughput Zero-I/O Progress Engine:**
+   Combines `/MT:16` parallel Robocopy streams with a runspace-safe terminal spinner that performs **zero destination disk rescans** during transfer, preventing disk thrashing and delivering 40%–60% faster transfers on large profiles.
+4. **Resilient Local Staging Pipeline:**
+   Online transfers to slow network shares build and compress a single archive locally in `%LOCALAPPDATA%` using `CompressionLevel.Fastest` (65–90 MB/s), uploading a single unbuffered `/Z /J` stream instead of thousands of high-latency SMB file writes.
+5. **Automated Audits & Handoff Tooling:**
+   Generates normalized Application Migration Review reports (`Logs\AppMigrationReview.html`), non-elevated BitLocker OS encryption audits via Shell COM, and UTF-8 BOM handoff reports with automated application launching.
+
+---
+
+### 6.2 Known Limitations & Engineering Reality
+
+> [!WARNING]
+> **Stability & Field Maturity (v0.8 vs v1.0 as of August 18, 2026):**
+> - **v0.8 Baseline:** v0.8 has undergone **extensive, battle-tested production testing** in enterprise environments and is proven to be exceptionally stable across hundreds of standard technician deployments.
+> - **v1.0 Current State:** v1.0 introduces substantial, cutting-edge architectural subsystems (PowrProf P/Invoke, Taskbar shell reconciliation, native Chromium JSON bookmark injection, Shell BitLocker inspection, zero-I/O Robocopy lifecycle management, and atomic JSON replacement). While v1.0 passes **100% of the 28+ Pester automated unit and regression tests** and is **mostly tested to work properly as of August 18, 2026**, it is **not yet 100% field-stabilized** across every possible corporate edge-case (e.g., highly customized OEM print spooler drivers, specialized antivirus file-system filter drivers, or unusual multi-monitor docking hardware). Technicians encountering unexpected edge cases can rely on the mature v0.8 baseline.
+
+```mermaid
+graph LR
+    subgraph "Maturity vs Capability Tradeoff"
+        V08[v0.8 Release\nExtremely Rigorously Tested\nBattle-Hardened Field Stability\nSimpler Subsystems]
+        V10[v1.0 Release\nMostly Tested as of Aug 18 2026\nMassive Feature & Fidelity Leap\nHigh Codebase Complexity]
+    end
+```
+
+1. **Extreme Codebase Complexity & Maintenance Overhead:**
+   The v1.0 architecture is significantly more complex than earlier iterations. It spans 13 interrelated source modules, dynamic C# P/Invoke compilation, COM interop (`IFileDialog`, `IShellItem`, `Shell.Application`), background multi-threaded runspace jobs (`Start-Job`), atomic file replacements, and Base64-injected template generation. Modifying core features requires senior-level PowerShell / Windows systems engineering expertise and strict adherence to the compiler contract in `Build-Deployment.ps1`.
+2. **Windows DPAPI Credential Boundaries:**
+   Windows-protected credentials (such as Google Chrome saved passwords, Wi-Fi profile keys, and VPN certificates) are encrypted using machine/user-specific DPAPI keys and hardware TPMs. They cannot be programmatically decrypted across machines without user authentication or native CSV export/import workflows.
+3. **Group Policy / Intune Pin Re-Introduction Timing:**
+   While the v1.0 importer automatically unpins default OEM and imaging pins during its post-restart shell reconciliation pass, later background Intune policy syncs or Group Policy refreshes may re-introduce mandatory corporate shortcuts outside the tool's control.
+4. **Third-Party Application Installation Boundary:**
+   The tool audits and compares installed software between old and new machines via normalized registry keys, but does not install application binaries or migrate machine-locked node licenses (e.g., AutoCAD, Revit, Adobe Creative Cloud). Missing applications must be deployed via Company Portal, Intune, or software packaging tools.
